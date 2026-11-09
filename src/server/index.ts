@@ -10,17 +10,19 @@ import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
 import { isUnclean } from "./detonate";
 import { startHttpServer } from "./http";
 import { audit } from "./audit";
+import { initStore } from "./store";
+import { broadcast } from "./sse";
 
 export async function startLocalServer(opts: { port: number; password: string }) {
   // Start minimal HTTP (127.0.0.1, Basic auth). Light, training-friendly.
+  const storeMode = initStore();
   const httpServer = startHttpServer(opts);
-  audit({ tool: "server.start", note: `port ${opts.port}` });
+  audit({ tool: "server.start", note: `port ${opts.port} store=${storeMode.mode}` });
   const packs = loadLanguagePacks();
   const lsp = new LspManager();
-  // Wire diagnostics to SSE broadcast (stub: log in dev, SSE in prod)
+  // Wire diagnostics to SSE broadcast
   lsp.onDiagnostics = (worktree, lang, payload) => {
-    // In prod: broadcast to all windows subscribed to worktree
-    void worktree; void lang; void payload;
+    broadcast(worktree, "diagnostics", { lang, payload });
   };
 
   // Light startup only. No spawning. No network. Training-friendly.

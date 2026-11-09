@@ -11,6 +11,10 @@ import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
 import { isUnclean } from "./detonate";
 import { audit } from "./audit";
 import { sweepWorkspace, gateDecision, readAgentWatchConfig } from "./agentwatch";
+import { subscribe, broadcast } from "./sse";
+import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
+import { listModels } from "./router";
+import { listSessions, createSession, listTodos, addTodo } from "./store";
 
 export type ServerOpts = { port: number; password: string; host?: string };
 
@@ -111,6 +115,72 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const gate = gateDecision(sweep);
           audit({ tool: "agentwatch.sweep", note: `${sweep.findings.length} findings allow=${gate.allow}` });
           sendJson(res, 200, { sweep, gate });
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/events") {
+      const wt = url.searchParams.get("worktree") ?? process.cwd();
+      return subscribe(wt, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/models") {
+      const models = await listModels();
+      return sendJson(res, 200, models);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/sessions") {
+      return sendJson(res, 200, listSessions());
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/sessions") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { title?: string; worktree?: string };
+          const s = createSession({ id: `ses_${Date.now().toString(36)}`, title: body.title ?? "session", worktree: body.worktree ?? process.cwd(), created: new Date().toISOString() });
+          audit({ tool: "session.create", note: s.id });
+          sendJson(res, 200, s);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/todos") {
+      const sid = url.searchParams.get("sessionId") ?? "";
+      return sendJson(res, 200, listTodos(sid));
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/todos") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { sessionId?: string; text?: string };
+          const t = addTodo({ id: `todo_${Date.now().toString(36)}`, sessionId: body.sessionId ?? "", text: body.text ?? "", done: false });
+          sendJson(res, 200, t);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/worktrees") {
+      const repo = url.searchParams.get("repo") ?? process.cwd();
+      return sendJson(res, 200, await listWorktrees(repo));
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/worktrees") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { id?: string; branch?: string; repo?: string };
+          const r = await addWorktree(body.repo ?? process.cwd(), body.id ?? `wt_${Date.now().toString(36)}`, body.branch ?? `ehc/${Date.now().toString(36)}`);
+          audit({ tool: "worktree.add", note: r.path });
+          broadcast(r.path, "worktree", { op: "add", path: r.path });
+          sendJson(res, 200, r);
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;

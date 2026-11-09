@@ -1,0 +1,33 @@
+name: Release
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npm run build
+      - name: Package (Mac DMG)
+        if: matrix.os == 'macos-latest'
+        run: npx electron-builder --mac dmg --publish never
+      - name: Package (Windows NSIS/MSI)
+        if: matrix.os == 'windows-latest'
+        run: npx electron-builder --win nsis msi --publish never
+      - name: Package (Linux AppImage/deb/rpm)
+        if: matrix.os == 'ubuntu-latest'
+        run: npx electron-builder --linux AppImage deb rpm --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: event-horizon-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
