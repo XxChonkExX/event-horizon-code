@@ -2,14 +2,39 @@
 // Sessions, worktrees, tools, permissions, model router, engram service, SSE.
 
 import crypto from "node:crypto";
+import { loadLanguagePacks, LspManager } from "./lsp";
+import { runToolchainDoctor } from "./toolchain";
+import { detectPackageManager } from "./packageManager";
+import { indexSymbols } from "./fallbackIndex";
 
 export async function startLocalServer(_opts: { port: number; password: string }) {
+  const packs = loadLanguagePacks();
+  const lsp = new LspManager();
+  // Wire diagnostics to SSE broadcast (stub: log in dev, SSE in prod)
+  lsp.onDiagnostics = (worktree, lang, payload) => {
+    // In prod: broadcast to all windows subscribed to worktree
+    void worktree; void lang; void payload;
+  };
+
+  // Light startup only. No spawning. No network. Training-friendly.
+  if (process.env.EH_DEBUG === "1") {
+    void runToolchainDoctor(packs).then((checks) => {
+      const ok = checks.filter((c) => c.ok).length;
+      console.log(`[ehc] toolchain: ${ok}/${checks.length} ok`);
+    });
+    void detectPackageManager(process.cwd());
+    void indexSymbols(process.cwd(), ".py");
+  }
+
   // TODO Phase 1: HTTP + SSE, Basic auth, SQLite (better-sqlite3 WAL),
   // worktree manager (git worktree add/remove), tool registry, MCP client,
   // ACP-compatible endpoints:
   //   initialize, session/new, session/prompt, session/update,
   //   session/request_permission, fs/read_text_file
+  //   GET /api/toolchain -> runToolchainDoctor(packs)
+  //   POST /api/symbols -> indexSymbols fallback when LSP unavailable
   // Engram glue: import afterimage_* via Python subprocess (stdlib only),
   // never reimplement. See docs/ENGRAM_INTEGRATION.md
   void crypto.randomBytes(1);
+  void lsp;
 }
