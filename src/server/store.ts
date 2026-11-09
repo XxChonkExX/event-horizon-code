@@ -49,7 +49,10 @@ export function createSession(s: Session): Session {
 }
 
 export function listTodos(sessionId: string): Todo[] {
-  if (db) return (db.prepare("SELECT * FROM todos WHERE sessionId=?").all(sessionId) as Array<Todo & { done: number }>).map((t) => ({ ...t, done: t.done === 1 }));
+  if (db) {
+    const rows = db.prepare("SELECT * FROM todos WHERE sessionId=?").all(sessionId) as Array<{ id: string; sessionId: string; text: string; done: number }>;
+    return rows.map((r) => ({ id: r.id, sessionId: r.sessionId, text: r.text, done: r.done === 1 }));
+  }
   return memTodos.filter((t) => t.sessionId === sessionId);
 }
 
