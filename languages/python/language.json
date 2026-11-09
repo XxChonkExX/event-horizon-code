@@ -1,0 +1,15 @@
+{
+  "id": "python",
+  "displayName": "Python",
+  "tier": 1,
+  "fileExtensions": [".py", ".pyi", ".pyx", ".pxd"],
+  "toolchain": { "check": ["python3 --version", "python --version", "py --version", "uv --version"], "managers": ["pyenv", "uv", "pdm", "poetry"] },
+  "lsp": { "command": ["pyright"], "args": ["--outputjson"], "fallback": [["python", "-m", "pylsp"]] },
+  "dap": { "command": ["debugpy"] },
+  "formatter": { "command": ["ruff", "format"] },
+  "linter": { "command": ["ruff", "check"] },
+  "commands": { "build": "python -m compileall .", "test": "pytest -q", "run": "python {file}" },
+  "treeSitter": { "grammar": "python" },
+  "engramPack": "python",
+  "skill": "python-debugging"
+}

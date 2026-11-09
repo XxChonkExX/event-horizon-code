@@ -1,0 +1,15 @@
+{
+  "id": "csharp",
+  "displayName": "C# / .NET / F#",
+  "tier": 1,
+  "fileExtensions": [".cs", ".csx", ".fs", ".fsx", ".fsi"],
+  "toolchain": { "check": ["dotnet --version", "dotnet --list-sdks"] },
+  "lsp": { "command": ["csharp-ls"] },
+  "dap": { "command": ["netcoredbg"] },
+  "formatter": { "command": ["dotnet", "format"] },
+  "linter": { "command": ["dotnet", "build", "--no-incremental"] },
+  "commands": { "build": "dotnet build", "test": "dotnet test", "run": "dotnet run" },
+  "treeSitter": { "grammar": "c-sharp" },
+  "engramPack": "csharp",
+  "skill": "dotnet-nuget"
+}

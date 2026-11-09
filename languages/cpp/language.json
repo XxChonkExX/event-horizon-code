@@ -1,0 +1,15 @@
+{
+  "id": "cpp",
+  "displayName": "C / C++",
+  "tier": 1,
+  "fileExtensions": [".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx"],
+  "toolchain": { "check": ["clang --version", "gcc --version", "cmake --version"] },
+  "lsp": { "command": ["clangd"] },
+  "dap": { "command": ["lldb-dap"] },
+  "formatter": { "command": ["clang-format", "-i"] },
+  "linter": { "command": ["clang-tidy"] },
+  "commands": { "build": "cmake --build build", "test": "ctest --test-dir build", "run": "./build/app" },
+  "treeSitter": { "grammar": "cpp" },
+  "engramPack": "cpp",
+  "skill": "cpp-build"
+}

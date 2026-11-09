@@ -1,0 +1,15 @@
+{
+  "id": "php",
+  "displayName": "PHP",
+  "tier": 1,
+  "fileExtensions": [".php"],
+  "toolchain": { "check": ["php -v", "composer --version"] },
+  "lsp": { "command": ["intelephense", "--stdio"] },
+  "dap": { "command": ["php-debug"] },
+  "formatter": { "command": ["php-cs-fixer"] },
+  "linter": { "command": ["phpstan"] },
+  "commands": { "build": "composer install", "test": "php vendor/bin/phpunit", "run": "php -S localhost:8000 -t public" },
+  "treeSitter": { "grammar": "php" },
+  "engramPack": "php",
+  "skill": "php-composer"
+}

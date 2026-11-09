@@ -1,0 +1,15 @@
+{
+  "id": "dart",
+  "displayName": "Dart / Flutter",
+  "tier": 1,
+  "fileExtensions": [".dart"],
+  "toolchain": { "check": ["dart --version", "flutter --version"] },
+  "lsp": { "command": ["dart", "language-server"] },
+  "dap": { "command": ["dart", "debug"] },
+  "formatter": { "command": ["dart", "format"] },
+  "linter": { "command": ["dart", "analyze"] },
+  "commands": { "build": "flutter build", "test": "flutter test", "run": "flutter run" },
+  "treeSitter": { "grammar": "dart" },
+  "engramPack": "dart",
+  "skill": "dart-flutter"
+}

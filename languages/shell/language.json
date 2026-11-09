@@ -1,0 +1,15 @@
+{
+  "id": "shell",
+  "displayName": "Shell / Bash / Zsh",
+  "tier": 1,
+  "fileExtensions": [".sh", ".bash", ".zsh", ".ksh"],
+  "toolchain": { "check": ["bash --version"] },
+  "lsp": { "command": ["bash-language-server"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["shfmt", "-w"] },
+  "linter": { "command": ["shellcheck"] },
+  "commands": { "build": "shellcheck .", "test": "bats test/", "run": "bash {file}" },
+  "treeSitter": { "grammar": "bash" },
+  "engramPack": "shell",
+  "skill": "shell-tooling"
+}

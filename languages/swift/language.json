@@ -1,0 +1,15 @@
+{
+  "id": "swift",
+  "displayName": "Swift",
+  "tier": 1,
+  "fileExtensions": [".swift"],
+  "toolchain": { "check": ["swift --version"] },
+  "lsp": { "command": ["sourcekit-lsp"] },
+  "dap": { "command": ["lldb"] },
+  "formatter": { "command": ["swiftformat"] },
+  "linter": { "command": ["swiftlint"] },
+  "commands": { "build": "swift build", "test": "swift test", "run": "swift run" },
+  "treeSitter": { "grammar": "swift" },
+  "engramPack": "swift",
+  "skill": "swift-spm"
+}

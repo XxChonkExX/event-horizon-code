@@ -1,0 +1,15 @@
+{
+  "id": "elixir",
+  "displayName": "Elixir / Erlang / Haskell / OCaml",
+  "tier": 2,
+  "fileExtensions": [".ex", ".exs", ".erl", ".hs", ".lhs", ".ml", ".mli"],
+  "toolchain": { "check": ["elixir --version", "erl -version", "ghc --version", "ocaml -version"] },
+  "lsp": { "command": ["elixir-ls"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["mix", "format"] },
+  "linter": { "command": ["mix", "credo"] },
+  "commands": { "build": "mix compile", "test": "mix test", "run": "mix run" },
+  "treeSitter": { "grammar": "elixir" },
+  "engramPack": "elixir",
+  "skill": "elixir-tooling"
+}

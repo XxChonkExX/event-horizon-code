@@ -1,0 +1,15 @@
+{
+  "id": "zig",
+  "displayName": "Zig",
+  "tier": 1,
+  "fileExtensions": [".zig", ".zon"],
+  "toolchain": { "check": ["zig version"] },
+  "lsp": { "command": ["zls"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["zig", "fmt"] },
+  "linter": { "command": ["zig", "build", "check"] },
+  "commands": { "build": "zig build", "test": "zig build test", "run": "zig run {file}" },
+  "treeSitter": { "grammar": "zig" },
+  "engramPack": "zig",
+  "skill": "zig-tooling"
+}

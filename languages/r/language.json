@@ -1,0 +1,15 @@
+{
+  "id": "r",
+  "displayName": "R / Julia / Nim",
+  "tier": 1,
+  "fileExtensions": [".r", ".jl", ".nim"],
+  "toolchain": { "check": ["R --version", "julia --version", "nim --version"] },
+  "lsp": { "command": ["Rscript", "-e", "languageserver::run()"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["styler"] },
+  "linter": { "command": ["lintr"] },
+  "commands": { "build": "R CMD INSTALL .", "test": "R CMD check .", "run": "Rscript {file}" },
+  "treeSitter": { "grammar": "r" },
+  "engramPack": "r",
+  "skill": "r-tooling"
+}

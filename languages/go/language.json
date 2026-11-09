@@ -1,0 +1,15 @@
+{
+  "id": "go",
+  "displayName": "Go",
+  "tier": 1,
+  "fileExtensions": [".go"],
+  "toolchain": { "check": ["go version"] },
+  "lsp": { "command": ["gopls"] },
+  "dap": { "command": ["dlv"] },
+  "formatter": { "command": ["gofmt"] },
+  "linter": { "command": ["staticcheck"] },
+  "commands": { "build": "go build ./...", "test": "go test ./...", "run": "go run ." },
+  "treeSitter": { "grammar": "go" },
+  "engramPack": "go",
+  "skill": "go-modules"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "rust",
+  "displayName": "Rust",
+  "tier": 1,
+  "fileExtensions": [".rs"],
+  "toolchain": { "check": ["rustc --version", "cargo --version", "rustup --version"] },
+  "lsp": { "command": ["rust-analyzer"] },
+  "dap": { "command": ["lldb-dap"] },
+  "formatter": { "command": ["cargo", "fmt"] },
+  "linter": { "command": ["cargo", "clippy"] },
+  "commands": { "build": "cargo build", "test": "cargo test", "run": "cargo run" },
+  "treeSitter": { "grammar": "rust" },
+  "engramPack": "rust",
+  "skill": "rust-cargo"
+}

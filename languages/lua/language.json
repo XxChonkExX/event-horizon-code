@@ -1,0 +1,15 @@
+{
+  "id": "lua",
+  "displayName": "Lua",
+  "tier": 1,
+  "fileExtensions": [".lua"],
+  "toolchain": { "check": ["lua -v", "luajit -v"] },
+  "lsp": { "command": ["lua-language-server"] },
+  "dap": { "command": ["local-lua-debugger"] },
+  "formatter": { "command": ["stylua"] },
+  "linter": { "command": ["luacheck"] },
+  "commands": { "build": "luacheck .", "test": "busted", "run": "lua {file}" },
+  "treeSitter": { "grammar": "lua" },
+  "engramPack": "lua",
+  "skill": "lua-tooling"
+}

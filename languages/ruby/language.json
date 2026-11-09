@@ -1,0 +1,15 @@
+{
+  "id": "ruby",
+  "displayName": "Ruby",
+  "tier": 1,
+  "fileExtensions": [".rb", ".rake", ".gemspec", ".ru"],
+  "toolchain": { "check": ["ruby -v", "bundle -v", "gem -v"] },
+  "lsp": { "command": ["ruby-lsp"] },
+  "dap": { "command": ["rdbg"] },
+  "formatter": { "command": ["rubocop", "-a"] },
+  "linter": { "command": ["rubocop"] },
+  "commands": { "build": "bundle install", "test": "bundle exec rake test", "run": "ruby {file}" },
+  "treeSitter": { "grammar": "ruby" },
+  "engramPack": "ruby",
+  "skill": "ruby-bundler"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "perl",
+  "displayName": "Perl",
+  "tier": 1,
+  "fileExtensions": [".pl", ".pm", ".t"],
+  "toolchain": { "check": ["perl -v"] },
+  "lsp": { "command": ["perl-language-server"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["perltidy"] },
+  "linter": { "command": ["perlcritic"] },
+  "commands": { "build": "perl -c {file}", "test": "prove -l t/", "run": "perl {file}" },
+  "treeSitter": { "grammar": "perl" },
+  "engramPack": "perl",
+  "skill": "perl-tooling"
+}

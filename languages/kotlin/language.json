@@ -1,0 +1,15 @@
+{
+  "id": "kotlin",
+  "displayName": "Kotlin / Scala",
+  "tier": 1,
+  "fileExtensions": [".kt", ".kts", ".scala", ".sbt"],
+  "toolchain": { "check": ["kotlin -version", "gradle --version"] },
+  "lsp": { "command": ["kotlin-ls"] },
+  "dap": { "command": ["kotlin-debug"] },
+  "formatter": { "command": ["ktlint", "--format"] },
+  "linter": { "command": ["detekt"] },
+  "commands": { "build": "gradle build", "test": "gradle test", "run": "gradle run" },
+  "treeSitter": { "grammar": "kotlin" },
+  "engramPack": "kotlin",
+  "skill": "kotlin-gradle"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "java",
+  "displayName": "Java",
+  "tier": 1,
+  "fileExtensions": [".java"],
+  "toolchain": { "check": ["java -version", "javac -version", "mvn -version", "gradle --version"] },
+  "lsp": { "command": ["jdtls"] },
+  "dap": { "command": ["java-debug"] },
+  "formatter": { "command": ["google-java-format"] },
+  "linter": { "command": ["checkstyle"] },
+  "commands": { "build": "mvn -q -DskipTests package", "test": "mvn -q test", "run": "java -jar target/app.jar" },
+  "treeSitter": { "grammar": "java" },
+  "engramPack": "java",
+  "skill": "java-maven-gradle"
+}
