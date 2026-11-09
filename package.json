@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "description": "Event Horizon Code — Desktop-first multi-window coding harness. Local models first. MIT.",
   "license": "MIT",
+  "engines": {
+    "node": ">=20 <24 || >=24.0.0"
+  },
   "author": {
     "name": "XxChonkExX",
     "email": "hello@eventhorizoncode.local"
@@ -23,9 +26,10 @@
     "skills:generate": "node scripts/generate-skills.mjs"
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^12.11.1",
     "monaco-editor": "^0.52.0",
-    "solid-js": "^1.9.0"
+    "solid-js": "^1.9.0",
+    "vite-plugin-solid": "^2.11.15"
   },
   "devDependencies": {
     "electron": "^42.0.0",

@@ -2,6 +2,7 @@
 // No Express. Node http. All responses JSON. No telemetry.
 
 import http from "node:http";
+import path from "node:path";
 import crypto from "node:crypto";
 import { loadLanguagePacks } from "./lsp";
 import { runToolchainDoctor } from "./toolchain";
@@ -16,6 +17,8 @@ import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
 import { listSessions, createSession, listTodos, addTodo } from "./store";
+import { runTool } from "./tools";
+import type { ToolName } from "./tools";
 
 export type ServerOpts = { port: number; password: string; host?: string };
 
@@ -209,6 +212,77 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const body = JSON.parse(raw || "{}") as { expr?: string };
           const r = await verifyArithmetic(body.expr ?? "");
           sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    // ACP-compatible session endpoints (JSON-RPC over HTTP for the desktop client)
+    const acpMap: Record<string, string> = {
+      "/api/acp/initialize": "initialize",
+      "/api/acp/session/new": "session/new",
+      "/api/acp/session/prompt": "session/prompt",
+      "/api/acp/session/update": "session/update",
+      "/api/acp/session/request_permission": "session/request_permission",
+      "/api/acp/fs/read_text_file": "fs/read_text_file",
+    };
+    if (req.method === "POST" && acpMap[url.pathname]) {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { params?: Record<string, unknown> };
+          const method = acpMap[url.pathname];
+          // Minimal live behavior: initialize echoes version, session/new creates a session row, prompt broadcasts via SSE, others stub.
+          if (method === "initialize") {
+            sendJson(res, 200, { protocolVersion: "0.1.0", capabilities: { fs: ["read_text_file"] } });
+          } else if (method === "session/new") {
+            const params = (body.params ?? {}) as { title?: string; worktree?: string };
+            const s = createSession({ id: `ses_${Date.now().toString(36)}`, title: params.title ?? "session", worktree: params.worktree ?? process.cwd(), created: new Date().toISOString() });
+            audit({ tool: "acp.session.new", note: s.id });
+            sendJson(res, 200, { sessionId: s.id });
+          } else if (method === "session/prompt") {
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; worktree?: string };
+            audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}` });
+            // Echo back and broadcast to windows (SSE)
+            const reply = { reply: `echo: ${params.text ?? ""}`, think: params.think ?? "default" };
+            broadcast(params.worktree ?? process.cwd(), "session/update", reply);
+            sendJson(res, 200, reply);
+          } else if (method === "fs/read_text_file") {
+            const params = (body.params ?? {}) as { path?: string };
+            const critical = isUnclean(path.basename(params.path ?? "") + " " + (params.path ?? ""));
+            if (critical) {
+              sendJson(res, 200, { content: "", error: "blocked: unclean path requires detonate lane", critical: true });
+              return;
+            }
+            // Language packs gate reads to workspace in full implementation; here read file.
+            try {
+              const text = (await import("node:fs")).readFileSync(params.path ?? "", "utf8");
+              sendJson(res, 200, { content: text.slice(0, 200000) });
+            } catch {
+              sendJson(res, 200, { content: "", error: "read failed" });
+            }
+          } else if (method === "session/request_permission") {
+            const params = (body.params ?? {}) as { tool?: string; approved?: boolean };
+            // In real UI the frontend prompts the operator. Server records the decision.
+            audit({ tool: "acp.permission", note: `${params.tool ?? ""}:${params.approved === true}` });
+            sendJson(res, 200, { approved: params.approved === true });
+          } else {
+            sendJson(res, 200, { type: method, ok: true });
+          }
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/tools/call") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { tool?: ToolName; args?: Record<string, unknown>; worktree?: string };
+          const result = await runTool(body.tool ?? "read", body.args ?? {}, body.worktree ?? process.cwd());
+          sendJson(res, 200, result);
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;

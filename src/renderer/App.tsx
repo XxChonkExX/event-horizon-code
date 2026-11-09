@@ -18,11 +18,21 @@ export default function App() {
   const [input, setInput] = createSignal("");
   const [activeFile, setActiveFile] = createSignal<string>("src/server/index.ts");
 
-  const send = () => {
+  const send = async () => {
     const text = input().trim();
     if (!text) return;
     setMessages((m) => [...m, text]);
     setInput("");
+    // Parse /think:low|medium|high|max directive for reasoning effort
+    const thinkMatch = text.match(/\/think:(low|medium|high|max)/i);
+    const think = thinkMatch ? thinkMatch[1].toLowerCase() : "default";
+    try {
+      await fetch("/api/acp/session/prompt", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ params: { sessionId: session, text, think, worktree: session } })
+      });
+    } catch { /* server not running — local echo already recorded */ }
   };
 
   return (
