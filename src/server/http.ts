@@ -10,6 +10,7 @@ import { indexSymbols } from "./fallbackIndex";
 import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
 import { isUnclean } from "./detonate";
 import { audit } from "./audit";
+import { sweepWorkspace, gateDecision, readAgentWatchConfig } from "./agentwatch";
 
 export type ServerOpts = { port: number; password: string; host?: string };
 
@@ -91,6 +92,25 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const unclean = isUnclean(body.text ?? "");
           audit({ tool: "detonate.check", note: unclean ? "unclean" : "clean" });
           sendJson(res, 200, { unclean, route: unclean ? "detonate" : "host" });
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/agentwatch/status") {
+      return sendJson(res, 200, readAgentWatchConfig());
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/sweep") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { worktree?: string };
+          const sweep = await sweepWorkspace(body.worktree ?? process.cwd());
+          const gate = gateDecision(sweep);
+          audit({ tool: "agentwatch.sweep", note: `${sweep.findings.length} findings allow=${gate.allow}` });
+          sendJson(res, 200, { sweep, gate });
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;

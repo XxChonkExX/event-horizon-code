@@ -1,11 +1,12 @@
 // Event Horizon Code — Renderer workbench (SolidJS + Monaco)
 // Multi-window aware: URL query ?session=<id> selects session/worktree.
 // Layout: left file tree + sessions, center Monaco, right chat + approvals,
-// bottom terminal + toolchain doctor + sandbox controls. No filesystem via IPC.
+// bottom terminal + toolchain doctor + sandbox controls + agentwatch (opt-in). No filesystem via IPC.
 
 import { createSignal } from "solid-js";
 import ToolchainDoctor from "./ToolchainDoctor";
 import SandboxControls from "./SandboxControls";
+import AgentWatchPanel from "./AgentWatchPanel";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
 
@@ -19,8 +20,6 @@ export default function App() {
     if (!text) return;
     setMessages((m) => [...m, text]);
     setInput("");
-    // POST to local server session/prompt in Phase 1 integration.
-    // Reasoning directive: /think:low|medium|high|max parsed by server.
   };
 
   return (
@@ -34,6 +33,7 @@ export default function App() {
         <div class="panels">
           <ToolchainDoctor />
           <SandboxControls />
+          <AgentWatchPanel />
         </div>
       </section>
       <aside class="chat">

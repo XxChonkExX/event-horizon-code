@@ -1,8 +1,36 @@
-# AgentWatch integration — game plan (not wired)
+# AgentWatch integration — opt-in deterministic line-manager
 
 > AgentWatch: https://github.com/XxChonkExX/AgentWatch — "A Tool-kit to monitor, diagnose the disposition, alignment, safety and working habits of your Agential Staff. Checks agential email, workspaces for malware/scripts/virii/goop, obfuscation checks, all performed locally — no clouds and the User is the final arbiter."
 
-Event Horizon Code does NOT import or call AgentWatch in this phase. This doc is the plan for optional integration as a deterministic line-manager.
+Event Horizon Code ships an opt-in integration. Default is OFF with zero code paths executed. When enabled, workspace checks are deterministic guides; operator review is paramount and is the final arbiter.
+
+## Opt-in switch
+
+Config (`.harness/config.json`):
+
+```json
+"agentwatch": {
+  "enabled": false,
+  "lineManager": false,
+  "ledgerDir": ".eventhorizon/aw-ledger"
+}
+```
+
+UI: `src/renderer/AgentWatchPanel.tsx` — two checkboxes (Enable, Line-manager). Default both off. Panel copy states: "Default off so users who find checks stifling are not bothered."
+
+Server: `src/server/agentwatch.ts`
+
+- `readAgentWatchConfig()` — reads config, defaults off.
+- `sweepWorkspace(worktree)` — if off, returns `{enabled: false}` and runs no subprocess. If on, calls `aw sweep <worktree> --ledger <ledgerDir> --json`, 15s timeout. Small output cap. If `aw` is absent, returns scanner-unavailable as a stated blind spot, never a silent pass.
+- `gateDecision(sweep)` — deterministic:
+  - off → allow, reason "AgentWatch opt-in off"
+  - enabled, sweep failed → block, reason "scanner blind spot — operator must review"
+  - enabled, 0 high/critical → allow, reason "clean — operator may proceed"
+  - enabled + `lineManager: false` + high/critical → allow but flag ("review recommended, not blocking")
+  - enabled + `lineManager: true` + high/critical → block edit/bash until Approve / Clean / Detonate clicked
+- HTTP: `GET /api/agentwatch/status`, `POST /api/agentwatch/sweep` → `{sweep, gate}`. Both audited via `audit.ts`.
+
+The switch is granular so a user can turn on checks (flag only) without enabling blocking. That is the intended default for curious users and for the workspace check feature: guide, not gate.
 
 ## AgentWatch today (M0-M4)
 
@@ -28,7 +56,7 @@ Agent + Tool output (untrusted)
   -> Clean worktree only if cleared
 ```
 
-Concrete hooks (future, not implemented):
+Concrete hooks:
 
 1. **Workspace sweep on session start.** EHC `LspManager.spawnForFile` already creates a worktree. Before LSP spawn, call `aw sweep <worktree> --ledger ~/.eventhorizon/aw-ledger --json`. If AW-M*/AW-R001 critical: block spawn, show report in ToolchainDoctor panel, route to detonate. Deterministic, reproduces bit-for-bit.
 2. **Mailbox sweep.** EHC mail mirror under `~/.eventhorizon/mail/` (agent-to-agent email). Same sweep entrypoint as filesystem. Catches obfuscated payloads in message bodies.
@@ -51,10 +79,9 @@ Concrete hooks (future, not implemented):
 
 ## Phasing
 
-- Phase A (now): this doc only. No code, no dependency.
-- Phase B: read-only sweep panel in ToolchainDoctor UI, subprocess call to `aw sweep --json`, no gating. Measure false-positive rate on real worktrees.
-- Phase C: mailbox sweep + posture diff. Baseline snapshot stored under `~/.eventhorizon/aw-ledger/`.
-- Phase D: opt-in line-manager gating with user approval UI. Behind config flag, default off.
-- Phase E: probe packs integration + OTLP ingest for agent spans.
+- Phase A (shipped): opt-in switch, read-only sweep API, UI panel with Approve / Clean / Detonate. Gating behind `lineManager` flag.
+- Phase B: mailbox sweep + posture diff. Baseline snapshot stored under `~/.eventhorizon/aw-ledger/`.
+- Phase C: probe packs integration + OTLP ingest for agent spans.
+- Phase D: line-manager enforcement in tool gate (block `edit`/`bash` until reviewed). Default off until Phase B metrics look good.
 
 GPU/CPU note: sweeps are filesystem-bound, stdlib Python, no GPU. Safe while CodeRed-418 trains on B70. Posture snapshots on Windows use PowerShell; on Linux use `/proc` backend.

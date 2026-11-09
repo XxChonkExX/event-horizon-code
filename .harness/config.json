@@ -43,6 +43,15 @@
     "maxConcurrent": 8,
     "worktreePerSession": true
   },
+  "agentwatch": {
+    "enabled": false,
+    "lineManager": false,
+    "ledgerDir": ".eventhorizon/aw-ledger",
+    "notes": [
+      "Opt-in deterministic line-manager. Default OFF. Operator review paramount. Deterministic guide, not a judge.",
+      "When off: no subprocess, no gating, no badge."
+    ]
+  },
   "detonate": {
     "enabled": true,
     "mode": "opt-in",
