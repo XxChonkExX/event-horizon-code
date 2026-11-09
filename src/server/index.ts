@@ -6,6 +6,7 @@ import { loadLanguagePacks, LspManager } from "./lsp";
 import { runToolchainDoctor } from "./toolchain";
 import { detectPackageManager } from "./packageManager";
 import { indexSymbols } from "./fallbackIndex";
+import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
 
 export async function startLocalServer(_opts: { port: number; password: string }) {
   const packs = loadLanguagePacks();
@@ -17,6 +18,7 @@ export async function startLocalServer(_opts: { port: number; password: string }
   };
 
   // Light startup only. No spawning. No network. Training-friendly.
+  // GPU policy (see docs/GPU.md): UI on 7900 XTX, B70 32GB reserved for CodeRed-418, 8GB free.
   if (process.env.EH_DEBUG === "1") {
     void runToolchainDoctor(packs).then((checks) => {
       const ok = checks.filter((c) => c.ok).length;
@@ -24,6 +26,8 @@ export async function startLocalServer(_opts: { port: number; password: string }
     });
     void detectPackageManager(process.cwd());
     void indexSymbols(process.cwd(), ".py");
+    void checkSandboxTools().then((tools) => console.log("[ehc] sandbox:", tools.map((t) => `${t.tool}:${t.ok ? "ok" : "miss"}`).join(", ")));
+    void readWorktreeConfig(process.cwd());
   }
 
   // TODO Phase 1: HTTP + SSE, Basic auth, SQLite (better-sqlite3 WAL),

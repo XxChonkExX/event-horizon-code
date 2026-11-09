@@ -1,0 +1,15 @@
+{
+  "id": "haskell",
+  "displayName": "Haskell",
+  "tier": 2,
+  "fileExtensions": [".hs", ".lhs"],
+  "toolchain": { "check": ["ghc --version", "cabal --version", "stack --version", "haskell-language-server-wrapper --version"] },
+  "lsp": { "command": ["haskell-language-server-wrapper"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["fourmolu", "--mode", "inplace"] },
+  "linter": { "command": ["hlint"] },
+  "commands": { "build": "cabal build", "test": "cabal test", "run": "cabal run" },
+  "treeSitter": { "grammar": "haskell" },
+  "engramPack": "haskell",
+  "skill": "haskell-tooling"
+}

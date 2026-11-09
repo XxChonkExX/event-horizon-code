@@ -1,0 +1,15 @@
+{
+  "id": "assembly",
+  "displayName": "Assembly (NASM/GAS/M68K)",
+  "tier": 2,
+  "fileExtensions": [".asm", ".s", ".S"],
+  "toolchain": { "check": ["nasm -v", "as --version", "asm-lsp --version"] },
+  "lsp": { "command": ["asm-lsp"] },
+  "dap": { "command": [] },
+  "formatter": { "command": [] },
+  "linter": { "command": ["nasm", "-f"] },
+  "commands": { "build": "nasm -f elf64 {file}", "test": "make test", "run": "make run" },
+  "treeSitter": { "grammar": "asm" },
+  "engramPack": "assembly",
+  "skill": "assembly-tooling"
+}

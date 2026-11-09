@@ -1,0 +1,15 @@
+{
+  "id": "ocaml",
+  "displayName": "OCaml / Reason",
+  "tier": 2,
+  "fileExtensions": [".ml", ".mli"],
+  "toolchain": { "check": ["ocaml -version", "ocamllsp --version", "opam --version"] },
+  "lsp": { "command": ["ocamllsp"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["ocamlformat", "-i"] },
+  "linter": { "command": ["dune", "build"] },
+  "commands": { "build": "dune build", "test": "dune runtest", "run": "dune exec ./app.exe" },
+  "treeSitter": { "grammar": "ocaml" },
+  "engramPack": "ocaml",
+  "skill": "ocaml-tooling"
+}

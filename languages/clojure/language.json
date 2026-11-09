@@ -1,0 +1,15 @@
+{
+  "id": "clojure",
+  "displayName": "Clojure",
+  "tier": 2,
+  "fileExtensions": [".clj", ".cljs", ".cljc", ".edn"],
+  "toolchain": { "check": ["clj --version", "clojure -version", "clojure-lsp --version"] },
+  "lsp": { "command": ["clojure-lsp"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["clj-kondo", "--lint", "-"] },
+  "linter": { "command": ["clj-kondo", "--lint"] },
+  "commands": { "build": "clj -M:build", "test": "clj -M:test", "run": "clj -M:run" },
+  "treeSitter": { "grammar": "clojure" },
+  "engramPack": "clojure",
+  "skill": "clojure-tooling"
+}

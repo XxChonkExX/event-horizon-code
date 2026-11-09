@@ -1,0 +1,15 @@
+{
+  "id": "scala",
+  "displayName": "Scala",
+  "tier": 2,
+  "fileExtensions": [".scala", ".sbt"],
+  "toolchain": { "check": ["scala -version", "sbt --version"] },
+  "lsp": { "command": ["metals"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["scalafmt"] },
+  "linter": { "command": ["sbt", "scalafix"] },
+  "commands": { "build": "sbt compile", "test": "sbt test", "run": "sbt run" },
+  "treeSitter": { "grammar": "scala" },
+  "engramPack": "scala",
+  "skill": "scala-tooling"
+}

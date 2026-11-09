@@ -1,0 +1,15 @@
+{
+  "id": "protobuf",
+  "displayName": "Protocol Buffers",
+  "tier": 2,
+  "fileExtensions": [".proto"],
+  "toolchain": { "check": ["buf --version", "protoc --version"] },
+  "lsp": { "command": ["buf", "beta", "lsp"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["buf", "format", "-w"] },
+  "linter": { "command": ["buf", "lint"] },
+  "commands": { "build": "buf build", "test": "buf test", "run": "buf generate" },
+  "treeSitter": { "grammar": "proto" },
+  "engramPack": "protobuf",
+  "skill": "protobuf-tooling"
+}

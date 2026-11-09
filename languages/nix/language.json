@@ -1,0 +1,15 @@
+{
+  "id": "nix",
+  "displayName": "Nix",
+  "tier": 2,
+  "fileExtensions": [".nix"],
+  "toolchain": { "check": ["nix --version"] },
+  "lsp": { "command": ["nixd"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["nixfmt"] },
+  "linter": { "command": ["statix"] },
+  "commands": { "build": "nix build", "test": "nix flake check", "run": "nix run" },
+  "treeSitter": { "grammar": "nix" },
+  "engramPack": "nix",
+  "skill": "nix-tooling"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "terraform",
+  "displayName": "Terraform / HCL",
+  "tier": 2,
+  "fileExtensions": [".tf", ".tfvars"],
+  "toolchain": { "check": ["terraform version", "terraform-ls --version"] },
+  "lsp": { "command": ["terraform-ls", "serve"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["terraform", "fmt"] },
+  "linter": { "command": ["tflint"] },
+  "commands": { "build": "terraform init", "test": "terraform validate", "run": "terraform plan" },
+  "treeSitter": { "grammar": "hcl" },
+  "engramPack": "terraform",
+  "skill": "terraform-tooling"
+}

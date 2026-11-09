@@ -2,45 +2,48 @@
 
 No runtime is bundled. Each pack is a JSON manifest that probes PATH and spawns LSP/DAP on demand. If a tool is missing the Toolchain Doctor reports it; the app never auto-installs at startup.
 
-## Tier 1 — shipped
+## Tier 1 — shipped (18 packs)
 
 | id | display | LSP | DAP | formatter | linter |
 |---|---|---|---|---|---|
-| python | Python | pyright | debugpy | ruff format | ruff check |
-| rust | Rust | rust-analyzer | lldb-dap | cargo fmt | cargo clippy |
-| go | Go | gopls | delve | gofmt | staticcheck |
-| js-ts | JavaScript/TypeScript | typescript-language-server | js-debug | prettier | eslint |
-| cpp | C/C++ | clangd | lldb | clang-format | clang-tidy |
-| csharp | C# / .NET / F# | csharp-ls | netcoredbg | dotnet format | dotnet build |
+| cpp | C / C++ | clangd | lldb-dap | clang-format -i | clang-tidy |
+| csharp | C# / .NET / F# | csharp-ls | netcoredbg | dotnet format | dotnet build --no-incremental |
+| dart | Dart / Flutter | dart language-server | dart debug | dart format | dart analyze |
+| go | Go | gopls | dlv | gofmt | staticcheck |
 | java | Java | jdtls | java-debug | google-java-format | checkstyle |
-| ruby | Ruby | ruby-lsp | rdbg | rubocop -a | rubocop |
-| php | PHP | intelephense | php-debug | php-cs-fixer | phpstan |
-| dart | Dart/Flutter | dart language-server | dart debug | dart format | dart analyze |
-| swift | Swift | sourcekit-lsp | lldb | swiftformat | swiftlint |
-| kotlin | Kotlin/Scala | kotlin-ls | kotlin-debug | ktlint | detekt |
+| js-ts | JavaScript / TypeScript | typescript-language-server --stdio | js-debug | prettier --write | eslint |
+| julia | Julia | julia --project -e using LanguageServer; LanguageServer.run() | - | julia -e using JuliaFormatter; format(.) | julia -e using Lint |
+| kotlin | Kotlin / Scala | kotlin-ls | kotlin-debug | ktlint --format | detekt |
 | lua | Lua | lua-language-server | local-lua-debugger | stylua | luacheck |
-| shell | Shell | bash-language-server | - | shfmt | shellcheck |
-| zig | Zig | zls | - | zig fmt | zig build check |
-| r | R/Julia/Nim | R language server | - | styler | lintr |
 | perl | Perl | perl-language-server | - | perltidy | perlcritic |
+| php | PHP | intelephense --stdio | php-debug | php-cs-fixer | phpstan |
+| python | Python | pyright | debugpy | ruff format | ruff check |
+| r | R / Julia / Nim | Rscript -e languageserver::run() | - | styler | lintr |
+| ruby | Ruby | ruby-lsp | rdbg | rubocop -a | rubocop |
+| rust | Rust | rust-analyzer | lldb-dap | cargo fmt | cargo clippy |
+| shell | Shell / Bash / Zsh | bash-language-server | - | shfmt -w | shellcheck |
+| swift | Swift | sourcekit-lsp | lldb | swiftformat | swiftlint |
+| zig | Zig | zls | - | zig fmt | zig build check |
 
-## Tier 2 — planned
+## Tier 2 — shipped (13 packs)
 
-| id | LSP |
-|---|---|
-| elixir | elixir-ls (covers Elixir, Erlang) |
-| haskell | haskell-language-server |
-| ocaml | ocamllsp |
-| clojure | clojure-lsp |
-| scala | metals |
-| nim | nimlsp |
-| assembly | asm-lsp (NASM/GAS/M68K) |
-| terraform | terraform-ls |
-| docker | docker-language-server |
-| nix | nixd |
-| graphql | graphql-lsp |
-| protobuf | buf |
-| sql | sqls |
+| id | display | LSP | DAP | formatter | linter |
+|---|---|---|---|---|---|
+| assembly | Assembly (NASM/GAS/M68K) | asm-lsp | - | - | nasm -f |
+| clojure | Clojure | clojure-lsp | - | clj-kondo --lint - | clj-kondo --lint |
+| docker | Dockerfile / Compose | docker-language-server | - | - | hadolint |
+| elixir | Elixir / Erlang / Haskell / OCaml | elixir-ls | - | mix format | mix credo |
+| graphql | GraphQL | graphql-lsp | - | prettier --write | eslint |
+| haskell | Haskell | haskell-language-server-wrapper | - | fourmolu --mode inplace | hlint |
+| nim | Nim | nimlsp | - | nimpretty | nim check |
+| nix | Nix | nixd | - | nixfmt | statix |
+| ocaml | OCaml / Reason | ocamllsp | - | ocamlformat -i | dune build |
+| protobuf | Protocol Buffers | buf beta lsp | - | buf format -w | buf lint |
+| scala | Scala | metals | - | scalafmt | sbt scalafix |
+| sql | SQL | sqls | - | sqlfluff format | sqlfluff lint |
+| terraform | Terraform / HCL | terraform-ls serve | - | terraform fmt | tflint |
+
+Total packs: 31
 
 ## Per-worktree isolation
 
@@ -48,20 +51,18 @@ Each window (1 task = 1 window = 1 git worktree) gets its own environment so lan
 
 ## Toolchain Doctor
 
-Checklist per pack:
-- `python3 --version`, `rustc --version`, `go version`, `node --version`, `clang --version`, `dotnet --list-sdks`, `java -version`, `ruby -v`, `php -v`, `dart --version`, `swift --version`, `zig version`
-- Honors rustup, pyenv, uv, nvm, mise, asdf, SDKMAN. Reports present/missing without installing.
+Checklist per pack comes from `languages/*/language.json` `toolchain.check`. Honors rustup, pyenv, uv, nvm, mise, asdf, SDKMAN. Reports present/missing without installing.
 
 ## Engram + Skills
 
-Each pack links to `engrams/packs/<id>/` (local pinned references indexed by AfterImage) and `skills/<skill>/SKILL.md` (progressive disclosure: metadata ~100 tokens at startup, full text on demand). Packs already seeded from `F:/llmtrainingpipeline/codetraining/`: C++ Standard Library, Python Standard Library by Example, HTML Standard, OWASP guides.
+Each pack links to `engrams/packs/<id>/` (local pinned references indexed by AfterImage) and `skills/<skill>/SKILL.md` (progressive disclosure: metadata ~100 tokens at startup, full text on demand).
 
 ## Security
 
 - No telemetry. No bundling of runtimes. No auto-update phone-home.
 - LSP/DAP run as local subprocesses over stdio JSON-RPC with env allowlists.
-- Tool output is treated as untrusted (injection risk). Human approval required for write/bash/network by default (see `.harness/config.json`).
+- Sandbox modes: host (default), docker, sbx microVM. See `docs/DOCKER.md`. Host Docker socket never shared.
 
 ## Source of truth
 
-Packs live in `languages/<id>/language.json`. This table is generated from those manifests in CI. Change the manifest, not this file.
+Packs live in `languages/<id>/language.json`. This file is generated by `node scripts/generate-languages.mjs`. Change the manifest, not this file.

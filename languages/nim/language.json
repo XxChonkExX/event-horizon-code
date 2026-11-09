@@ -1,0 +1,15 @@
+{
+  "id": "nim",
+  "displayName": "Nim",
+  "tier": 2,
+  "fileExtensions": [".nim"],
+  "toolchain": { "check": ["nim --version", "nimlsp --version"] },
+  "lsp": { "command": ["nimlsp"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["nimpretty"] },
+  "linter": { "command": ["nim", "check"] },
+  "commands": { "build": "nimble build", "test": "nimble test", "run": "nim c -r {file}" },
+  "treeSitter": { "grammar": "nim" },
+  "engramPack": "nim",
+  "skill": "nim-tooling"
+}

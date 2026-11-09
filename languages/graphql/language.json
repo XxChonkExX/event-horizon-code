@@ -1,0 +1,15 @@
+{
+  "id": "graphql",
+  "displayName": "GraphQL",
+  "tier": 2,
+  "fileExtensions": [".graphql", ".gql"],
+  "toolchain": { "check": ["graphql-lsp --version"] },
+  "lsp": { "command": ["graphql-lsp"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["prettier", "--write"] },
+  "linter": { "command": ["eslint"] },
+  "commands": { "build": "graphql-lsp server --method stream", "test": "graphql-lsp server", "run": "graphql-lsp server" },
+  "treeSitter": { "grammar": "graphql" },
+  "engramPack": "graphql",
+  "skill": "graphql-tooling"
+}

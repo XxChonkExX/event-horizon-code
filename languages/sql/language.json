@@ -1,0 +1,15 @@
+{
+  "id": "sql",
+  "displayName": "SQL",
+  "tier": 2,
+  "fileExtensions": [".sql"],
+  "toolchain": { "check": ["sqls --version", "sqlite3 --version", "psql --version"] },
+  "lsp": { "command": ["sqls"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["sqlfluff", "format"] },
+  "linter": { "command": ["sqlfluff", "lint"] },
+  "commands": { "build": "sqlite3 db.sqlite < schema.sql", "test": "sqlfluff lint", "run": "sqlite3 db.sqlite" },
+  "treeSitter": { "grammar": "sql" },
+  "engramPack": "sql",
+  "skill": "sql-tooling"
+}

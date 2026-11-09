@@ -1,0 +1,15 @@
+{
+  "id": "julia",
+  "displayName": "Julia",
+  "tier": 1,
+  "fileExtensions": [".jl"],
+  "toolchain": { "check": ["julia --version"] },
+  "lsp": { "command": ["julia", "--project", "-e", "using LanguageServer; LanguageServer.run()"] },
+  "dap": { "command": [] },
+  "formatter": { "command": ["julia", "-e", "using JuliaFormatter; format(.)"] },
+  "linter": { "command": ["julia", "-e", "using Lint"] },
+  "commands": { "build": "julia --project=. -e \"using Pkg; Pkg.instantiate()\"", "test": "julia --project=. -e \"using Pkg; Pkg.test()\"", "run": "julia {file}" },
+  "treeSitter": { "grammar": "julia" },
+  "engramPack": "julia",
+  "skill": "julia-tooling"
+}

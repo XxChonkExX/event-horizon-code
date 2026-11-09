@@ -1,0 +1,15 @@
+{
+  "id": "docker",
+  "displayName": "Dockerfile / Compose",
+  "tier": 2,
+  "fileExtensions": ["Dockerfile", ".dockerignore"],
+  "toolchain": { "check": ["docker --version", "docker compose version", "hadolint --version"] },
+  "lsp": { "command": ["docker-language-server"] },
+  "dap": { "command": [] },
+  "formatter": { "command": [] },
+  "linter": { "command": ["hadolint"] },
+  "commands": { "build": "docker build -t app .", "test": "docker run --rm app", "run": "docker compose up" },
+  "treeSitter": { "grammar": "dockerfile" },
+  "engramPack": "docker",
+  "skill": "docker-tooling"
+}

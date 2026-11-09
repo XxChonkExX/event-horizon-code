@@ -18,7 +18,8 @@
     "build": "electron-vite build",
     "pack": "electron-builder",
     "typecheck": "tsc --noEmit",
-    "engram:test": "python tests/test_store.py && python tests/test_rungs.py && python tests/test_library.py"
+    "engram:test": "python tests/test_store.py && python tests/test_rungs.py && python tests/test_library.py",
+    "languages:generate": "node scripts/generate-languages.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",
