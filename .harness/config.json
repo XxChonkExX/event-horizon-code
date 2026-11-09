@@ -42,5 +42,21 @@
   "windows": {
     "maxConcurrent": 8,
     "worktreePerSession": true
+  },
+  "detonate": {
+    "enabled": true,
+    "mode": "opt-in",
+    "policy": {
+      "timeoutMs": 30000,
+      "maxOutputBytes": 200000,
+      "allowNetwork": false,
+      "allowCredentials": false
+    },
+    "tiers": ["review", "execute", "redteam"],
+    "notes": [
+      "Detonation lane only. Clean worktrees never receive untrusted code.",
+      "BlackICE engram_vm pattern: pyvm, rv32, ti85, mathcheck, dataflow. Deterministic, no syscalls.",
+      "Model Gemma-4-12b-RedTeam-BlackICE is user-chosen at runtime if wanted (ChonkE/Gemma-4-12b-RedTeam-BlackICE on HF). Not shipped, not default."
+    ]
   }
 }

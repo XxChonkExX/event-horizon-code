@@ -7,6 +7,7 @@ import { runToolchainDoctor } from "./toolchain";
 import { detectPackageManager } from "./packageManager";
 import { indexSymbols } from "./fallbackIndex";
 import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
+import { isUnclean } from "./detonate";
 
 export async function startLocalServer(_opts: { port: number; password: string }) {
   const packs = loadLanguagePacks();
@@ -28,6 +29,7 @@ export async function startLocalServer(_opts: { port: number; password: string }
     void indexSymbols(process.cwd(), ".py");
     void checkSandboxTools().then((tools) => console.log("[ehc] sandbox:", tools.map((t) => `${t.tool}:${t.ok ? "ok" : "miss"}`).join(", ")));
     void readWorktreeConfig(process.cwd());
+    void isUnclean("test payload");
   }
 
   // TODO Phase 1: HTTP + SSE, Basic auth, SQLite (better-sqlite3 WAL),

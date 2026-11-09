@@ -1,13 +1,14 @@
 // Event Horizon Code — Sandbox manager
-// Modes: host (default), docker (plain container), sbx (microVM clone).
+// Modes: host (default clean), docker (plain container), sbx (microVM clone), detonate (unclean chamber).
 // Opt-in only. Disabled by default while CodeRed-418 trains on B70.
 // Never shares host Docker socket. Never bundles Docker Desktop.
+// Clean vs Unclean: clean worktrees never receive untrusted code. Unclean interactions route to detonate.
 
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-export type SandboxMode = "host" | "docker" | "sbx";
+export type SandboxMode = "host" | "docker" | "sbx" | "detonate";
 export type NetworkPolicy = "off" | "balanced" | "strict";
 export type SandboxConfig = {
   mode: SandboxMode;
