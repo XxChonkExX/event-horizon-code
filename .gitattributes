@@ -1,0 +1,14 @@
+# Byte discipline per AfterImage-Engram AGENTS.md
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+*.7z binary
+*.exe binary
+*.dmg binary

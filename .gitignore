@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+*.log
+.eventhorizon/
+engrams/index.db
+engrams/store/
+.git-commit-msg.txt
+.DS_Store
+.vscode/
