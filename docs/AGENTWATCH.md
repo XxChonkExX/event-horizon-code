@@ -80,8 +80,8 @@ Concrete hooks:
 ## Phasing
 
 - Phase A (shipped): opt-in switch, read-only sweep API, UI panel with Approve / Clean / Detonate. Gating behind `lineManager` flag.
-- Phase B: mailbox sweep + posture diff. Baseline snapshot stored under `~/.eventhorizon/aw-ledger/`.
+- Phase B (shipped): mailbox sweep + posture diff. Endpoints: `POST /api/agentwatch/mailbox`, `POST /api/agentwatch/posture/snapshot`, `POST /api/agentwatch/posture/diff`. Baseline stored under `~/.eventhorizon/aw-ledger/baseline.json`. Same gate rules as workspace (flag when off, block when `lineManager` on). Backend-locked diff; cross-backend refused.
 - Phase C: probe packs integration + OTLP ingest for agent spans.
-- Phase D: line-manager enforcement in tool gate (block `edit`/`bash` until reviewed). Default off until Phase B metrics look good.
+- Phase D: line-manager enforcement in tool gate (block `edit`/`bash` until reviewed). The gate computes now; enforcement in `tools.ts` is behind config flag. Default off until Phase B metrics look good.
 
 GPU/CPU note: sweeps are filesystem-bound, stdlib Python, no GPU. Safe while CodeRed-418 trains on B70. Posture snapshots on Windows use PowerShell; on Linux use `/proc` backend.

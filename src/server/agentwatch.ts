@@ -99,3 +99,78 @@ export function gateDecision(sweep: SweepResult): GateDecision {
   if (cfg.lineManager) return { allow: false, reason: `${bad.length} high/critical finding(s) — line-manager blocking until operator review`, findings: sweep.findings };
   return { allow: true, reason: `${bad.length} high/critical finding(s) — flagged for review, not blocking (lineManager off)`, findings: sweep.findings };
 }
+
+// Phase B: mailbox sweep (agent-to-agent email mirror) + runtime posture diff.
+// Opt-in only, same gate rules.
+
+export type MailboxSweepResult = SweepResult & { mailboxDir: string };
+export type PostureResult = { ok: boolean; enabled: boolean; backend: string; baseline: string; diff: string[] };
+
+export function sweepMailbox(mailboxDir?: string): Promise<MailboxSweepResult> {
+  const cfg = readAgentWatchConfig();
+  const dir = mailboxDir ?? path.join(process.cwd(), ".eventhorizon", "mail");
+  if (!cfg.enabled) {
+    return Promise.resolve({ ok: true, enabled: false, findings: [], coverage: "disabled (opt-in off)", limits: "", ledger: cfg.ledgerDir, mailboxDir: dir });
+  }
+  if (!fs.existsSync(dir)) {
+    return Promise.resolve({ ok: true, enabled: true, findings: [], coverage: "mailbox dir missing — stated blind spot", limits: dir, ledger: cfg.ledgerDir, mailboxDir: dir });
+  }
+  return new Promise((resolve) => {
+    execFile("aw", ["sweep", dir, "--ledger", cfg.ledgerDir, "--json"], { timeout: 15000, maxBuffer: 500000 }, (err, stdout) => {
+      if (err) {
+        resolve({ ok: false, enabled: true, findings: [], coverage: "scanner unavailable — blind spot stated", limits: String((err as Error).message).slice(0, 200), ledger: cfg.ledgerDir, mailboxDir: dir });
+        return;
+      }
+      try {
+        const parsed = JSON.parse(String(stdout)) as { findings?: SweepFinding[] };
+        resolve({ ok: true, enabled: true, findings: parsed.findings ?? [], coverage: "mailbox sweep", limits: "", ledger: cfg.ledgerDir, mailboxDir: dir });
+      } catch {
+        resolve({ ok: false, enabled: true, findings: [], coverage: "parse error", limits: "stdout not JSON", ledger: cfg.ledgerDir, mailboxDir: dir });
+      }
+    });
+  });
+}
+
+export function snapshotPosture(outPath?: string): Promise<PostureResult> {
+  const cfg = readAgentWatchConfig();
+  if (!cfg.enabled) {
+    return Promise.resolve({ ok: true, enabled: false, backend: "none", baseline: "", diff: [] });
+  }
+  const baseline = outPath ?? path.join(cfg.ledgerDir, "baseline.json");
+  fs.mkdirSync(path.dirname(baseline), { recursive: true });
+  return new Promise((resolve) => {
+    execFile("aw", ["snapshot", "--out", baseline], { timeout: 20000, maxBuffer: 500000 }, (err, stdout) => {
+      if (err) {
+        resolve({ ok: false, enabled: true, backend: "unavailable", baseline, diff: [String((err as Error).message).slice(0, 200)] });
+        return;
+      }
+      // Backend is recorded in the snapshot file itself; we report what the CLI printed.
+      resolve({ ok: true, enabled: true, backend: "agentwatch", baseline, diff: [String(stdout).slice(0, 200)] });
+    });
+  });
+}
+
+export function diffPosture(baselinePath?: string): Promise<PostureResult> {
+  const cfg = readAgentWatchConfig();
+  if (!cfg.enabled) {
+    return Promise.resolve({ ok: true, enabled: false, backend: "none", baseline: "", diff: [] });
+  }
+  const baseline = baselinePath ?? path.join(cfg.ledgerDir, "baseline.json");
+  if (!fs.existsSync(baseline)) {
+    return Promise.resolve({ ok: true, enabled: true, backend: "aw", baseline, diff: ["no baseline yet — run snapshot first (stated blind spot until then)"] });
+  }
+  return new Promise((resolve) => {
+    execFile("aw", ["posture", "--baseline", baseline, "--json"], { timeout: 20000, maxBuffer: 500000 }, (err, stdout) => {
+      if (err) {
+        resolve({ ok: false, enabled: true, backend: "aw", baseline, diff: [String((err as Error).message).slice(0, 200)] });
+        return;
+      }
+      let diff: string[] = [];
+      try {
+        const parsed = JSON.parse(String(stdout)) as { findings?: SweepFinding[] };
+        diff = (parsed.findings ?? []).map((f) => `${f.sev} ${f.rule} ${f.file}`);
+      } catch { diff = [String(stdout).slice(0, 500)]; }
+      resolve({ ok: true, enabled: true, backend: "aw", baseline, diff });
+    });
+  });
+}

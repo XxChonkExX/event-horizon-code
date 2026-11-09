@@ -11,7 +11,7 @@ import { indexSymbols } from "./fallbackIndex";
 import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
 import { isUnclean } from "./detonate";
 import { audit } from "./audit";
-import { sweepWorkspace, gateDecision, readAgentWatchConfig } from "./agentwatch";
+import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture } from "./agentwatch";
 import { subscribe, broadcast } from "./sse";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels } from "./router";
@@ -283,6 +283,41 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const body = JSON.parse(raw || "{}") as { tool?: ToolName; args?: Record<string, unknown>; worktree?: string };
           const result = await runTool(body.tool ?? "read", body.args ?? {}, body.worktree ?? process.cwd());
           sendJson(res, 200, result);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/mailbox") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { mailboxDir?: string };
+          const sweep = await sweepMailbox(body.mailboxDir);
+          const gate = gateDecision(sweep);
+          audit({ tool: "agentwatch.mailbox", note: `${sweep.findings.length} findings allow=${gate.allow}` });
+          sendJson(res, 200, { sweep, gate });
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/posture/snapshot") {
+      const r = await snapshotPosture();
+      audit({ tool: "agentwatch.posture.snapshot", note: r.baseline });
+      return sendJson(res, 200, r);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/posture/diff") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { baseline?: string };
+          const r = await diffPosture(body.baseline);
+          audit({ tool: "agentwatch.posture.diff", note: `${r.diff.length} diffs` });
+          sendJson(res, 200, r);
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;
