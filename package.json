@@ -19,7 +19,8 @@
     "pack": "electron-builder",
     "typecheck": "tsc --noEmit",
     "engram:test": "node scripts/check-engram.mjs",
-    "languages:generate": "node scripts/generate-languages.mjs"
+    "languages:generate": "node scripts/generate-languages.mjs",
+    "skills:generate": "node scripts/generate-skills.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",

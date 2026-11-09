@@ -77,10 +77,19 @@ export function runDetonate(plan: DetonatePolicy & { args: string[] }): Promise<
 }
 
 // Post-run quarantine check: ensure host worktree unchanged except approved outputs.
+// Real git status --porcelain comparison. Allowed paths are rel-paths that may change.
 export function quarantineCheck(hostWorktree: string, allowedRelPaths: string[] = []): { ok: boolean; changed: string[] } {
-  // Placeholder for git status diff. Caller implements git status --porcelain and compares.
-  void hostWorktree; void allowedRelPaths;
-  return { ok: true, changed: [] };
+  const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+  try {
+    const out = execFileSync("git", ["status", "--porcelain"], { cwd: hostWorktree, timeout: 5000, encoding: "utf8" }) as string;
+    const changed = out.split("\n").filter(Boolean).map((l) => l.slice(3).trim());
+    const allowed = new Set(allowedRelPaths);
+    const bad = changed.filter((f) => !allowed.has(f));
+    return { ok: bad.length === 0, changed: bad };
+  } catch {
+    // If git is unavailable, treat as quarantine failure — stated blind spot, operator must review.
+    return { ok: false, changed: ["git status unavailable"] };
+  }
 }
 
 export function worktreeConfigHasDetonate(worktree: string): boolean {

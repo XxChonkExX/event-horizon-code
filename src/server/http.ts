@@ -14,6 +14,7 @@ import { sweepWorkspace, gateDecision, readAgentWatchConfig } from "./agentwatch
 import { subscribe, broadcast } from "./sse";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels } from "./router";
+import { searchEngram, verifyArithmetic } from "./engram";
 import { listSessions, createSession, listTodos, addTodo } from "./store";
 
 export type ServerOpts = { port: number; password: string; host?: string };
@@ -180,6 +181,33 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const r = await addWorktree(body.repo ?? process.cwd(), body.id ?? `wt_${Date.now().toString(36)}`, body.branch ?? `ehc/${Date.now().toString(36)}`);
           audit({ tool: "worktree.add", note: r.path });
           broadcast(r.path, "worktree", { op: "add", path: r.path });
+          sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/engram/search") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { query?: string; topK?: number };
+          const r = await searchEngram(body.query ?? "", body.topK ?? 5);
+          audit({ tool: "engram.search", note: `${r.records.length}` });
+          sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/engram/verify") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { expr?: string };
+          const r = await verifyArithmetic(body.expr ?? "");
           sendJson(res, 200, r);
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });

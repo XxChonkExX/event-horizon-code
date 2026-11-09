@@ -7,6 +7,9 @@ import { createSignal } from "solid-js";
 import ToolchainDoctor from "./ToolchainDoctor";
 import SandboxControls from "./SandboxControls";
 import AgentWatchPanel from "./AgentWatchPanel";
+import FileTree from "./FileTree";
+import MonacoMount from "./MonacoMount";
+import Terminal from "./Terminal";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
 
@@ -26,10 +29,8 @@ export default function App() {
     <div class="workbench">
       <header>Event Horizon Code — session {session} — {activeFile()}</header>
       <section class="editor">
-        <div class="monaco-mount" data-file={activeFile()}>
-          Monaco mounts here. File: {activeFile()} (vscode Monaco, MIT).
-          Language pack resolves via languages/*/language.json.
-        </div>
+        <FileTree onSelect={(f) => setActiveFile(f)} />
+        <MonacoMount file={activeFile()} />
         <div class="panels">
           <ToolchainDoctor />
           <SandboxControls />
@@ -49,7 +50,9 @@ export default function App() {
         </div>
         <p>Detonation lane available. Unclean inputs route to detonate (microVM, no net).</p>
       </aside>
-      <footer class="terminal">Terminal mounts here (xterm). Per-worktree env.</footer>
+      <footer class="terminal">
+        <Terminal worktree={session} />
+      </footer>
     </div>
   );
 }
