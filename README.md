@@ -6,7 +6,7 @@ Combines the multi-window agent workflow of OpenCode Desktop with the editor pow
 
 Built for Mac, Windows, and Linux.
 
-## Models — no default shipped ⚠️
+## Models — no default shipped
 
 No model is bundled, pinned, or promoted by Event Horizon Code. The user chooses at runtime/serve time (Ollama, llama.cpp, BYOK API). Local dev smoke tests use a small Qwen (e.g. `qwen2.5-coder:1.5b`) only to keep overhead low.
 

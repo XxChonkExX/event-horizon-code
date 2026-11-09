@@ -8,8 +8,13 @@ import { detectPackageManager } from "./packageManager";
 import { indexSymbols } from "./fallbackIndex";
 import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
 import { isUnclean } from "./detonate";
+import { startHttpServer } from "./http";
+import { audit } from "./audit";
 
-export async function startLocalServer(_opts: { port: number; password: string }) {
+export async function startLocalServer(opts: { port: number; password: string }) {
+  // Start minimal HTTP (127.0.0.1, Basic auth). Light, training-friendly.
+  const httpServer = startHttpServer(opts);
+  audit({ tool: "server.start", note: `port ${opts.port}` });
   const packs = loadLanguagePacks();
   const lsp = new LspManager();
   // Wire diagnostics to SSE broadcast (stub: log in dev, SSE in prod)

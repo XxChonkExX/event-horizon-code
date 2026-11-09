@@ -12,6 +12,11 @@ Event Horizon Code is an original breakaway project. It does not fork microsoft/
 - Model Context Protocol (MCP) — https://modelcontextprotocol.io
 - Agent Client Protocol (ACP) — https://agentclientprotocol.com
 - Language Server Protocol (LSP) / Debug Adapter Protocol (DAP) — https://microsoft.github.io/language-server-protocol/
+- BlackICE engram_vm — MIT License, part of AfterImage-Engram. https://github.com/XxChonkExX/AfterImage-Engram — afterimage_router.py, ti85.py, mathcheck.py, rv32.py, pyvm.py, m6502.py, thumb2.py, dataflow.py pattern incorporated cleanly. Model `Gemma-4-12b-RedTeam-BlackICE` weights: Gemma Terms of Use, https://huggingface.co/ChonkE/Gemma-4-12b-RedTeam-BlackICE — user-chosen at runtime, not shipped.
+- Qwenputer compiled-computation concept — MIT License, https://github.com/divagr18/qwenputer
+- WhiteRabbitNeo cyber corpus — via PJMixers/WhiteRabbitNeo on Hugging Face. Attribution retained for any engram records derived from it.
+- Docker Sandbox / sbx — https://docs.docker.com/ai/sandboxes — microVM isolation, private Docker daemon, network policy, credential proxy pattern. Docs incorporated, no Docker code bundled.
+- Tree-sitter — MIT License. https://tree-sitter.github.io — grammars loaded on demand, cached locally.
 
 All trademarks remain property of their owners. "Visual Studio" is a trademark of Microsoft Corporation. This project is not affiliated with, endorsed by, or sponsored by Microsoft Corporation or the OpenCode team.
 
