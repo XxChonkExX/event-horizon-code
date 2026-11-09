@@ -10,7 +10,7 @@ Built for Mac, Windows, and Linux.
 
 No model is bundled, pinned, or promoted by Event Horizon Code. The user chooses at runtime/serve time (Ollama, llama.cpp, BYOK API). Local dev smoke tests use a small Qwen (e.g. `qwen2.5-coder:1.5b`) only to keep overhead low.
 
-Author note: CodeRed-418 is the author's local training. Dev and CI must stay light — no heavy GPU/CPU co-scheduling, no background scraping — while training runs. Revisit a CodeRed-418 preset only after it finishes cooking (~9 days from scaffold).
+Author note: multi-GPU box — Intel Arc Pro B70 32GB (CodeRed-418 training) + AMD 7900 XTX (primary render). Event Horizon pins UI to the 7900 XTX, keeps B70 headroom (8GB free), and kills session processes on close. Dev stays light while training runs. See `docs/GPU.md`. Revisit a CodeRed-418 preset only after it finishes cooking.
 
 ## Name
 

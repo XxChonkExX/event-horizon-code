@@ -6,8 +6,19 @@
     "modelChoice": "user-at-runtime",
     "notes": [
       "No model is shipped or pinned by default. User chooses at runtime/serve time.",
-      "CodeRed-418 is the author's local training target. Keep local smoke tests small (e.g. small Qwen) and do not co-schedule heavy GPU/CPU load during training.",
       "Local-only smoke test default for dev: ollama/qwen2.5-coder:1.5b (optional, not shipped). PRs must not add a bundled model."
+    ]
+  },
+  "gpu": {
+    "trainingCard": "Intel Arc Pro B70 32GB",
+    "primaryCard": "AMD Radeon RX 7900 XTX",
+    "policy": "mindful headroom, clean exit",
+    "rules": [
+      "Keep at least 8GB VRAM free on B70 while CodeRed-418 training runs. No training-context allocation from EHC.",
+      "EHC rendering (Electron/Chromium) pins to primaryCard (7900 XTX) unless user changes. B70 reserved for training.",
+      "No heavy GPU compute in dev/CI while training is active. Small Qwen smoke tests only, on primary card.",
+      "On window/session close, kill its LSP/DAP and child processes promptly. Never leave orphaned node/python/lldb.",
+      "Before any GPU/CPU heavy step (GGUF quant, image build, docker VM), check headroom and ask. Stop at the heavy spot."
     ]
   },
   "reasoning": {
