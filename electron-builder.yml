@@ -1,0 +1,30 @@
+appId: com.eventhorizon.code
+productName: Event Horizon Code
+directories:
+  output: dist
+files:
+  - out/**/*
+  - package.json
+  - engrams/**/*
+  - skills/**/*
+mac:
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  notarize: true
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+    - msi
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+linux:
+  target:
+    - AppImage
+    - deb
+    - rpm
+  category: Development;IDE;
+publish: null

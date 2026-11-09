@@ -1,0 +1,35 @@
+{
+  "name": "event-horizon-code",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Event Horizon Code — Desktop-first multi-window coding harness. Local models first. MIT.",
+  "license": "MIT",
+  "author": {
+    "name": "XxChonkExX",
+    "email": "hello@eventhorizoncode.local"
+  },
+  "homepage": "https://github.com/XxChonkExX/event-horizon-code",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/XxChonkExX/event-horizon-code.git"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "pack": "electron-builder",
+    "typecheck": "tsc --noEmit",
+    "engram:test": "python tests/test_store.py && python tests/test_rungs.py && python tests/test_library.py"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "monaco-editor": "^0.52.0",
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.0",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "modelRouter": {
+    "priority": ["ollama", "llamacpp", "openai-compatible", "anthropic", "gemini"],
+    "ollama": { "baseUrl": "http://127.0.0.1:11434" },
+    "defaultModel": null,
+    "modelChoice": "user-at-runtime",
+    "notes": [
+      "No model is shipped or pinned by default. User chooses at runtime/serve time.",
+      "CodeRed-418 is the author's local training target. Keep local smoke tests small (e.g. small Qwen) and do not co-schedule heavy GPU/CPU load during training.",
+      "Local-only smoke test default for dev: ollama/qwen2.5-coder:1.5b (optional, not shipped). PRs must not add a bundled model."
+    ]
+  },
+  "reasoning": {
+    "defaults": { "plan": "medium", "build": "high", "explore": "low", "review": "medium" },
+    "perMessage": "/think:low|medium|high|max",
+    "budgetForcing": true
+  },
+  "permissions": {
+    "read": "allow",
+    "edit": "ask",
+    "write": "ask",
+    "bash": "ask",
+    "network": "ask",
+    "lsp": "allow"
+  },
+  "engram": {
+    "packs": ["./engrams/packs/core", "./engrams/packs/codetraining"],
+    "typedAbsence": true,
+    "verifyArithmetic": true
+  },
+  "windows": {
+    "maxConcurrent": 8,
+    "worktreePerSession": true
+  }
+}
