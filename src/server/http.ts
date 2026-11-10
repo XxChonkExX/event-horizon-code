@@ -15,7 +15,8 @@ import { audit } from "./audit";
 import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture, runProbe, scoreProbe, startOtelReceiver, stopOtelReceiver, acknowledgeFindings, plantCanaries, checkCanaries, detectLoops } from "./agentwatch";
 import { subscribe, broadcast } from "./sse";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
-import { listModels, chat } from "./router";
+import { listModels, chat, chatOpenAI } from "./router";
+import type { ChatResult } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
 import { listSessions, createSession, listTodos, addTodo } from "./store";
 import { runTool } from "./tools";
@@ -50,6 +51,15 @@ function readConfigDefaultModel(): string | null {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { modelRouter?: { defaultModel?: string | null } };
     return cfg.modelRouter?.defaultModel ?? null;
+  } catch { return null; }
+}
+
+// BYOK secrets — .harness/secrets.json (gitignored). Shape:
+// { "openai": { "baseUrl": "https://opencode.ai/inference/openai/v1", "apiKey": "oc_..." } }
+function readSecret(provider: string): { baseUrl?: string; apiKey?: string } | null {
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "secrets.json"), "utf8")) as Record<string, { baseUrl?: string; apiKey?: string }>;
+    return s[provider] ?? null;
   } catch { return null; }
 }
 
@@ -259,19 +269,29 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
-            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; numPredict?: number; timeoutMs?: number; worktree?: string };
-            audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}` });
-            // Real model call when a model is named (user chooses at runtime — config default is null).
-            const model = params.model ?? readConfigDefaultModel();
-            if (model) {
-              const result = await chat(model, [{ role: "user", content: params.text ?? "" }], { think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
-              audit({ tool: "model.chat", note: `${model} tokens=${result.tokens ?? "?"} ok=${result.ok}` });
-              const reply = { reply: result.ok ? result.content : `model error: ${result.error}`, thinking: result.thinking, model, tokens: result.tokens, think: params.think ?? "medium" };
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string };
+            audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}` });
+            // BYOK lane: provider "openai" speaks OpenAI-compatible (OpenCode Console gateway, OpenAI, OpenRouter, vLLM).
+            let result: ChatResult | null = null;
+            const usedModel = params.model ?? readConfigDefaultModel() ?? "";
+            if (params.provider === "openai") {
+              const secret = readSecret("openai");
+              if (!secret?.apiKey || !secret.baseUrl) {
+                result = { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
+              } else {
+                result = await chatOpenAI(usedModel || "gpt-4o-mini", [{ role: "user", content: params.text ?? "" }], { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
+              }
+            } else if (usedModel) {
+              result = await chat(usedModel, [{ role: "user", content: params.text ?? "" }], { think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
+            }
+            if (result) {
+              audit({ tool: "model.chat", note: `${result.model} tokens=${result.tokens ?? "?"} ok=${result.ok}` });
+              const reply = { reply: result.ok ? result.content : `model error: ${result.error}`, thinking: result.thinking, model: result.model, tokens: result.tokens, think: params.think ?? "medium" };
               broadcast(params.worktree ?? process.cwd(), "session/update", reply);
               sendJson(res, 200, reply);
             } else {
               // No model selected — echo + honest hint (never a fake answer).
-              const reply = { reply: `echo: ${params.text ?? ""}`, think: params.think ?? "default", hint: "no model selected — pass params.model (see GET /api/models) or set modelRouter.defaultModel" };
+              const reply = { reply: `echo: ${params.text ?? ""}`, think: params.think ?? "default", hint: "no model selected - pass params.model (see GET /api/models) or set modelRouter.defaultModel" };
               broadcast(params.worktree ?? process.cwd(), "session/update", reply);
               sendJson(res, 200, reply);
             }

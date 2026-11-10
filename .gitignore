@@ -3,6 +3,7 @@ dist/
 out/
 *.log
 .eventhorizon/
+.harness/secrets.json
 engrams/index.db
 engrams/store/
 .git-commit-msg.txt

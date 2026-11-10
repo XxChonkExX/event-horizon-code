@@ -28,6 +28,47 @@ export async function listModels(ollamaUrl = "http://127.0.0.1:11434"): Promise<
   });
 }
 
+// OpenAI-compatible chat (BYOK): works with OpenAI, OpenCode Console gateway
+// (https://opencode.ai/inference/openai/v1), OpenRouter, vLLM, llama-server /v1, etc.
+// Key comes from .harness/secrets.json (gitignored) — never from git, never logged.
+export async function chatOpenAI(
+  model: string,
+  messages: ChatMessage[],
+  opts: { baseUrl: string; apiKey: string; think?: string; numPredict?: number; timeoutMs?: number }
+): Promise<ChatResult> {
+  const url = `${opts.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  const system = THINK_HINTS[opts.think ?? "medium"] ?? THINK_HINTS.medium;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "system", content: system }, ...messages],
+        max_tokens: opts.numPredict ?? 400,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
+    });
+    if (!res.ok) {
+      return { ok: false, content: "", model, error: `openai-compat ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    }
+    const j = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+      usage?: { completion_tokens?: number };
+    };
+    return {
+      ok: true,
+      content: j.choices?.[0]?.message?.content ?? "",
+      thinking: j.choices?.[0]?.message?.reasoning_content,
+      model,
+      tokens: j.usage?.completion_tokens,
+    };
+  } catch (e) {
+    return { ok: false, content: "", model, error: String(e).slice(0, 200) };
+  }
+}
+
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 export type ChatResult = { ok: boolean; content: string; thinking?: string; model: string; tokens?: number; error?: string };
 
