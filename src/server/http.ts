@@ -46,7 +46,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     const url = new URL(req.url ?? "/", "http://x");
 
     if (url.pathname === "/global/health") {
-      if (!checkAuth(req, opts.password)) return sendJson(res, 401, { healthy: false });
+      if (!checkAuth(req, opts.password)) {
+        return sendJson(res, 401, { healthy: false, reason: "unauthorized — Basic auth required (user: eventhorizon, password printed at boot or EH_PASS)" });
+      }
       return sendJson(res, 200, { healthy: true, version: "0.1.0" });
     }
 
@@ -416,6 +418,16 @@ export function startHttpServer(opts: ServerOpts): http.Server {
 
   server.listen(opts.port, host, () => {
     if (process.env.EH_DEBUG === "1") console.log(`[ehc] http listening on http://${host}:${opts.port}`);
+  });
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`[ehc] FATAL: port ${opts.port} already in use — a stale instance is likely holding it.`);
+      console.error(`[ehc] Find it:  Get-NetTCPConnection -LocalPort ${opts.port} -State Listen | Select-Object OwningProcess`);
+      console.error(`[ehc] Kill it:  Stop-Process -Id <pid>   (or pick another port: EH_PORT)`);
+    } else {
+      console.error(`[ehc] server error: ${err.message}`);
+    }
+    process.exit(1);
   });
   return server;
 }
