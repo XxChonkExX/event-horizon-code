@@ -2,6 +2,7 @@
   "name": "event-horizon-code",
   "private": true,
   "version": "0.1.0",
+  "main": "out/main/index.js",
   "description": "Event Horizon Code — Desktop-first multi-window coding harness. Local models first. MIT.",
   "license": "MIT",
   "engines": {
