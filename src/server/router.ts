@@ -29,7 +29,7 @@ export async function listModels(ollamaUrl = "http://127.0.0.1:11434"): Promise<
 }
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
-export type ChatResult = { ok: boolean; content: string; model: string; tokens?: number; error?: string };
+export type ChatResult = { ok: boolean; content: string; thinking?: string; model: string; tokens?: number; error?: string };
 
 const THINK_HINTS: Record<string, string> = {
   low: "Answer briefly and directly.",
@@ -65,8 +65,9 @@ export async function chat(
     if (!res.ok) {
       return { ok: false, content: "", model, error: `ollama ${res.status}: ${(await res.text()).slice(0, 200)}` };
     }
-    const j = (await res.json()) as { message?: { content?: string }; eval_count?: number };
-    return { ok: true, content: j.message?.content ?? "", model, tokens: j.eval_count };
+    // Reasoning models (gemma4, qwen3…) put chain-of-thought in message.thinking, answer in message.content.
+    const j = (await res.json()) as { message?: { content?: string; thinking?: string }; eval_count?: number };
+    return { ok: true, content: j.message?.content ?? "", thinking: j.message?.thinking, model, tokens: j.eval_count };
   } catch (e) {
     return { ok: false, content: "", model, error: String(e).slice(0, 200) };
   }

@@ -266,7 +266,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             if (model) {
               const result = await chat(model, [{ role: "user", content: params.text ?? "" }], { think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
               audit({ tool: "model.chat", note: `${model} tokens=${result.tokens ?? "?"} ok=${result.ok}` });
-              const reply = { reply: result.ok ? result.content : `model error: ${result.error}`, model, tokens: result.tokens, think: params.think ?? "medium" };
+              const reply = { reply: result.ok ? result.content : `model error: ${result.error}`, thinking: result.thinking, model, tokens: result.tokens, think: params.think ?? "medium" };
               broadcast(params.worktree ?? process.cwd(), "session/update", reply);
               sendJson(res, 200, reply);
             } else {
