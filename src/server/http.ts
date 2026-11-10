@@ -3,6 +3,7 @@
 
 import http from "node:http";
 import path from "node:path";
+import fs from "node:fs";
 import crypto from "node:crypto";
 import { loadLanguagePacks } from "./lsp";
 import { runToolchainDoctor } from "./toolchain";
@@ -14,7 +15,7 @@ import { audit } from "./audit";
 import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture, runProbe, scoreProbe, startOtelReceiver, stopOtelReceiver, acknowledgeFindings, plantCanaries, checkCanaries, detectLoops } from "./agentwatch";
 import { subscribe, broadcast } from "./sse";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
-import { listModels } from "./router";
+import { listModels, chat } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
 import { listSessions, createSession, listTodos, addTodo } from "./store";
 import { runTool } from "./tools";
@@ -29,8 +30,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown) {
   res.end(data);
 }
 
-function checkAuth(req: http.IncomingMessage, password: string, url?: URL): boolean {
-  // Header first (fetch), then ?auth= query (EventSource cannot send headers).
+function checkAuth(req: http.IncomingMessage, password: string, url?: URL): boolean {  // Header first (fetch), then ?auth= query (EventSource cannot send headers).
   const h = req.headers.authorization ?? "";
   if (h.startsWith("Basic ")) {
     try {
@@ -44,6 +44,13 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
     try { return q.length > 0 && crypto.timingSafeEqual(Buffer.from(q), Buffer.from(password)); } catch { return false; }
   }
   return false;
+}
+
+function readConfigDefaultModel(): string | null {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { modelRouter?: { defaultModel?: string | null } };
+    return cfg.modelRouter?.defaultModel ?? null;
+  } catch { return null; }
 }
 
 export function startHttpServer(opts: ServerOpts): http.Server {
@@ -252,12 +259,22 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
-            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; worktree?: string };
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; numPredict?: number; timeoutMs?: number; worktree?: string };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}` });
-            // Echo back and broadcast to windows (SSE)
-            const reply = { reply: `echo: ${params.text ?? ""}`, think: params.think ?? "default" };
-            broadcast(params.worktree ?? process.cwd(), "session/update", reply);
-            sendJson(res, 200, reply);
+            // Real model call when a model is named (user chooses at runtime — config default is null).
+            const model = params.model ?? readConfigDefaultModel();
+            if (model) {
+              const result = await chat(model, [{ role: "user", content: params.text ?? "" }], { think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
+              audit({ tool: "model.chat", note: `${model} tokens=${result.tokens ?? "?"} ok=${result.ok}` });
+              const reply = { reply: result.ok ? result.content : `model error: ${result.error}`, model, tokens: result.tokens, think: params.think ?? "medium" };
+              broadcast(params.worktree ?? process.cwd(), "session/update", reply);
+              sendJson(res, 200, reply);
+            } else {
+              // No model selected — echo + honest hint (never a fake answer).
+              const reply = { reply: `echo: ${params.text ?? ""}`, think: params.think ?? "default", hint: "no model selected — pass params.model (see GET /api/models) or set modelRouter.defaultModel" };
+              broadcast(params.worktree ?? process.cwd(), "session/update", reply);
+              sendJson(res, 200, reply);
+            }
           } else if (method === "fs/read_text_file") {
             const params = (body.params ?? {}) as { path?: string };
             const critical = isUnclean(path.basename(params.path ?? "") + " " + (params.path ?? ""));
