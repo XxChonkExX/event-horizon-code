@@ -174,3 +174,133 @@ export function diffPosture(baselinePath?: string): Promise<PostureResult> {
     });
   });
 }
+
+// ---- Phase C: probe packs + OTLP ingest ----
+
+export type ProbeResult = { ok: boolean; enabled: boolean; pack: string; output: string };
+
+// Probe packs measure disposition (agentic, workplace, guardrail-slip). Gates rank, human decides.
+export function runProbe(pack: string, targetUrl: string, model: string, arm = "a"): Promise<ProbeResult> {
+  const cfg = readAgentWatchConfig();
+  if (!cfg.enabled) return Promise.resolve({ ok: true, enabled: false, pack, output: "disabled (opt-in off)" });
+  return new Promise((resolve) => {
+    execFile("aw", ["probe", "run", pack, "--target-url", targetUrl, "--model", model, "--arm", arm], { timeout: 60000, maxBuffer: 1000000 }, (err, stdout, stderr) => {
+      resolve({ ok: !err, enabled: true, pack, output: ((stdout as string) || (stderr as string) || "").slice(0, 2000) });
+    });
+  });
+}
+
+export function scoreProbe(scoresFile: string, ref: string): Promise<ProbeResult> {
+  const cfg = readAgentWatchConfig();
+  if (!cfg.enabled) return Promise.resolve({ ok: true, enabled: false, pack: ref, output: "disabled (opt-in off)" });
+  return new Promise((resolve) => {
+    execFile("aw", ["probe", "score", scoresFile, "--ref", ref], { timeout: 30000, maxBuffer: 1000000 }, (err, stdout, stderr) => {
+      resolve({ ok: !err, enabled: true, pack: ref, output: ((stdout as string) || (stderr as string) || "").slice(0, 2000) });
+    });
+  });
+}
+
+// OTLP receiver: long-running subprocess on :4318. Started opt-in; stopped and killed on demand.
+let otelChild: ReturnType<typeof execFile> | null = null;
+
+export function startOtelReceiver(port = 4318): Promise<{ ok: boolean; note: string }> {
+  const cfg = readAgentWatchConfig();
+  if (!cfg.enabled) return Promise.resolve({ ok: false, note: "disabled (opt-in off)" });
+  if (otelChild) return Promise.resolve({ ok: true, note: `already running (pid ${otelChild.pid ?? "?"})` });
+  return new Promise((resolve) => {
+    const child = execFile("aw", ["otel", "serve", "--ledger", cfg.ledgerDir, "--port", String(port)], { maxBuffer: 200000 }, (err) => {
+      if (err && !String(err).includes("killed")) {
+        otelChild = null;
+        resolve({ ok: false, note: `otel receiver exited: ${String(err).slice(0, 160)}` });
+      }
+    });
+    otelChild = child;
+    resolve({ ok: true, note: `otel receiver starting on :${port} (pid ${child.pid ?? "?"}) — GenAI spans become ledger records` });
+  });
+}
+
+export function stopOtelReceiver(): { ok: boolean; note: string } {
+  if (!otelChild) return { ok: true, note: "not running" };
+  const pid = otelChild.pid;
+  try { otelChild.kill("SIGTERM"); } catch { /* ignore */ }
+  otelChild = null;
+  return { ok: true, note: `otel receiver stopped (pid ${pid ?? "?"})` };
+}
+
+// ---- Phase D: acknowledgment store (operator review clears the gate) ----
+
+type AckEntry = { rule: string; file: string; ts: string; action: "approve" | "clean" | "detonate" };
+
+function ackPath(): string {
+  const cfg = readAgentWatchConfig();
+  return path.join(cfg.ledgerDir, "acknowledged.json");
+}
+
+function loadAcks(): AckEntry[] {
+  try { return JSON.parse(fs.readFileSync(ackPath(), "utf8")) as AckEntry[]; } catch { return []; }
+}
+
+function saveAcks(entries: AckEntry[]) {
+  fs.mkdirSync(path.dirname(ackPath()), { recursive: true });
+  fs.writeFileSync(ackPath(), JSON.stringify(entries, null, 2));
+}
+
+export function acknowledgeFindings(entries: Array<{ rule: string; file: string }>, action: AckEntry["action"]): { ok: boolean; count: number } {
+  const acks = loadAcks();
+  for (const e of entries) {
+    acks.push({ rule: e.rule, file: e.file, ts: new Date().toISOString(), action });
+  }
+  saveAcks(acks);
+  return { ok: true, count: entries.length };
+}
+
+export function isAcknowledged(rule: string, file: string): boolean {
+  return loadAcks().some((a) => a.rule === rule && a.file === file);
+}
+
+// Gate v2: acknowledged high/critical findings no longer block. Un-acked still do (lineManager on).
+export function gateDecisionV2(sweep: SweepResult): GateDecision {
+  if (!sweep.enabled) return { allow: true, reason: "AgentWatch opt-in off", findings: [] };
+  if (!sweep.ok) return { allow: false, reason: "sweep failed — scanner blind spot — operator must review", findings: sweep.findings };
+  const bad = sweep.findings.filter((f) => (f.sev === "high" || f.sev === "critical") && !isAcknowledged(f.rule, f.file));
+  if (bad.length === 0) return { allow: true, reason: "clean or acknowledged — operator may proceed", findings: sweep.findings };
+  const cfg = readAgentWatchConfig();
+  if (cfg.lineManager) return { allow: false, reason: `${bad.length} unacknowledged high/critical finding(s) — line-manager blocking`, findings: sweep.findings };
+  return { allow: true, reason: `${bad.length} finding(s) — flagged for review, not blocking (lineManager off)`, findings: sweep.findings };
+}
+
+// ---- Close-out: canaries + loop detection ----
+
+export function plantCanaries(dir: string, count = 3): Promise<{ ok: boolean; note: string }> {
+  const cfg = readAgentWatchConfig();
+  if (!cfg.enabled) return Promise.resolve({ ok: false, note: "disabled (opt-in off)" });
+  return new Promise((resolve) => {
+    execFile("aw", ["canary", "plant", dir, "--count", String(count)], { timeout: 15000, maxBuffer: 200000 }, (err, stdout) => {
+      resolve({ ok: !err, note: ((stdout as string) || String(err?.message ?? "")).slice(0, 300) });
+    });
+  });
+}
+
+export function checkCanaries(dir: string, registry: string): Promise<{ ok: boolean; note: string }> {
+  const cfg = readAgentWatchConfig();
+  if (!cfg.enabled) return Promise.resolve({ ok: false, note: "disabled (opt-in off)" });
+  return new Promise((resolve) => {
+    execFile("aw", ["canary", "check", dir, "--registry", registry], { timeout: 15000, maxBuffer: 200000 }, (err, stdout) => {
+      resolve({ ok: !err, note: ((stdout as string) || String(err?.message ?? "")).slice(0, 300) });
+    });
+  });
+}
+
+export function detectLoops(): Promise<{ ok: boolean; loops: string[] }> {
+  const cfg = readAgentWatchConfig();
+  if (!cfg.enabled) return Promise.resolve({ ok: true, loops: [] });
+  return new Promise((resolve) => {
+    execFile("aw", ["ledger", "loops", cfg.ledgerDir, "--json"], { timeout: 15000, maxBuffer: 200000 }, (err, stdout) => {
+      if (err) return resolve({ ok: false, loops: [String(err.message).slice(0, 200)] });
+      try {
+        const parsed = JSON.parse(String(stdout)) as { loops?: string[] };
+        resolve({ ok: true, loops: parsed.loops ?? [] });
+      } catch { resolve({ ok: true, loops: [String(stdout).slice(0, 300)] }); }
+    });
+  });
+}

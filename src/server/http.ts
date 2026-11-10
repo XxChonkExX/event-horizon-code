@@ -11,7 +11,7 @@ import { indexSymbols } from "./fallbackIndex";
 import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
 import { isUnclean } from "./detonate";
 import { audit } from "./audit";
-import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture } from "./agentwatch";
+import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture, runProbe, scoreProbe, startOtelReceiver, stopOtelReceiver, acknowledgeFindings, plantCanaries, checkCanaries, detectLoops } from "./agentwatch";
 import { subscribe, broadcast } from "./sse";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels } from "./router";
@@ -321,6 +321,94 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/probe/run") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { pack?: string; targetUrl?: string; model?: string; arm?: string };
+          const r = await runProbe(body.pack ?? "agentic_v1", body.targetUrl ?? "http://127.0.0.1:8012", body.model ?? "local", body.arm ?? "a");
+          audit({ tool: "agentwatch.probe.run", note: r.pack });
+          sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/probe/score") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { scoresFile?: string; ref?: string };
+          const r = await scoreProbe(body.scoresFile ?? "a.jsonl", body.ref ?? "a");
+          audit({ tool: "agentwatch.probe.score", note: r.pack });
+          sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/otel/start") {
+      const r = await startOtelReceiver();
+      audit({ tool: "agentwatch.otel.start", note: r.note });
+      return sendJson(res, 200, r);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/otel/stop") {
+      const r = stopOtelReceiver();
+      audit({ tool: "agentwatch.otel.stop", note: r.note });
+      return sendJson(res, 200, r);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/acknowledge") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { entries?: Array<{ rule: string; file: string }>; action?: "approve" | "clean" | "detonate" };
+          const r = acknowledgeFindings(body.entries ?? [], body.action ?? "approve");
+          audit({ tool: "agentwatch.acknowledge", note: `${r.count} entries` });
+          sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/canary/plant") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { dir?: string; count?: number };
+          const r = await plantCanaries(body.dir ?? path.join(process.cwd(), ".eventhorizon", "vault"), body.count ?? 3);
+          audit({ tool: "agentwatch.canary.plant", note: r.note.slice(0, 80) });
+          sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agentwatch/canary/check") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { dir?: string; registry?: string };
+          const r = await checkCanaries(body.dir ?? path.join(process.cwd(), ".eventhorizon", "vault"), body.registry ?? path.join(process.cwd(), ".eventhorizon", "vault"));
+          audit({ tool: "agentwatch.canary.check", note: r.ok ? "checked" : "failed" });
+          sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/agentwatch/loops") {
+      const r = await detectLoops();
+      audit({ tool: "agentwatch.loops", note: `${r.loops.length}` });
+      return sendJson(res, 200, r);
     }
 
     return sendJson(res, 404, { error: "not found" });

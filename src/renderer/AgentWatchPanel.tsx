@@ -13,17 +13,29 @@ export default function AgentWatchPanel() {
   const [note, setNote] = createSignal("AgentWatch opt-in off. No subprocess. No gating.");
   const [busy, setBusy] = createSignal(false);
 
-  async function run(kind: "workspace" | "mailbox" | "snapshot" | "diff") {
-    if (!enabled()) { setNote("AgentWatch opt-in off. Enable to run a check."); return; }
+  async function run(kind: "workspace" | "mailbox" | "snapshot" | "diff" | "loops" | "otel-start" | "otel-stop") {
+    if (!enabled() && kind !== "otel-stop") { setNote("AgentWatch opt-in off. Enable to run a check."); return; }
     setBusy(true);
     try {
-      const path = kind === "mailbox" ? "/api/agentwatch/mailbox" : kind === "snapshot" ? "/api/agentwatch/posture/snapshot" : kind === "diff" ? "/api/agentwatch/posture/diff" : "/api/agentwatch/sweep";
-      const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const path = kind === "mailbox" ? "/api/agentwatch/mailbox"
+        : kind === "snapshot" ? "/api/agentwatch/posture/snapshot"
+        : kind === "diff" ? "/api/agentwatch/posture/diff"
+        : kind === "loops" ? "/api/agentwatch/loops"
+        : kind === "otel-start" ? "/api/agentwatch/otel/start"
+        : kind === "otel-stop" ? "/api/agentwatch/otel/stop"
+        : "/api/agentwatch/sweep";
+      const res = await fetch(path, { method: kind === "loops" ? "GET" : "POST", headers: { "content-type": "application/json" }, body: kind === "loops" ? undefined : "{}" });
       const data = (await res.json()) as unknown;
       if (kind === "snapshot" || kind === "diff") {
         const d = data as { ok: boolean; baseline?: string; diff?: string[] };
         setNote(d.ok ? (d.diff?.length ? `${d.diff.length} diff(s): ${d.diff[0]}` : "Posture ok. Baseline saved.") : "Posture failed — blind spot stated.");
         setFindings([]);
+      } else if (kind === "loops") {
+        const d = data as { loops?: string[] };
+        setNote(d.loops?.length ? `${d.loops.length} loop(s) suspected — human review` : "No stuck-agent loops detected.");
+        setFindings([]);
+      } else if (kind === "otel-start" || kind === "otel-stop") {
+        setNote((data as { note?: string }).note ?? "otel toggled");
       } else {
         const d = data as { sweep?: { ok: boolean; findings?: SweepFinding[]; coverage?: string }; gate?: { allow: boolean; reason?: string } };
         const f = d.sweep?.findings ?? [];
@@ -33,6 +45,16 @@ export default function AgentWatchPanel() {
       }
     } catch { setNote("Server not running."); }
     finally { setBusy(false); }
+  }
+
+  async function acknowledge(action: "approve" | "clean" | "detonate") {
+    const entries = findings().map((f) => ({ rule: f.rule, file: f.file }));
+    if (entries.length === 0) return;
+    try {
+      await fetch("/api/agentwatch/acknowledge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entries, action }) });
+      setNote(action === "detonate" ? `Routed to Detonate lane (microVM, no net). ${entries.length} finding(s) logged as detonate.` : `${action === "approve" ? "Approved" : "Marked Clean"} by operator. ${entries.length} finding(s) acknowledged. Gate cleared for acknowledged items.`);
+      setFindings([]);
+    } catch { setNote("Server not running — acknowledgment not saved."); }
   }
 
   return (
@@ -52,6 +74,9 @@ export default function AgentWatchPanel() {
         <button disabled={busy()} onClick={() => run("mailbox")}>Mailbox</button>
         <button disabled={busy()} onClick={() => run("snapshot")}>Posture snapshot</button>
         <button disabled={busy()} onClick={() => run("diff")}>Posture diff</button>
+        <button disabled={busy()} onClick={() => run("loops")}>Loop check</button>
+        <button disabled={busy()} onClick={() => run("otel-start")}>OTLP start</button>
+        <button disabled={busy()} onClick={() => run("otel-stop")}>OTLP stop</button>
       </div>
       <p>{note()}</p>
       <ul>
@@ -61,9 +86,9 @@ export default function AgentWatchPanel() {
       </ul>
       {findings().length > 0 ? (
         <div class="review-actions">
-          <button onClick={() => setNote("Approved by operator. Gate cleared. Logged.")}>Approve</button>
-          <button onClick={() => setNote("Marked Clean by operator. Logged.")}>Clean</button>
-          <button onClick={() => setNote("Routed to Detonate lane (microVM, no net).")}>Detonate</button>
+          <button onClick={() => acknowledge("approve")}>Approve</button>
+          <button onClick={() => acknowledge("clean")}>Clean</button>
+          <button onClick={() => acknowledge("detonate")}>Detonate</button>
         </div>
       ) : null}
     </div>

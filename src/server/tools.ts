@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
-import { readAgentWatchConfig, gateDecision, sweepWorkspace } from "./agentwatch";
+import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
 import { audit } from "./audit";
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob";
@@ -28,7 +28,7 @@ async function agentWatchGate(tool: ToolName, worktree: string) {
   const cfg = readAgentWatchConfig();
   if (!cfg.enabled || !cfg.lineManager) return { allow: true, reason: "" };
   const sweep = await sweepWorkspace(worktree);
-  const gate = gateDecision(sweep);
+  const gate = gateDecisionV2(sweep);
   return gate;
 }
 

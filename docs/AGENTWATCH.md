@@ -80,8 +80,11 @@ Concrete hooks:
 ## Phasing
 
 - Phase A (shipped): opt-in switch, read-only sweep API, UI panel with Approve / Clean / Detonate. Gating behind `lineManager` flag.
-- Phase B (shipped): mailbox sweep + posture diff. Endpoints: `POST /api/agentwatch/mailbox`, `POST /api/agentwatch/posture/snapshot`, `POST /api/agentwatch/posture/diff`. Baseline stored under `~/.eventhorizon/aw-ledger/baseline.json`. Same gate rules as workspace (flag when off, block when `lineManager` on). Backend-locked diff; cross-backend refused.
-- Phase C: probe packs integration + OTLP ingest for agent spans.
-- Phase D: line-manager enforcement in tool gate (block `edit`/`bash` until reviewed). The gate computes now; enforcement in `tools.ts` is behind config flag. Default off until Phase B metrics look good.
+- Phase B (shipped): mailbox sweep + posture diff. Endpoints: `POST /api/agentwatch/mailbox`, `POST /api/agentwatch/posture/snapshot`, `POST /api/agentwatch/posture/diff`. Baseline stored under ledger dir. Backend-locked diff.
+- Phase C (shipped): probe packs + OTLP ingest. `POST /api/agentwatch/probe/run` (`aw probe run <pack> --target-url --model --arm`), `POST /api/agentwatch/probe/score`. `POST /api/agentwatch/otel/start|stop` manages the long-running `aw otel serve` receiver on :4318 (GenAI spans become hash-chained ledger records; any OpenTelemetry-instrumented agent framework can export). Receiver subprocess is tracked and killed on stop — no orphans.
+- Phase D (shipped): real acknowledgment enforcement. `POST /api/agentwatch/acknowledge` persists Approve/Clean/Detonate decisions to `<ledgerDir>/acknowledged.json`. `gateDecisionV2` (used by `tools.ts` gate for edit/write/bash) no longer blocks acknowledged findings; unacknowledged high/critical still block when `lineManager: true`. Operator review is the mechanism, not a formality.
+- Close-out (shipped): canaries + loops. `POST /api/agentwatch/canary/plant|check` (HMAC-keyed bait in `.eventhorizon/vault`), `GET /api/agentwatch/loops` (`aw ledger loops` — AW-P007 stuck-agent detection surfaced for human review).
+
+Integration complete. Remaining upstream AgentWatch items (anchor signing with off-host key, caged ReAct swarm harness, Linux pid attribution) live in the AgentWatch repo, not here.
 
 GPU/CPU note: sweeps are filesystem-bound, stdlib Python, no GPU. Safe while CodeRed-418 trains on B70. Posture snapshots on Windows use PowerShell; on Linux use `/proc` backend.
