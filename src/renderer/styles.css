@@ -1,0 +1,168 @@
+/* Event Horizon Code — workbench theme
+   Deep-space dark, cyan event-horizon ring accent. Grid docked like OpenCode Desktop. */
+
+:root {
+  --bg: #131318;
+  --panel: #1b1b22;
+  --panel2: #22222b;
+  --border: #2d2d38;
+  --text: #d6d6de;
+  --dim: #8f8f9c;
+  --accent: #22d3ee;
+  --accent2: #7c6cff;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --bad: #f87171;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+#root { height: 100%; }
+
+.workbench {
+  display: grid;
+  height: 100vh;
+  grid-template-areas:
+    "header header header"
+    "editor editor chat"
+    "term   term   term";
+  grid-template-columns: 1fr 1fr 380px;
+  grid-template-rows: auto minmax(0, 1fr) 240px;
+}
+
+header {
+  grid-area: header;
+  padding: 8px 14px;
+  background: linear-gradient(90deg, var(--panel), var(--panel2));
+  border-bottom: 1px solid var(--accent2);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+header b { color: var(--accent); }
+
+/* ---- editor zone: file tree | monaco, panels docked below ---- */
+section.editor {
+  grid-area: editor;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+}
+section.editor > .file-tree {
+  grid-column: 1; grid-row: 1;
+  overflow: auto;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 10px;
+}
+section.editor > .monaco-shell {
+  grid-column: 2; grid-row: 1;
+  display: flex; flex-direction: column;
+  min-height: 0; min-width: 0;
+}
+section.editor > .panels {
+  grid-column: 1 / -1; grid-row: 2;
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 10px 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  max-height: 300px; overflow: auto;
+}
+section.editor > .panels > * { flex: 1 1 0; min-width: 0; }
+
+/* ---- monaco ---- */
+.monaco-toolbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 4px 10px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--border);
+  color: var(--dim);
+}
+.monaco-mount { flex: 1; min-height: 0; }
+
+/* ---- chat ---- */
+aside.chat {
+  grid-area: chat;
+  display: flex; flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  min-height: 0;
+}
+aside.chat h3 { margin: 10px 12px 4px; color: var(--accent2); }
+aside.chat ul {
+  flex: 1; overflow: auto; margin: 0; padding: 8px 12px;
+  list-style: none;
+}
+aside.chat li {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px; margin-bottom: 6px;
+  white-space: pre-wrap; word-break: break-word;
+}
+.composer { display: flex; gap: 6px; padding: 8px 12px; }
+.composer input {
+  flex: 1; min-width: 0;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; outline: none;
+}
+.composer input:focus { border-color: var(--accent); }
+aside.chat .model-row { display: flex; gap: 6px; padding: 0 12px 8px; color: var(--dim); align-items: center; }
+aside.chat .model-row select {
+  flex: 1; background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+}
+aside.chat > p { margin: 0; padding: 6px 12px 10px; color: var(--dim); font-size: 12px; }
+
+/* ---- terminal ---- */
+footer.terminal {
+  grid-area: term;
+  background: #0c0c0f;
+  border-top: 1px solid var(--border);
+  min-height: 0;
+}
+.terminal-body { height: 100%; padding: 4px 8px; }
+
+/* ---- panels & controls ---- */
+h3 { margin: 0 0 8px; font-size: 13px; color: var(--accent); }
+button {
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 11px; cursor: pointer; font-size: 12.5px;
+}
+button:hover { border-color: var(--accent); color: #fff; }
+button:disabled { opacity: 0.5; cursor: default; }
+button:hover:not(:disabled) { background: #262633; }
+
+label { display: block; margin: 4px 0; color: var(--text); }
+input[type="checkbox"] { accent-color: var(--accent); margin-right: 6px; }
+select {
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+}
+p { color: var(--dim); }
+ul { padding-left: 18px; }
+li { margin: 2px 0; }
+details { margin: 4px 0; }
+summary { cursor: pointer; color: var(--text); }
+pre {
+  background: #0c0c0f; border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px; overflow: auto; color: var(--ok); font-size: 12px;
+}
+.checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.review-actions { display: flex; gap: 6px; margin-top: 8px; }
+.review-actions button:first-child { border-color: var(--ok); }
+.review-actions button:last-child { border-color: var(--bad); }
+.toolchain-doctor, .sandbox-controls, .agentwatch-panel {
+  background: var(--panel2);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px;
+}
