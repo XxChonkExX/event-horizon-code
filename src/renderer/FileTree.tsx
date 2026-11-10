@@ -2,6 +2,7 @@
 // Fetches worktrees from local server. No filesystem via IPC.
 
 import { createSignal } from "solid-js";
+import { apiJson } from "./api";
 
 type WT = { id: string; path: string; branch: string };
 
@@ -11,8 +12,7 @@ export default function FileTree({ onSelect }: { onSelect: (file: string) => voi
 
   async function load() {
     try {
-      const res = await fetch("/api/worktrees");
-      const data = (await res.json()) as WT[];
+      const data = await apiJson<WT[]>("/api/worktrees");
       setItems(Array.isArray(data) ? data : []);
     } catch { setErr("Worktrees unavailable (server not running)."); }
   }

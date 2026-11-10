@@ -3,6 +3,7 @@
 // No LLM judge. Lane A deterministic. User is final arbiter. Phase B: mailbox + posture.
 
 import { createSignal } from "solid-js";
+import { apiFetch } from "./api";
 
 type SweepFinding = { rule: string; sev: string; file: string };
 
@@ -24,7 +25,7 @@ export default function AgentWatchPanel() {
         : kind === "otel-start" ? "/api/agentwatch/otel/start"
         : kind === "otel-stop" ? "/api/agentwatch/otel/stop"
         : "/api/agentwatch/sweep";
-      const res = await fetch(path, { method: kind === "loops" ? "GET" : "POST", headers: { "content-type": "application/json" }, body: kind === "loops" ? undefined : "{}" });
+      const res = await apiFetch(path, { method: kind === "loops" ? "GET" : "POST", headers: { "content-type": "application/json" }, body: kind === "loops" ? undefined : "{}" });
       const data = (await res.json()) as unknown;
       if (kind === "snapshot" || kind === "diff") {
         const d = data as { ok: boolean; baseline?: string; diff?: string[] };
@@ -51,7 +52,7 @@ export default function AgentWatchPanel() {
     const entries = findings().map((f) => ({ rule: f.rule, file: f.file }));
     if (entries.length === 0) return;
     try {
-      await fetch("/api/agentwatch/acknowledge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entries, action }) });
+      await apiFetch("/api/agentwatch/acknowledge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entries, action }) });
       setNote(action === "detonate" ? `Routed to Detonate lane (microVM, no net). ${entries.length} finding(s) logged as detonate.` : `${action === "approve" ? "Approved" : "Marked Clean"} by operator. ${entries.length} finding(s) acknowledged. Gate cleared for acknowledged items.`);
       setFindings([]);
     } catch { setNote("Server not running — acknowledgment not saved."); }

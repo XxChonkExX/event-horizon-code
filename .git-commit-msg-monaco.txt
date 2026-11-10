@@ -1,0 +1,19 @@
+Monaco + xterm real mounts, PTY terminal, preload auth bridge
+
+Renderer:
+- src/renderer/api.ts: runtime credentials over IPC preload bridge (never DOM/URL), apiFetch/apiJson with Basic auth, authQuery + baseUrl for EventSource
+- src/renderer/MonacoMount.tsx: real monaco-editor ESM with ts/json/css/html workers (vite ?worker), language inferred from extension (30+ exts), file content loaded via read tool, Save = operator approval for edit tool
+- src/renderer/Terminal.tsx: real @xterm/xterm + fit addon, PTY session per window, SSE stream with ?auth query (EventSource cannot send headers), input/resize/kill wired
+- FileTree/ToolchainDoctor/AgentWatchPanel/App: switched to authenticated apiFetch
+- vite-env.d.ts for ?worker types
+
+Server:
+- src/server/terminal.ts: @lydell/node-pty manager, lazy require (degrades to stated blind spot if native missing), tracked sessions, killAll on process exit — no orphans
+- src/server/http.ts: /api/terminal/{open,<id>/stream,<id>/input,<id>/resize,<id>/kill,status}; checkAuth accepts ?auth= query for EventSource paths
+- src/main/index.ts: preload path wired, runtime:info IPC (baseUrl+password to renderer over IPC only)
+- src/preload/index.ts: getRuntime bridge
+
+Deps: @xterm/xterm, @xterm/addon-fit, @lydell/node-pty (prebuilt, verified live: spawned powershell, echo captured, clean exit)
+
+Build: 599 modules, main 55.8kB, renderer 4.8MB + Monaco workers (ts.worker 12MB — lazy-load noted as later optimization)
+typecheck passes

@@ -2,6 +2,7 @@
 // Fetches /api/toolchain from local server. No filesystem via IPC.
 
 import { createSignal, onMount } from "solid-js";
+import { apiJson } from "./api";
 
 type ToolCheck = {
   lang: string;
@@ -18,8 +19,7 @@ export default function ToolchainDoctor() {
 
   onMount(async () => {
     try {
-      const res = await fetch("/api/toolchain");
-      const data = (await res.json()) as ToolCheck[];
+      const data = await apiJson<ToolCheck[]>("/api/toolchain");
       setChecks(data);
     } catch {
       setChecks([]);

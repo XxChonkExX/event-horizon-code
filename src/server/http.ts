@@ -19,6 +19,7 @@ import { searchEngram, verifyArithmetic } from "./engram";
 import { listSessions, createSession, listTodos, addTodo } from "./store";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
+import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
 
 export type ServerOpts = { port: number; password: string; host?: string };
 
@@ -28,14 +29,21 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown) {
   res.end(data);
 }
 
-function checkAuth(req: http.IncomingMessage, password: string): boolean {
+function checkAuth(req: http.IncomingMessage, password: string, url?: URL): boolean {
+  // Header first (fetch), then ?auth= query (EventSource cannot send headers).
   const h = req.headers.authorization ?? "";
-  if (!h.startsWith("Basic ")) return false;
-  const [, b64] = h.split(" ");
-  try {
-    const [user, pass] = Buffer.from(b64, "base64").toString("utf8").split(":");
-    return user === "eventhorizon" && crypto.timingSafeEqual(Buffer.from(pass), Buffer.from(password));
-  } catch { return false; }
+  if (h.startsWith("Basic ")) {
+    try {
+      const [, b64] = h.split(" ");
+      const [user, pass] = Buffer.from(b64, "base64").toString("utf8").split(":");
+      return user === "eventhorizon" && crypto.timingSafeEqual(Buffer.from(pass), Buffer.from(password));
+    } catch { return false; }
+  }
+  if (url) {
+    const q = url.searchParams.get("auth") ?? "";
+    try { return q.length > 0 && crypto.timingSafeEqual(Buffer.from(q), Buffer.from(password)); } catch { return false; }
+  }
+  return false;
 }
 
 export function startHttpServer(opts: ServerOpts): http.Server {
@@ -46,13 +54,13 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     const url = new URL(req.url ?? "/", "http://x");
 
     if (url.pathname === "/global/health") {
-      if (!checkAuth(req, opts.password)) {
+      if (!checkAuth(req, opts.password, url)) {
         return sendJson(res, 401, { healthy: false, reason: "unauthorized — Basic auth required (user: eventhorizon, password printed at boot or EH_PASS)" });
       }
       return sendJson(res, 200, { healthy: true, version: "0.1.0" });
     }
 
-    if (!checkAuth(req, opts.password)) return sendJson(res, 401, { error: "unauthorized" });
+    if (!checkAuth(req, opts.password, url)) return sendJson(res, 401, { error: "unauthorized" });
 
     if (req.method === "GET" && url.pathname === "/api/toolchain") {
       const checks = await runToolchainDoctor(packs);
@@ -411,6 +419,53 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       const r = await detectLoops();
       audit({ tool: "agentwatch.loops", note: `${r.loops.length}` });
       return sendJson(res, 200, r);
+    }
+
+    // PTY terminal: open, stream (SSE), input, resize, kill
+    if (url.pathname.startsWith("/api/terminal/")) {
+      if (req.method === "POST" && url.pathname === "/api/terminal/open") {
+        let raw = "";
+        req.on("data", (c) => { raw += c; });
+        req.on("end", () => {
+          try {
+            const body = JSON.parse(raw || "{}") as { worktree?: string };
+            const r = openTerminal(body.worktree ?? process.cwd());
+            sendJson(res, r.ok ? 200 : 503, r);
+          } catch { sendJson(res, 400, { error: "bad request" }); }
+        });
+        return;
+      }
+      const parts = url.pathname.split("/").filter(Boolean); // api terminal <id> <action>
+      if (parts.length >= 4) {
+        const id = parts[2];
+        const action = parts[3];
+        if (req.method === "GET" && action === "stream") {
+          const s = getTerminal(id);
+          if (!s) return sendJson(res, 404, { error: "no such terminal" });
+          res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+          const onData = (d: string) => { try { res.write(`data: ${JSON.stringify(d)}\n\n`); } catch { /* client gone */ } };
+          s.pty.onData(onData);
+          s.pty.onExit(() => { try { res.write("event: exit\ndata: {}\n\n"); res.end(); } catch { /* closed */ } });
+          const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { /* closed */ } }, 25000);
+          res.on("close", () => clearInterval(ping));
+          return;
+        }
+        let raw = "";
+        req.on("data", (c) => { raw += c; });
+        req.on("end", () => {
+          try {
+            const body = JSON.parse(raw || "{}") as { data?: string; cols?: number; rows?: number };
+            if (action === "input") { sendJson(res, terminalInput(id, String(body.data ?? "")) ? 200 : 404, { ok: true }); return; }
+            if (action === "resize") { sendJson(res, terminalResize(id, Number(body.cols ?? 80), Number(body.rows ?? 24)) ? 200 : 404, { ok: true }); return; }
+            if (action === "kill") { sendJson(res, killTerminal(id) ? 200 : 404, { ok: true }); return; }
+            sendJson(res, 404, { error: "not found" });
+          } catch { sendJson(res, 400, { error: "bad request" }); }
+        });
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/api/terminal/status") {
+        return sendJson(res, 200, { ptyAvailable: ptyAvailable() });
+      }
     }
 
     return sendJson(res, 404, { error: "not found" });

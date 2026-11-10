@@ -4,6 +4,7 @@
 // bottom terminal + toolchain doctor + sandbox controls + agentwatch (opt-in). No filesystem via IPC.
 
 import { createSignal } from "solid-js";
+import { apiFetch } from "./api";
 import ToolchainDoctor from "./ToolchainDoctor";
 import SandboxControls from "./SandboxControls";
 import AgentWatchPanel from "./AgentWatchPanel";
@@ -27,7 +28,7 @@ export default function App() {
     const thinkMatch = text.match(/\/think:(low|medium|high|max)/i);
     const think = thinkMatch ? thinkMatch[1].toLowerCase() : "default";
     try {
-      await fetch("/api/acp/session/prompt", {
+      await apiFetch("/api/acp/session/prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ params: { sessionId: session, text, think, worktree: session } })
