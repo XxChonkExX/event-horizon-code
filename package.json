@@ -23,7 +23,9 @@
     "typecheck": "tsc --noEmit",
     "engram:test": "node scripts/check-engram.mjs",
     "languages:generate": "node scripts/generate-languages.mjs",
-    "skills:generate": "node scripts/generate-skills.mjs"
+    "skills:generate": "node scripts/generate-skills.mjs",
+    "runtime:init": "node scripts/runtime-init.mjs",
+    "serve": "tsx scripts/serve.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
@@ -35,6 +37,7 @@
     "electron": "^42.0.0",
     "electron-builder": "^26.0.0",
     "electron-vite": "^5.0.0",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.0",
     "vite": "^7.0.0"
   }
