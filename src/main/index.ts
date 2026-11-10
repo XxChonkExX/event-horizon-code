@@ -29,7 +29,13 @@ app.whenReady().then(async () => {
       }
     });
     windows.set(sessionId, win);
-    void win.loadFile(path.join(__dirname, "../renderer/index.html"), { query: { session: sessionId } });
+    // Dev: electron-vite serves the renderer live (HMR). Prod: load the built file.
+    const devUrl = process.env.ELECTRON_RENDERER_URL;
+    if (devUrl) {
+      void win.loadURL(`${devUrl}/?session=${encodeURIComponent(sessionId)}`);
+    } else {
+      void win.loadFile(path.join(__dirname, "../renderer/index.html"), { query: { session: sessionId } });
+    }
   }
   openWindow("default");
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) openWindow("default"); });
