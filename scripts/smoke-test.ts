@@ -38,7 +38,10 @@ function killTree(pid: number | undefined) {
 async function main() {
   console.log("[smoke] starting headless server on", PORT);
   const tsxCli = path.join("node_modules", "tsx", "dist", "cli.mjs");
-  const child = spawn(process.execPath, [tsxCli, "scripts/serve.ts"], {
+  const runner = path.join("scripts", "run-electron-node.mjs");
+  // Electron's embedded Node (ELECTRON_RUN_AS_NODE): same ABI as the GUI, so
+  // better-sqlite3 + node-pty load in headless too.
+  const child = spawn(process.execPath, [runner, tsxCli, "scripts/serve.ts"], {
     env: { ...process.env, EH_PORT: String(PORT), EH_PASS: PASS },
     stdio: ["ignore", "pipe", "pipe"],
   });

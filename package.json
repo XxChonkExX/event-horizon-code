@@ -32,7 +32,8 @@
     "languages:generate": "node scripts/generate-languages.mjs",
     "skills:generate": "node scripts/generate-skills.mjs",
     "runtime:init": "node scripts/runtime-init.mjs",
-    "serve": "tsx scripts/serve.ts",
+    "serve": "node scripts/run-electron-node.mjs node_modules/tsx/dist/cli.mjs scripts/serve.ts",
+    "serve:node": "tsx scripts/serve.ts",
     "postinstall": "electron-builder install-app-deps || true",
     "rebuild": "electron-rebuild -f -w better-sqlite3,@lydell/node-pty"
   },
