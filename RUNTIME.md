@@ -2,6 +2,16 @@
 
 Everything runs local. No telemetry. No cloud proxy.
 
+## Native modules
+
+After `npm install` or after changing Node / Electron versions:
+
+```bash
+npm run rebuild
+```
+
+This rebuilds `better-sqlite3` and `@lydell/node-pty` against the current Electron version. If you only use the headless server and hit native module issues, the store falls back to in-memory mode automatically (`store=memory` in the audit log tells you which).
+
 ## One-time setup
 
 ```bash

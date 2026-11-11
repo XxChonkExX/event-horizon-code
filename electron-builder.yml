@@ -2,11 +2,37 @@ appId: com.eventhorizon.code
 productName: Event Horizon Code
 directories:
   output: dist
+  buildResources: build
+
 files:
   - out/**/*
   - package.json
+  - languages/**/*
   - engrams/**/*
   - skills/**/*
+  - "!**/*.{ts,tsx,map}"
+  - "!src"
+  - "!scripts"
+  - "!docs"
+  - "!**/.git*"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+  - "!**/node_modules/*.d.ts"
+  - "!**/node_modules/.bin"
+
+asar: true
+# Native bindings must live outside the asar archive or Node cannot load them.
+asarUnpack:
+  - "**/*.node"
+  - "**/*.dll"
+
+# Bundled inference engine (chonkllama.cpp chonk-buffer + VulkanVM Chonk Buffer).
+# Populated at packaging time from pinned chonkllama release binaries (SHA-verified).
+extraResources:
+  - from: resources/engine
+    to: engine
+    filter: ["**/*"]
+
 mac:
   category: public.app-category.developer-tools
   hardenedRuntime: true
@@ -16,15 +42,18 @@ mac:
   target:
     - dmg
     - zip
+
 win:
   target:
     - nsis
     - msi
   artifactName: "${productName}-${version}-${arch}.${ext}"
+
 linux:
   target:
     - AppImage
     - deb
     - rpm
   category: Development;IDE;
+
 publish: null
