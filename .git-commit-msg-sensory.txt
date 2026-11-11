@@ -1,0 +1,9 @@
+Sensory architecture (S1): vision plumbing + capability detection
+
+- docs/SENSORY.md: body plan — brain/arms/eyes/ears/mouth/skin mapped to stacks, ladder, phases S1-S3, licensing
+- src/server/router.ts: ChatMessage.images[] (data URLs or base64); toOpenAIMessages() builds image_url content parts; ollama chat strips data: prefix to raw base64 for images[]; both lanes vision-ready
+- src/server/engine.ts: sensoryDetect() — checks mtmd.dll (eyes), whisper-server (ears), piper (mouth) next to the engine binary; stated notes, never silent
+- src/server/http.ts: GET /api/engine/sensory (audited); session/prompt accepts params.images[], routed per provider
+- NOTICE.md: whisper.cpp + piper planned-bundle rows
+- Key insight: mtmd.dll + llama-mtmd-cli.exe already ship in the bundled chonkllama build — the eyes are already compiled; vision = load a VLM GGUF + mmproj, send content parts
+- typecheck passes

@@ -129,3 +129,30 @@ export function engineHealth(): Promise<{ running: boolean; healthy: boolean; en
 }
 
 process.on("exit", () => { if (proc) { try { proc.kill(); } catch { /* ignore */ } } });
+
+// ---- Sensory capability detection (S1): eyes/ears/mouth presence as stated facts ----
+
+export type Sensory = {
+  eyes: boolean;      // mtmd.dll next to the engine binary — vision capable
+  ears: boolean;      // whisper-server.exe (planned sidecar)
+  mouth: boolean;     // piper.exe / kokoro (planned sidecar)
+  notes: string[];
+};
+
+export function sensoryDetect(): Sensory {
+  const cfg = readEngineConfig();
+  const dir = path.dirname(cfg.binaryPath);
+  const notes: string[] = [];
+  let eyes = false, ears = false, mouth = false;
+  try {
+    eyes = fs.existsSync(path.join(dir, "mtmd.dll")) || fs.existsSync(path.join(dir, "mtmd.so"));
+    ears = fs.existsSync(path.join(dir, "whisper-server.exe")) || fs.existsSync(path.join(dir, "whisper-server"));
+    mouth = fs.existsSync(path.join(dir, "piper.exe")) || fs.existsSync(path.join(dir, "piper"));
+    if (!eyes) notes.push("mtmd.dll not found next to engine — vision models will reject images");
+    if (!ears) notes.push("whisper sidecar not bundled yet (Phase S2) — STT via BYOK or nothing");
+    if (!mouth) notes.push("tts sidecar not bundled yet (Phase S2) — speech replies via BYOK or nothing");
+  } catch {
+    notes.push("engine dir unreadable — sensory detection failed");
+  }
+  return { eyes, ears, mouth, notes };
+}

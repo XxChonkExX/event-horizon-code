@@ -31,6 +31,23 @@ export async function listModels(ollamaUrl = "http://127.0.0.1:11434"): Promise<
 // OpenAI-compatible chat (BYOK): works with OpenAI, OpenCode Console gateway
 // (https://opencode.ai/inference/openai/v1), OpenRouter, vLLM, llama-server /v1, etc.
 // Key comes from .harness/secrets.json (gitignored) — never from git, never logged.
+// Convert our message shape to OpenAI content parts when images are present (vision, S1).
+function toOpenAIMessages(messages: ChatMessage[], system: string) {
+  const out: Array<Record<string, unknown>> = [{ role: "system", content: system }];
+  for (const m of messages) {
+    if (m.images && m.images.length > 0) {
+      const parts: Array<Record<string, unknown>> = [{ type: "text", text: m.content }];
+      for (const img of m.images) {
+        parts.push({ type: "image_url", image_url: { url: img.startsWith("data:") ? img : "data:image/png;base64," + img } });
+      }
+      out.push({ role: m.role, content: parts });
+    } else {
+      out.push({ role: m.role, content: m.content });
+    }
+  }
+  return out;
+}
+
 export async function chatOpenAI(
   model: string,
   messages: ChatMessage[],
@@ -44,7 +61,7 @@ export async function chatOpenAI(
       headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
       body: JSON.stringify({
         model,
-        messages: [{ role: "system", content: system }, ...messages],
+        messages: toOpenAIMessages(messages, system),
         max_tokens: opts.numPredict ?? 400,
         stream: false,
       }),
@@ -69,7 +86,13 @@ export async function chatOpenAI(
   }
 }
 
-export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+export type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  // Vision (S1): image data URLs or local paths — converted per provider.
+  // Ollama: images[] (base64). OpenAI-compatible: content parts with image_url.
+  images?: string[];
+};
 export type ChatResult = { ok: boolean; content: string; thinking?: string; model: string; tokens?: number; error?: string };
 
 const THINK_HINTS: Record<string, string> = {
@@ -91,7 +114,7 @@ export async function chat(
   const system = THINK_HINTS[think] ?? THINK_HINTS.medium;
   const body = {
     model,
-    messages: [{ role: "system", content: system }, ...messages],
+    messages: [{ role: "system", content: system }, ...messages.map((m) => ({ ...m, images: m.images?.map((i) => (i.startsWith("data:") ? i.slice(i.indexOf(",") + 1) : i)) }))],
     stream: false,
     keep_alive: opts?.keepAlive ?? 0,
     options: { num_predict: opts?.numPredict ?? 256 },

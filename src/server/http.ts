@@ -22,7 +22,7 @@ import { listSessions, createSession, listTodos, addTodo } from "./store";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
-import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint } from "./engine";
+import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect } from "./engine";
 
 export type ServerOpts = { port: number; password: string; host?: string };
 
@@ -270,20 +270,21 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
-            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string };
-            audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}` });
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[] };
+            audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img` });
             // BYOK lane: provider "openai" speaks OpenAI-compatible (OpenCode Console gateway, OpenAI, OpenRouter, vLLM).
             let result: ChatResult | null = null;
             const usedModel = params.model ?? readConfigDefaultModel() ?? "";
+            const userMsg = { role: "user" as const, content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
             if (params.provider === "openai") {
               const secret = readSecret("openai");
               if (!secret?.apiKey || !secret.baseUrl) {
                 result = { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
               } else {
-                result = await chatOpenAI(usedModel || "gpt-4o-mini", [{ role: "user", content: params.text ?? "" }], { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
+                result = await chatOpenAI(usedModel || "gpt-4o-mini", [userMsg], { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
               }
             } else if (usedModel) {
-              result = await chat(usedModel, [{ role: "user", content: params.text ?? "" }], { think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
+              result = await chat(usedModel, [userMsg], { think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
             }
             if (result) {
               audit({ tool: "model.chat", note: `${result.model} tokens=${result.tokens ?? "?"} ok=${result.ok}` });
@@ -531,6 +532,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       const r = stopEngine();
       audit({ tool: "engine.stop", note: r.note });
       return sendJson(res, 200, r);
+    }
+    if (req.method === "GET" && url.pathname === "/api/engine/sensory") {
+      const s = sensoryDetect();
+      audit({ tool: "engine.sensory", note: `eyes=${s.eyes} ears=${s.ears} mouth=${s.mouth}` });
+      return sendJson(res, 200, s);
     }
 
     return sendJson(res, 404, { error: "not found" });
