@@ -109,8 +109,6 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
     // pipe buffer will eventually block — never leave it unread.
     const logDir = path.join(require("node:os").homedir(), ".eventhorizon");
     fs.mkdirSync(logDir, { recursive: true });
-    const logPath = path.join(logDir, `engine-${child.pid ?? "x"}.log`);
-    const logStream = fs.createWriteStream(logPath, { flags: "a" });
     const child = spawn(cfg.binaryPath, [
       "-m", model,
       "--host", "127.0.0.1",
@@ -127,6 +125,8 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const logPath = path.join(logDir, `engine-${child.pid ?? "x"}.log`);
+    const logStream = fs.createWriteStream(logPath, { flags: "a" });
     child.stdout?.pipe(logStream);
     child.stderr?.pipe(logStream);
     proc = child;
