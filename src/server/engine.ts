@@ -92,11 +92,24 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
   const pool = ov?.pool ?? cfg.gpu.pool;
   const deviceIndex = ov?.deviceIndex !== undefined ? ov.deviceIndex : cfg.gpu.deviceIndex;
   return new Promise((resolve) => {
+    // Port-conflict guard: a stale llama-server holding the port makes the new
+    // one die with EADDRINUSE while the old one keeps answering. Refuse loudly.
+    let portBusy = false;
+    if (process.platform === "win32") {
+      try {
+        const { execFileSync } = require("node:child_process");
+        const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", `if (Get-NetTCPConnection -LocalPort ${cfg.port} -State Listen -ErrorAction SilentlyContinue) { 'busy' } else { 'free' }`], { timeout: 8000, encoding: "utf8" });
+        portBusy = String(out).trim() === "busy";
+      } catch { portBusy = false; }
+    }
+    if (portBusy) {
+      return resolve({ ok: false, note: `port ${cfg.port} already in use - stale engine holding it. Kill it (Get-Process llama-server) or change engine.port.` });
+    }
     // Child stdout/stderr -> log file. A long-running server with an undrained
     // pipe buffer will eventually block — never leave it unread.
     const logDir = path.join(require("node:os").homedir(), ".eventhorizon");
     fs.mkdirSync(logDir, { recursive: true });
-    const logPath = path.join(logDir, "engine.log");
+    const logPath = path.join(logDir, `engine-${child.pid ?? "x"}.log`);
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
     const child = spawn(cfg.binaryPath, [
       "-m", model,
