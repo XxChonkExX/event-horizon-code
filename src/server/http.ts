@@ -24,6 +24,7 @@ import type { ToolName } from "./tools";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
 import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect } from "./engine";
 
+
 export type ServerOpts = { port: number; password: string; host?: string };
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown) {
@@ -272,10 +273,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           } else if (method === "session/prompt") {
             const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[] };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img` });
-            // BYOK lane: provider "openai" speaks OpenAI-compatible (OpenCode Console gateway, OpenAI, OpenRouter, vLLM).
+            // Ladder: explicit provider wins -> running bundled engine -> Ollama -> echo.
             let result: ChatResult | null = null;
             const usedModel = params.model ?? readConfigDefaultModel() ?? "";
             const userMsg = { role: "user" as const, content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
+            const engineUp = engineEndpoint();
             if (params.provider === "openai") {
               const secret = readSecret("openai");
               if (!secret?.apiKey || !secret.baseUrl) {
@@ -283,6 +285,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               } else {
                 result = await chatOpenAI(usedModel || "gpt-4o-mini", [userMsg], { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
               }
+            } else if (engineUp) {
+              // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
+              result = await chatOpenAI(usedModel || "engine", [userMsg], { baseUrl: engineUp, apiKey: "local", think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
             } else if (usedModel) {
               result = await chat(usedModel, [userMsg], { think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
             }
