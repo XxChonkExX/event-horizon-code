@@ -128,11 +128,11 @@ export function stopEngine(): { ok: boolean; note: string } {
 export function engineHealth(): Promise<{ running: boolean; healthy: boolean; endpoint: string | null; uptimeMs: number }> {
   const endpoint = engineEndpoint();
   if (!endpoint) return Promise.resolve({ running: engineRunning(), healthy: false, endpoint: null, uptimeMs: engineRunning() ? Date.now() - startedAt : 0 });
-  return new Promise((resolve) => {
-    execFile("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", `${endpoint.replace("/v1", "")}/health`], { timeout: 4000 }, (err, stdout) => {
-      resolve({ running: true, healthy: !err && String(stdout).trim() === "200", endpoint, uptimeMs: Date.now() - startedAt });
-    });
-  });
+  // Node fetch, not execFile curl — PATH resolution without .exe fails on Windows.
+  const base = endpoint.replace(/\/v1$/, "");
+  return fetch(`${base}/health`, { signal: AbortSignal.timeout(4000) })
+    .then((r) => ({ running: true, healthy: r.ok, endpoint, uptimeMs: Date.now() - startedAt }))
+    .catch(() => ({ running: true, healthy: false, endpoint, uptimeMs: Date.now() - startedAt }));
 }
 
 process.on("exit", () => { if (proc) { try { proc.kill(); } catch { /* ignore */ } } });
