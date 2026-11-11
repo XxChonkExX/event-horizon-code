@@ -525,8 +525,8 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       req.on("data", (c) => { raw += c; });
       req.on("end", async () => {
         try {
-          const b = JSON.parse(raw || "{}") as { ggufPath?: string };
-          const r = await startEngine(b.ggufPath);
+          const b = JSON.parse(raw || "{}") as { ggufPath?: string; heapFraction?: number; deviceIndex?: number | null; pool?: boolean; extraArgs?: string[] };
+          const r = await startEngine(b.ggufPath, { heapFraction: b.heapFraction, deviceIndex: b.deviceIndex, pool: b.pool, extraArgs: b.extraArgs });
           audit({ tool: "engine.start", note: r.note.slice(0, 120) });
           sendJson(res, r.ok ? 200 : 400, r);
         } catch { sendJson(res, 400, { error: "bad request" }); }

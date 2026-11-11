@@ -70,7 +70,14 @@ export function engineEndpoint(): string | null {
   return `http://127.0.0.1:${readEngineConfig().port}/v1`;
 }
 
-export function startEngine(ggufPath?: string): Promise<{ ok: boolean; note: string }> {
+export type EngineOverrides = {
+  heapFraction?: number;
+  deviceIndex?: number | null; // null = pool spans all devices (multi-GPU)
+  pool?: boolean;
+  extraArgs?: string[];
+};
+
+export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ ok: boolean; note: string }> {
   const cfg = readEngineConfig();
   if (cfg.kind === "none") return Promise.resolve({ ok: false, note: "engine disabled in config (kind: none)" });
   if (engineRunning()) return Promise.resolve({ ok: true, note: `already running (pid ${proc?.pid}) on ${engineEndpoint()}` });
@@ -81,6 +88,9 @@ export function startEngine(ggufPath?: string): Promise<{ ok: boolean; note: str
   if (!model || !fs.existsSync(model)) {
     return Promise.resolve({ ok: false, note: "no GGUF selected — pass a model path from GET /api/engine/models" });
   }
+  const heapFraction = ov?.heapFraction ?? cfg.gpu.heapFraction;
+  const pool = ov?.pool ?? cfg.gpu.pool;
+  const deviceIndex = ov?.deviceIndex !== undefined ? ov.deviceIndex : cfg.gpu.deviceIndex;
   return new Promise((resolve) => {
     // Child stdout/stderr -> log file. A long-running server with an undrained
     // pipe buffer will eventually block — never leave it unread.
@@ -93,12 +103,14 @@ export function startEngine(ggufPath?: string): Promise<{ ok: boolean; note: str
       "--host", "127.0.0.1",
       "--port", String(cfg.port),
       "-ngl", "99",
+      ...(ov?.extraArgs ?? []),
     ], {
       env: {
         ...process.env,
-        GGML_VK_VVM_POOL: cfg.gpu.pool ? "1" : "0",
-        GGML_VVM_HEAP_FRACTION: String(cfg.gpu.heapFraction),
-        VVM_DEVICE_INDEX: String(cfg.gpu.deviceIndex),
+        GGML_VK_VVM_POOL: pool ? "1" : "0",
+        GGML_VVM_HEAP_FRACTION: String(heapFraction),
+        // deviceIndex null => omit the pin so the Chonk pool spans every device.
+        ...(deviceIndex !== null && deviceIndex !== undefined ? { VVM_DEVICE_INDEX: String(deviceIndex) } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
