@@ -22,6 +22,7 @@ import { listSessions, createSession, listTodos, addTodo } from "./store";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
+import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint } from "./engine";
 
 export type ServerOpts = { port: number; password: string; host?: string };
 
@@ -503,6 +504,33 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       if (req.method === "GET" && url.pathname === "/api/terminal/status") {
         return sendJson(res, 200, { ptyAvailable: ptyAvailable() });
       }
+    }
+
+    // Bundled engine (chonkllama.cpp sidecar): status, model scan, start/stop
+    if (req.method === "GET" && url.pathname === "/api/engine/status") {
+      return sendJson(res, 200, { config: readEngineConfig(), ...(await engineHealth()) });
+    }
+    if (req.method === "GET" && url.pathname === "/api/engine/models") {
+      const cfg = readEngineConfig();
+      return sendJson(res, 200, scanGgufDirs(cfg.ggufDirs));
+    }
+    if (req.method === "POST" && url.pathname === "/api/engine/start") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { ggufPath?: string };
+          const r = await startEngine(b.ggufPath);
+          audit({ tool: "engine.start", note: r.note.slice(0, 120) });
+          sendJson(res, r.ok ? 200 : 400, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/engine/stop") {
+      const r = stopEngine();
+      audit({ tool: "engine.stop", note: r.note });
+      return sendJson(res, 200, r);
     }
 
     return sendJson(res, 404, { error: "not found" });

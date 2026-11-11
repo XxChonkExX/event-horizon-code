@@ -13,6 +13,8 @@ Event Horizon Code is an original breakaway project. It does not fork microsoft/
 - Agent Client Protocol (ACP) — https://agentclientprotocol.com
 - Language Server Protocol (LSP) / Debug Adapter Protocol (DAP) — https://microsoft.github.io/language-server-protocol/
 - AgentWatch — MIT License, https://github.com/XxChonkExX/AgentWatch — deterministic local monitoring, hash-chained ledger, workspace/mail sweeper. Opt-in integration, user is final arbiter.
+- chonkllama.cpp — MIT License, fork of llama.cpp (ggml-org/llama.cpp, MIT). https://github.com/XxChonkExX/chonkllama.cpp — bundled inference engine (chonk-buffer branch), pinned release binaries.
+- VulkanVM / Chonk Buffer — MIT License, Copyright (c) Mike/ChonkE. https://github.com/XxChonkExX/Vulkan-VM — cross-vendor GPU memory pool and transport. Runtime libraries bundled at packaging time; network transport off by default per its threat model.
 - BlackICE engram_vm — MIT License, part of AfterImage-Engram. https://github.com/XxChonkExX/AfterImage-Engram — afterimage_router.py, ti85.py, mathcheck.py, rv32.py, pyvm.py, m6502.py, thumb2.py, dataflow.py pattern incorporated cleanly. Model `Gemma-4-12b-RedTeam-BlackICE` weights: Gemma Terms of Use, https://huggingface.co/ChonkE/Gemma-4-12b-RedTeam-BlackICE — user-chosen at runtime, not shipped.
 - Qwenputer compiled-computation concept — MIT License, https://github.com/divagr18/qwenputer
 - WhiteRabbitNeo cyber corpus — via PJMixers/WhiteRabbitNeo on Hugging Face. Attribution retained for any engram records derived from it.

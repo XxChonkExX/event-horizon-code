@@ -43,6 +43,19 @@
     "maxConcurrent": 8,
     "worktreePerSession": true
   },
+  "engine": {
+    "kind": "bundled",
+    "binaryPath": "C:/Users/mikeh/Documents/New OpenCode Project/chonkllama.cpp/build-vk/bin/Release/llama-server.exe",
+    "port": 8901,
+    "ggufDirs": ["F:/llmtrainingpipeline", "G:/New folder"],
+    "gpu": { "deviceIndex": 0, "heapFraction": 0.6, "pool": true },
+    "notes": [
+      "Bundled chonkllama.cpp (chonk-buffer branch) sidecar — OpenAI-compatible /v1.",
+      "ggufDirs are scanned for local models; nothing is downloaded without the user asking.",
+      "gpu.policy per docs/GPU.md: deviceIndex pins a card, heapFraction caps the Chonk pool, pool=1 enables cross-vendor Chonk Buffer.",
+      "Installers will ship resources/engine/ with pinned chonkllama release binaries (verified by SHA)."
+    ]
+  },
   "agentwatch": {
     "enabled": false,
     "lineManager": false,
