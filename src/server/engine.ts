@@ -82,12 +82,17 @@ export function startEngine(ggufPath?: string): Promise<{ ok: boolean; note: str
     return Promise.resolve({ ok: false, note: "no GGUF selected — pass a model path from GET /api/engine/models" });
   }
   return new Promise((resolve) => {
+    // Child stdout/stderr -> log file. A long-running server with an undrained
+    // pipe buffer will eventually block — never leave it unread.
+    const logDir = path.join(require("node:os").homedir(), ".eventhorizon");
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = path.join(logDir, "engine.log");
+    const logStream = fs.createWriteStream(logPath, { flags: "a" });
     const child = spawn(cfg.binaryPath, [
       "-m", model,
       "--host", "127.0.0.1",
       "--port", String(cfg.port),
       "-ngl", "99",
-      ...(cfg.gpu.pool ? [] : []),
     ], {
       env: {
         ...process.env,
@@ -97,12 +102,14 @@ export function startEngine(ggufPath?: string): Promise<{ ok: boolean; note: str
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    child.stdout?.pipe(logStream);
+    child.stderr?.pipe(logStream);
     proc = child;
     startedAt = Date.now();
-    const note = `engine starting (pid ${child.pid}) on http://127.0.0.1:${cfg.port} — model ${path.basename(model)}`;
+    const note = `engine starting (pid ${child.pid}) on http://127.0.0.1:${cfg.port} — model ${path.basename(model)} — log ${logPath}`;
     child.on("exit", (code) => {
       proc = null;
-      // Stated outcome, never silent: engine exits get audited by caller via status.
+      logStream.end();
       void code;
     });
     // Wait briefly for the HTTP listener; health checked by caller.
