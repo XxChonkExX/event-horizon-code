@@ -13,7 +13,7 @@ Event Horizon as an organism. Every part is local-first, opt-in, and follows the
 | **Mouth** | Piper or Kokoro (onnx, small, CPU) | local CLI/HTTP sidecar | 📋 Phase S2 |
 | **Skin/proprioception** | AgentWatch runtime posture (ports, processes, drivers) | `aw posture` | ✅ Phase B wired |
 
-## Eyes — vision (S1)
+## Eyes — vision (S1) — **VERIFIED LIVE 2026-11-11**
 
 The bundled engine already contains `mtmd.dll` + `llama-mtmd-cli.exe`. Vision flow:
 
@@ -21,6 +21,8 @@ The bundled engine already contains `mtmd.dll` + `llama-mtmd-cli.exe`. Vision fl
 2. `llama-server` serves `/v1/chat/completions` with OpenAI content parts: `{type:"text"}`, `{type:"image_url", image_url:{url:"data:image/png;base64,..."}}`.
 3. Router `chatOpenAI()` already accepts content parts (wired with the router's images support).
 4. Agent tools gain: `screenshot` (capture window/screen to data URL), `paste-image` in chat composer, `read_image <path>` (server-side base64).
+
+**Live verification (this machine):** treatment-Q8_0.gguf (Gemma-4-12b fine-tune) + `mmproj-gemma-4-12B-it-Q8_0.gguf` (159MB, ggml-org) via `--mmproj`. Server: `loaded multimodal model`. Test: 256x256 PNG, cyan "42" on black, drawn with System.Drawing, sent as data-URL content part. Model read it: *"the number '42' in a bright blue font against a black background... the answer is '42'"*, finish=stop, 10.5 t/s with vision. The mmproj pairs with **any Gemma-4-12b-derived GGUF** (Glitter Boy, Red Team line — one `--mmproj` flag each).
 
 Use cases: read error dialogs, review UI screenshots, parse architecture diagrams, verify visual output of frontend work. The agent gets eyes on the thing it built.
 
