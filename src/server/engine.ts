@@ -75,6 +75,7 @@ export type EngineOverrides = {
   deviceIndex?: number | null; // null = pool spans all devices (multi-GPU)
   pool?: boolean;
   extraArgs?: string[];
+  mmprojPath?: string; // vision encoder (mtmd) — pairs with VLM GGUFs
 };
 
 export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ ok: boolean; note: string }> {
@@ -114,6 +115,7 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
       "--host", "127.0.0.1",
       "--port", String(cfg.port),
       "-ngl", "99",
+      ...(ov?.mmprojPath ? ["--mmproj", ov.mmprojPath] : []),
       ...(ov?.extraArgs ?? []),
     ], {
       env: {
