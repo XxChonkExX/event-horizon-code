@@ -98,17 +98,24 @@ section.main-area {
   background: rgba(20, 20, 26, 0.9);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
+  scrollbar-width: thin;
 }
 .ehc-tab {
   display: flex; align-items: center; gap: 8px;
+  min-width: 150px; max-width: 260px;
   padding: 7px 12px;
   background: transparent; color: var(--dim);
   border-right: 1px solid var(--border);
   cursor: pointer; white-space: nowrap; font-size: 12.5px;
+  flex: 0 0 auto;
 }
 .ehc-tab:hover { color: var(--text); }
 .ehc-tab-on { background: var(--panel); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
-.ehc-tab-close { opacity: 0.5; padding: 0 2px; border-radius: 4px; }
+.ehc-tab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.ehc-tab-close {
+  opacity: 0.55; padding: 2px 7px; border-radius: 4px;
+  font-size: 14px; line-height: 1; min-width: 22px; text-align: center;
+}
 .ehc-tab-close:hover { opacity: 1; background: var(--panel2); }
 section.main-area .ehc-editor-shell {
   flex: 1; display: flex; flex-direction: column;

@@ -11,6 +11,7 @@ declare global {
       getRuntime: () => Promise<RuntimeInfo>;
       pickFolder: () => Promise<string | null>;
       popoutWindow: (kind: string, sessionId: string) => Promise<number>;
+      growWindow: (targetWidth: number) => Promise<boolean>;
     };
   }
 }
@@ -58,5 +59,12 @@ export async function pickFolder(): Promise<string | null> {
 export async function popoutWindow(kind: string, sessionId: string): Promise<void> {
   if (typeof window !== "undefined" && window.eventhorizon?.popoutWindow) {
     await window.eventhorizon.popoutWindow(kind, sessionId);
+  }
+}
+
+// Grow the OS window (never shrink) when content needs room — clamped to work area.
+export async function growWindow(targetWidth: number): Promise<void> {
+  if (typeof window !== "undefined" && window.eventhorizon?.growWindow) {
+    await window.eventhorizon.growWindow(targetWidth);
   }
 }

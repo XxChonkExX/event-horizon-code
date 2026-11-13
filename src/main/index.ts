@@ -2,7 +2,7 @@
 // Owns: windows, menus, single-instance lock, localhost server bootstrap
 // Non-negotiable: no domain logic here. Sessions/tools/engrams live in server.
 
-import { app, BrowserWindow, Menu, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, Menu, ipcMain, dialog, screen } from "electron";
 import path from "node:path";
 import crypto from "node:crypto";
 import { startLocalServer } from "../server/index";
@@ -38,6 +38,21 @@ app.whenReady().then(async () => {
     if (devUrl) void win.loadURL(`${devUrl}/?${query}`);
     else void win.loadFile(path.join(__dirname, "../renderer/index.html"), { search: query });
     return win.id;
+  });
+  // Widen the window when content needs room (e.g. editor tabs opened).
+  // Grow-only, clamped to the display work area; shifts left if it would overflow.
+  ipcMain.handle("window:grow", (e, targetW: number) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return false;
+    const display = screen.getDisplayNearestPoint(win.getBounds());
+    const wa = display.workArea;
+    const target = Math.min(Math.round(targetW), wa.width);
+    const b = win.getBounds();
+    if (b.width >= target) return false;
+    let x = b.x;
+    if (b.x + target > wa.x + wa.width) x = Math.max(wa.x, wa.x + wa.width - target);
+    win.setBounds({ x, y: b.y, width: target, height: b.height });
+    return true;
   });
   Menu.setApplicationMenu(null);
   const windows = new Map<string, BrowserWindow>();

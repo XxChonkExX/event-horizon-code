@@ -18,7 +18,7 @@ import CommandPalette, { type Action } from "./CommandPalette";
 import ShaderBackground from "./ShaderBackground";
 import Splitter from "./Splitter";
 import ChatColumn from "./ChatColumn";
-import { apiFetch, apiJson, popoutWindow } from "./api";
+import { apiFetch, apiJson, popoutWindow, growWindow } from "./api";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
 const popoutKind = new URLSearchParams(location.search).get("popout");
@@ -87,7 +87,15 @@ export default function App() {
 
   const openFile = (f: string) => {
     setActiveFile(f);
-    setOpenFiles((fs) => (fs.includes(f) ? fs : [...fs, f]));
+    setOpenFiles((fs) => {
+      const next = fs.includes(f) ? fs : [...fs, f];
+      // Widen the OS window when tabs need room (grow-only, clamped in main).
+      const target = Math.min(980 + next.length * 80, 1800);
+      if (window.innerWidth < target) void growWindow(target);
+      // Keep the newly opened tab in view.
+      setTimeout(() => document.querySelector(".ehc-tabs")?.scrollTo({ left: 99999, behavior: "smooth" }), 60);
+      return next;
+    });
   };
   const closeFile = (f: string) => {
     setOpenFiles((fs) => {

@@ -9,4 +9,5 @@ contextBridge.exposeInMainWorld("eventhorizon", {
   getRuntime: () => ipcRenderer.invoke("runtime:info") as Promise<{ baseUrl: string; password: string; port: number } | null>,
   pickFolder: () => ipcRenderer.invoke("dialog:pickFolder") as Promise<string | null>,
   popoutWindow: (kind: string, sessionId: string) => ipcRenderer.invoke("window:popout", kind, sessionId) as Promise<number>,
+  growWindow: (targetWidth: number) => ipcRenderer.invoke("window:grow", targetWidth) as Promise<boolean>,
 });
