@@ -97,6 +97,12 @@ export default function App() {
       return next;
     });
   };
+
+  // Boot-time comfort: a too-narrow window squeezes the editor against the chat
+  // column. Grow once on load (grow-only, clamped in main).
+  onMount(() => {
+    if (window.innerWidth < 1200) void growWindow(1280);
+  });
   const closeFile = (f: string) => {
     setOpenFiles((fs) => {
       const next = fs.filter((x) => x !== f);
