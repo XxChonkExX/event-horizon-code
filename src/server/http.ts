@@ -33,6 +33,20 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown) {
   res.end(data);
 }
 
+// CORS: dev renderer (localhost:5173) and packaged (file://) are cross-origins to
+// the loopback API. Every route requires Basic auth, so reflecting the request
+// origin is safe — a hostile page still cannot pass auth.
+function setCors(req: http.IncomingMessage, res: http.ServerResponse) {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Max-Age", "600");
+  }
+}
+
 function checkAuth(req: http.IncomingMessage, password: string, url?: URL): boolean {  // Header first (fetch), then ?auth= query (EventSource cannot send headers).
   const h = req.headers.authorization ?? "";
   if (h.startsWith("Basic ")) {
@@ -71,6 +85,12 @@ export function startHttpServer(opts: ServerOpts): http.Server {
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
+    setCors(req, res);
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
 
     if (url.pathname === "/global/health") {
       if (!checkAuth(req, opts.password, url)) {
@@ -155,7 +175,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
 
     if (req.method === "GET" && url.pathname === "/api/events") {
       const wt = url.searchParams.get("worktree") ?? process.cwd();
-      return subscribe(wt, res);
+      return subscribe(wt, res, req.headers.origin);
     }
 
     if (req.method === "GET" && url.pathname === "/api/models") {
@@ -486,7 +506,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         if (req.method === "GET" && action === "stream") {
           const s = getTerminal(id);
           if (!s) return sendJson(res, 404, { error: "no such terminal" });
-          res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+          res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "Access-Control-Allow-Origin": req.headers.origin ?? "*" });
           const onData = (d: string) => { try { res.write(`data: ${JSON.stringify({ d })}\n\n`); } catch { /* client gone */ } };
           s.pty.onData(onData);
           s.pty.onExit(() => { try { res.write("event: exit\ndata: {}\n\n"); res.end(); } catch { /* closed */ } });

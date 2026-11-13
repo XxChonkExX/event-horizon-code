@@ -7,14 +7,14 @@ type Channel = Set<http.ServerResponse>;
 
 const channels = new Map<string, Channel>();
 
-export function subscribe(worktree: string, res: http.ServerResponse) {
+export function subscribe(worktree: string, res: http.ServerResponse, origin?: string) {
   if (!channels.has(worktree)) channels.set(worktree, new Set());
   channels.get(worktree)!.add(res);
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": origin ?? "*",
   });
   res.write("data: {\"type\":\"connected\"}\n\n");
   const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { /* ignore */ } }, 25000);
