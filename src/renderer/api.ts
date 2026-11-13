@@ -6,7 +6,12 @@ type RuntimeInfo = { baseUrl: string; password: string; port: number } | null;
 
 declare global {
   interface Window {
-    eventhorizon?: { version: string; getRuntime: () => Promise<RuntimeInfo>; pickFolder: () => Promise<string | null> };
+    eventhorizon?: {
+      version: string;
+      getRuntime: () => Promise<RuntimeInfo>;
+      pickFolder: () => Promise<string | null>;
+      popoutWindow: (kind: string, sessionId: string) => Promise<number>;
+    };
   }
 }
 
@@ -48,4 +53,10 @@ export async function pickFolder(): Promise<string | null> {
     return window.eventhorizon.pickFolder();
   }
   return null;
+}
+
+export async function popoutWindow(kind: string, sessionId: string): Promise<void> {
+  if (typeof window !== "undefined" && window.eventhorizon?.popoutWindow) {
+    await window.eventhorizon.popoutWindow(kind, sessionId);
+  }
 }

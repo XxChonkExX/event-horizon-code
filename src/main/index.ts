@@ -23,6 +23,22 @@ app.whenReady().then(async () => {
     const r = await dialog.showOpenDialog(win as BrowserWindow, { properties: ["openDirectory", "createDirectory"] });
     return r.canceled ? null : r.filePaths[0];
   });
+  // Pop-out windows: terminal / chat in their own OS window, same session.
+  ipcMain.handle("window:popout", (_e, kind: string, sessionId: string) => {
+    const win = new BrowserWindow({
+      width: 980, height: 720,
+      title: `Event Horizon — ${kind}`,
+      webPreferences: {
+        contextIsolation: true, nodeIntegration: false,
+        preload: path.join(__dirname, "../preload/index.js"),
+      }
+    });
+    const query = `popout=${encodeURIComponent(kind)}&session=${encodeURIComponent(sessionId ?? "default")}`;
+    const devUrl = process.env.ELECTRON_RENDERER_URL;
+    if (devUrl) void win.loadURL(`${devUrl}/?${query}`);
+    else void win.loadFile(path.join(__dirname, "../renderer/index.html"), { search: query });
+    return win.id;
+  });
   Menu.setApplicationMenu(null);
   const windows = new Map<string, BrowserWindow>();
   // Multi-window: one BrowserWindow per session/worktree

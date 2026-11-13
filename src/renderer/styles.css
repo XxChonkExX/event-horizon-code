@@ -38,18 +38,13 @@ body {
   position: relative;
   display: grid;
   height: 100vh;
-  grid-template-areas:
-    "header  header  header  header"
-    "actbar  sidebar main    chat"
-    "term    term    term    term"
-    "status  status  status  status";
-  grid-template-columns: 46px 250px minmax(0, 1fr) 460px;
-  grid-template-rows: auto minmax(0, 1fr) 240px auto;
+  /* columns/rows are set inline from App (resizable splitters persist via localStorage) */
   background: transparent;
 }
 
 header {
-  grid-area: header;
+  grid-column: 1 / -1;
+  grid-row: 1;
   padding: 8px 14px;
   background: rgba(27, 27, 34, 0.88);
   border-bottom: 1px solid var(--accent2);
@@ -60,7 +55,8 @@ header b { color: var(--accent); }
 
 /* ---- activity bar (VS Code rail) ---- */
 .activity-bar {
-  grid-area: actbar;
+  grid-column: 1;
+  grid-row: 2;
   display: flex; flex-direction: column; align-items: center;
   gap: 4px; padding: 8px 0;
   background: rgba(20, 20, 26, 0.92);
@@ -78,17 +74,20 @@ header b { color: var(--accent); }
 
 /* ---- sidebar ---- */
 section.sidebar {
-  grid-area: sidebar;
+  grid-column: 3;
+  grid-row: 2;
   overflow: auto;
   background: rgba(27, 27, 34, 0.85);
   border-right: 1px solid var(--border);
   padding: 10px;
   min-height: 0;
+  min-width: 0;
 }
 
 /* ---- main area: tabs + monaco + panels ---- */
 section.main-area {
-  grid-area: main;
+  grid-column: 5;
+  grid-row: 2;
   display: flex; flex-direction: column;
   min-width: 0; min-height: 0;
 }
@@ -136,11 +135,13 @@ section.main-area > .panels > * { flex: 1 1 0; min-width: 0; }
 
 /* ---- chat ---- */
 aside.chat {
-  grid-area: chat;
+  grid-column: 7;
+  grid-row: 2;
   display: flex; flex-direction: column;
   background: rgba(27, 27, 34, 0.88);
   border-left: 1px solid var(--border);
   min-height: 0;
+  min-width: 0;
 }
 aside.chat h3 { margin: 10px 12px 4px; color: var(--accent2); }
 aside.chat ul {
@@ -174,16 +175,19 @@ aside.chat > p { margin: 0; padding: 6px 12px 10px; color: var(--dim); font-size
 
 /* ---- terminal ---- */
 footer.terminal {
-  grid-area: term;
+  grid-column: 1 / -1;
+  grid-row: 4;
   background: rgba(10, 10, 14, 0.94);
   border-top: 1px solid var(--border);
   min-height: 0;
 }
-.terminal-body { height: 100%; padding: 4px 8px; }
+.term-wrap { display: flex; flex-direction: column; height: 100%; }
+.term-wrap .terminal-body { flex: 1; min-height: 0; padding: 4px 8px; }
 
 /* ---- status bar ---- */
 .status-bar {
-  grid-area: status;
+  grid-column: 1 / -1;
+  grid-row: 5;
   display: flex; align-items: center; gap: 10px;
   padding: 3px 12px;
   background: rgba(20, 20, 26, 0.95);
@@ -266,3 +270,37 @@ pre {
   padding: 10px 12px;
   backdrop-filter: blur(2px);
 }
+
+/* ---- resizable splitters ---- */
+.ehc-splitter {
+  background: transparent;
+  transition: background 0.15s;
+  touch-action: none;
+  z-index: 2;
+  position: relative;
+}
+.ehc-splitter-v {
+  width: 6px; margin: 0 -3px;
+  cursor: col-resize;
+}
+.ehc-splitter-h {
+  height: 6px; margin: -3px 0;
+  cursor: row-resize;
+}
+.ehc-splitter:hover, .ehc-splitter-drag {
+  background: var(--accent);
+  opacity: 0.45;
+}
+.ehc-split-v1 { grid-column: 2; grid-row: 2; }
+.ehc-split-v2 { grid-column: 4; grid-row: 2; }
+.ehc-split-v3 { grid-column: 6; grid-row: 2; }
+.ehc-split-h1 { grid-column: 1 / -1; grid-row: 3; }
+
+/* ---- pop-out windows ---- */
+.popout-root {
+  height: 100vh;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+.popout-root .chat { border: none; background: var(--panel); }

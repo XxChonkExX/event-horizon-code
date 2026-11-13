@@ -44,6 +44,11 @@ export default function Terminal(props: { worktree: string }) {
       es.addEventListener("exit", () => { term.writeln("\r\n\x1b[90m[ehc] shell exited\x1b[0m"); es.close(); });
       term.writeln("\x1b[90m[ehc] terminal attached — per-worktree env\x1b[0m");
 
+      // Refit when the container resizes (splitter drags, panel toggles).
+      const ro = new ResizeObserver(() => { try { fit.fit(); } catch { /* zero-size mid-layout */ } });
+      ro.observe(ref);
+      onCleanup(() => ro.disconnect());
+
       onCleanup(() => {
         es.close();
         void apiFetch(`/api/terminal/${id}/kill`, { method: "POST", body: "{}" });

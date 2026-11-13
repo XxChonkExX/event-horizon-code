@@ -1,8 +1,9 @@
 // Event Horizon Code — Renderer workbench (SolidJS + Monaco)
-// Structure: VS Code (activity bar, tabs, status bar, command palette).
+// Structure: VS Code (activity bar, tabs, status bar, command palette, resizable splitters).
 // Look: OpenCode (deep space, glow accents, shader backdrop with easy intensity cycle).
+// Pop-outs: terminal / chat in their own OS windows (?popout=<kind> route).
 
-import { createSignal, onMount, onCleanup, Show, For } from "solid-js";
+import { createSignal, onMount, onCleanup, Show } from "solid-js";
 import ToolchainDoctor from "./ToolchainDoctor";
 import SandboxControls from "./SandboxControls";
 import AgentWatchPanel from "./AgentWatchPanel";
@@ -15,14 +16,23 @@ import Tabs from "./Tabs";
 import StatusBar from "./StatusBar";
 import CommandPalette, { type Action } from "./CommandPalette";
 import ShaderBackground from "./ShaderBackground";
-import { apiFetch, apiJson } from "./api";
+import Splitter from "./Splitter";
+import ChatColumn from "./ChatColumn";
+import { apiFetch, apiJson, popoutWindow } from "./api";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
+const popoutKind = new URLSearchParams(location.search).get("popout");
 const SHADER_STEPS = [
   { label: "subtle", v: 0.35 },
   { label: "full", v: 1.0 },
   { label: "off", v: 0.0 },
 ] as const;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const loadNum = (key: string, dflt: number, lo: number, hi: number) => {
+  const v = Number(localStorage.getItem(key));
+  return Number.isFinite(v) && v >= lo && v <= hi ? v : dflt;
+};
 
 export default function App() {
   const [messages, setMessages] = createSignal<string[]>([]);
@@ -32,10 +42,13 @@ export default function App() {
   const [models, setModels] = createSignal<string[]>([]);
   const [model, setModel] = createSignal<string>("");
   const [think, setThink] = createSignal<string>("medium");
-  const [panelsOpen, setPanelsOpen] = createSignal(true);
   const [open, setOpen] = createSignal<Record<Panel, boolean>>({ sidebar: true, chat: true, terminal: true, panels: true });
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [shaderIdx, setShaderIdx] = createSignal(0);
+  // Resizable panel sizes (persisted)
+  const [sidebarW, setSidebarW] = createSignal(loadNum("ehc.sidebarW", 250, 160, 520));
+  const [chatW, setChatW] = createSignal(loadNum("ehc.chatW", 460, 280, 800));
+  const [termH, setTermH] = createSignal(loadNum("ehc.termH", 240, 100, 600));
 
   onMount(async () => {
     try {
@@ -45,16 +58,32 @@ export default function App() {
     } catch { /* server not up yet — picker stays empty */ }
   });
 
-  // Ctrl+K palette
-  const keyHandler = (e: KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPaletteOpen((v) => !v); }
+  const persistLayout = () => {
+    localStorage.setItem("ehc.sidebarW", String(sidebarW()));
+    localStorage.setItem("ehc.chatW", String(chatW()));
+    localStorage.setItem("ehc.termH", String(termH()));
   };
-  window.addEventListener("keydown", keyHandler);
-  onCleanup(() => window.removeEventListener("keydown", keyHandler));
 
   const toggle = (p: Panel) => setOpen((o) => ({ ...o, [p]: !o[p] }));
   const cycleShader = () => setShaderIdx((i) => (i + 1) % SHADER_STEPS.length);
   const shaderIntensity = () => SHADER_STEPS[shaderIdx()].v;
+
+  const cols = () => {
+    const s = open().sidebar;
+    const c = open().chat;
+    return [
+      "46px",
+      s ? "6px" : "0px", s ? `${sidebarW()}px` : "0px", s ? "6px" : "0px",
+      "minmax(0, 1fr)",
+      c ? "6px" : "0px", c ? `${chatW()}px` : "0px",
+    ].join(" ");
+  };
+  const rows = () => [
+    "auto",
+    "minmax(0, 1fr)",
+    open().terminal ? "6px" : "0px", open().terminal ? `${termH()}px` : "0px",
+    "auto",
+  ].join(" ");
 
   const openFile = (f: string) => {
     setActiveFile(f);
@@ -96,28 +125,59 @@ export default function App() {
   };
 
   const actions = (): Action[] => [
-    { label: "Toggle terminal", hint: "Ctrl+K then Enter", run: () => toggle("terminal") },
     { label: "Toggle sidebar (worktrees)", run: () => toggle("sidebar") },
     { label: "Toggle chat", run: () => toggle("chat") },
+    { label: "Toggle terminal", run: () => toggle("terminal") },
     { label: "Toggle panels row", run: () => toggle("panels") },
+    { label: "Pop out chat to window", hint: "new window", run: () => void popoutWindow("chat", session) },
+    { label: "Pop out terminal to window", hint: "new window", run: () => void popoutWindow("terminal", session) },
     { label: "New worktree", hint: "git worktree add", run: () => void newWorktree() },
     { label: "Cycle shader background", hint: SHADER_STEPS[shaderIdx()].label, run: cycleShader },
     { label: "Focus composer", run: () => document.querySelector<HTMLInputElement>(".composer input")?.focus() },
-    { label: "Open file in editor", hint: activeFile(), run: () => openFile(activeFile()) },
   ];
 
+  // Ctrl+K palette
+  const keyHandler = (e: KeyboardEvent) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPaletteOpen((v) => !v); }
+  };
+  window.addEventListener("keydown", keyHandler);
+  onCleanup(() => window.removeEventListener("keydown", keyHandler));
+
+  // ---- Pop-out routes: render only the popped-out panel ----
+  if (popoutKind === "terminal") {
+    return (
+      <div class="popout-root">
+        <Terminal worktree={session} />
+      </div>
+    );
+  }
+  if (popoutKind === "chat") {
+    return (
+      <div class="popout-root">
+        <ChatColumn
+          messages={messages} input={input} setInput={setInput} onSend={send}
+          models={models} model={model} setModel={setModel} think={think} setThink={setThink}
+          compact
+        />
+      </div>
+    );
+  }
+
   return (
-    <div class="workbench">
+    <div class="workbench" style={{ "grid-template-columns": cols(), "grid-template-rows": rows() }}>
       <ShaderBackground intensity={shaderIntensity} />
       <header>Event Horizon Code — session {session} — {activeFile()}</header>
 
       <ActivityBar open={open} toggle={toggle} palette={() => setPaletteOpen(true)} />
 
       <Show when={open().sidebar}>
+        <Splitter direction="col" class="ehc-split-v1" onDelta={(d) => setSidebarW(clamp(sidebarW() + d, 160, 520))} onEnd={persistLayout} />
         <section class="sidebar">
           <FileTree onSelect={openFile} />
         </section>
       </Show>
+
+      <Splitter direction="col" class="ehc-split-v2" onDelta={(d) => setSidebarW(clamp(sidebarW() - d, 160, 520))} onEnd={persistLayout} />
 
       <section class="main-area">
         <Tabs files={openFiles} active={activeFile} onSelect={setActiveFile} onClose={closeFile} />
@@ -133,37 +193,23 @@ export default function App() {
       </section>
 
       <Show when={open().chat}>
-        <aside class="chat">
-          <ul>{messages().map((m) => <li>{m}</li>)}</ul>
-          <div class="composer">
-            <input
-              value={input()}
-              onInput={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") send(); }}
-              placeholder="/think:high  describe the fix…"
-            />
-            <button onClick={send}>Send</button>
-          </div>
-          <div class="model-row">
-            <span>model</span>
-            <select value={model()} onChange={(e) => setModel(e.target.value)}>
-              <option value="">(none — echo)</option>
-              {models().map((m) => <option value={m}>{m}</option>)}
-            </select>
-            <span>think</span>
-            <select value={think()} onChange={(e) => setThink(e.target.value)}>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="max">max</option>
-            </select>
-          </div>
-        </aside>
+        <Splitter direction="col" class="ehc-split-v3" onDelta={(d) => setChatW(clamp(chatW() - d, 280, 800))} onEnd={persistLayout} />
+        <ChatColumn
+          messages={messages} input={input} setInput={setInput} onSend={send}
+          models={models} model={model} setModel={setModel} think={think} setThink={setThink}
+        />
       </Show>
 
       <Show when={open().terminal}>
+        <Splitter direction="row" class="ehc-split-h1" onDelta={(d) => setTermH(clamp(termH() - d, 100, 600))} onEnd={persistLayout} />
         <footer class="terminal">
-          <Terminal worktree={session} />
+          <div class="term-wrap">
+            <div class="ehc-toolbar">
+              <span>Terminal</span>
+              <button title="Pop out to window" onClick={() => void popoutWindow("terminal", session)}>⧉</button>
+            </div>
+            <Terminal worktree={session} />
+          </div>
         </footer>
       </Show>
 
