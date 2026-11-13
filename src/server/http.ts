@@ -22,7 +22,7 @@ import { listSessions, createSession, listTodos, addTodo } from "./store";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
-import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect } from "./engine";
+import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir } from "./engine";
 
 
 export type ServerOpts = { port: number; password: string; host?: string };
@@ -487,7 +487,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const s = getTerminal(id);
           if (!s) return sendJson(res, 404, { error: "no such terminal" });
           res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-          const onData = (d: string) => { try { res.write(`data: ${JSON.stringify(d)}\n\n`); } catch { /* client gone */ } };
+          const onData = (d: string) => { try { res.write(`data: ${JSON.stringify({ d })}\n\n`); } catch { /* client gone */ } };
           s.pty.onData(onData);
           s.pty.onExit(() => { try { res.write("event: exit\ndata: {}\n\n"); res.end(); } catch { /* closed */ } });
           const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { /* closed */ } }, 25000);
@@ -519,6 +519,20 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "GET" && url.pathname === "/api/engine/models") {
       const cfg = readEngineConfig();
       return sendJson(res, 200, scanGgufDirs(cfg.ggufDirs));
+    }
+    if (req.method === "POST" && url.pathname === "/api/engine/models/dirs") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { dir?: string };
+          if (!body.dir) return sendJson(res, 400, { error: "dir required" });
+          const r = addGgufDir(body.dir);
+          audit({ tool: "engine.models.dir", note: `${body.dir} ok=${r.ok}` });
+          sendJson(res, r.ok ? 200 : 400, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
     }
     if (req.method === "POST" && url.pathname === "/api/engine/start") {
       let raw = "";

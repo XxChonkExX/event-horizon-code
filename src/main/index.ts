@@ -2,7 +2,7 @@
 // Owns: windows, menus, single-instance lock, localhost server bootstrap
 // Non-negotiable: no domain logic here. Sessions/tools/engrams live in server.
 
-import { app, BrowserWindow, Menu, ipcMain } from "electron";
+import { app, BrowserWindow, Menu, ipcMain, dialog } from "electron";
 import path from "node:path";
 import crypto from "node:crypto";
 import { startLocalServer } from "../server/index";
@@ -17,6 +17,12 @@ app.whenReady().then(async () => {
   await startLocalServer({ port, password });
   runtime = { baseUrl: `http://127.0.0.1:${port}`, password, port };
   ipcMain.handle("runtime:info", () => runtime);
+  // Folder picker for the Model Manager (renderer has no fs access by design).
+  ipcMain.handle("dialog:pickFolder", async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? undefined;
+    const r = await dialog.showOpenDialog(win as BrowserWindow, { properties: ["openDirectory", "createDirectory"] });
+    return r.canceled ? null : r.filePaths[0];
+  });
   Menu.setApplicationMenu(null);
   const windows = new Map<string, BrowserWindow>();
   // Multi-window: one BrowserWindow per session/worktree

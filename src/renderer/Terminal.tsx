@@ -24,18 +24,23 @@ export default function Terminal(props: { worktree: string }) {
         method: "POST",
         body: JSON.stringify({ worktree: props.worktree }),
       });
-      const opened = (await openRes.json()) as { ok: boolean; id?: string; error?: string };
+      const opened = (await openRes.json()) as { ok: boolean; id?: string; error?: string; cwdNote?: string };
       if (!opened.ok || !opened.id) {
         term.writeln(`\x1b[33m[ehc] terminal unavailable: ${opened.error ?? "unknown"}\x1b[0m`);
         return;
       }
       const id = opened.id;
+      if (opened.cwdNote) term.writeln(`\x1b[33m[ehc] ${opened.cwdNote}\x1b[0m`);
       term.onData((data) => { void apiFetch(`/api/terminal/${id}/input`, { method: "POST", body: JSON.stringify({ data }) }); });
       term.onResize(({ cols, rows }) => { void apiFetch(`/api/terminal/${id}/resize`, { method: "POST", body: JSON.stringify({ cols, rows }) }); });
 
       const q = await authQuery();
       const es = new EventSource(`${baseUrl()}/api/terminal/${id}/stream?${q}`);
-      es.onmessage = (ev) => { term.write(ev.data.replace(/\\n/g, "\n").replace(/\\r/g, "\r")); };
+      es.onmessage = (ev) => {
+        // Server frames chunks as JSON ({d: chunk}) — escape bytes (ANSI colors)
+        // survive transport; manual string replaces garbled them (the "o001b[" bug).
+        try { term.write(JSON.parse(ev.data).d as string); } catch { /* skip malformed frame */ }
+      };
       es.addEventListener("exit", () => { term.writeln("\r\n\x1b[90m[ehc] shell exited\x1b[0m"); es.close(); });
       term.writeln("\x1b[90m[ehc] terminal attached — per-worktree env\x1b[0m");
 

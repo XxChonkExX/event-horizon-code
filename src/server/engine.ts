@@ -8,9 +8,10 @@
 // - GPU policy per docs/GPU.md: device pinning + heap fraction capped (B70 headroom).
 // - Process hygiene: child tracked, killed on stop; no orphans.
 
-import { spawn, ChildProcess, execFile } from "node:child_process";
+import { spawn, ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 export type EngineConfig = {
   kind: "bundled" | "external" | "none";
@@ -20,19 +21,56 @@ export type EngineConfig = {
   gpu: { deviceIndex: number; heapFraction: number; pool: boolean };
 };
 
+// Agnostic defaults: home runtime dir + repo-local models. Machine-specific
+// paths are additions in config, never requirements.
+export function defaultGgufDirs(): string[] {
+  return [path.join(os.homedir(), ".eventhorizon", "models"), path.join(process.cwd(), "models")];
+}
+
+export function addGgufDir(dir: string): { ok: boolean; dirs: string[]; error?: string } {
+  const abs = path.resolve(dir);
+  if (!fs.existsSync(abs)) return { ok: false, dirs: readEngineConfig().ggufDirs, error: `directory does not exist: ${abs}` };
+  const cfgPath = path.join(process.cwd(), ".harness", "config.json");
+  let raw: Record<string, unknown> = {};
+  try { raw = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as Record<string, unknown>; } catch { /* fresh config */ }
+  const eng = (raw.engine as Partial<EngineConfig> | undefined) ?? {};
+  const existing: string[] = eng.ggufDirs ?? [];
+  if (!existing.includes(abs)) existing.push(abs);
+  eng.ggufDirs = existing;
+  raw.engine = eng;
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+  fs.writeFileSync(cfgPath, JSON.stringify(raw, null, 2));
+  return { ok: true, dirs: readEngineConfig().ggufDirs };
+}
+
 export function readEngineConfig(): EngineConfig {
+  let raw: { engine?: Partial<EngineConfig> } = {};
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { engine?: Partial<EngineConfig> };
-    return {
-      kind: raw.engine?.kind ?? "none",
-      binaryPath: raw.engine?.binaryPath ?? "resources/engine/llama-server.exe",
-      port: raw.engine?.port ?? 8901,
-      ggufDirs: raw.engine?.ggufDirs ?? [],
-      gpu: raw.engine?.gpu ?? { deviceIndex: 0, heapFraction: 0.6, pool: true },
-    };
-  } catch {
-    return { kind: "none", binaryPath: "resources/engine/llama-server.exe", port: 8901, ggufDirs: [], gpu: { deviceIndex: 0, heapFraction: 0.6, pool: true } };
-  }
+    raw = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { engine?: Partial<EngineConfig> };
+  } catch { /* defaults below */ }
+  // Agnostic dirs always present; config dirs are additions.
+  const dirs = Array.from(new Set([...defaultGgufDirs(), ...(raw.engine?.ggufDirs ?? [])]));
+  return {
+    kind: raw.engine?.kind ?? "bundled",
+    binaryPath: raw.engine?.binaryPath ?? "",
+    port: raw.engine?.port ?? 8901,
+    ggufDirs: dirs,
+    gpu: raw.engine?.gpu ?? { deviceIndex: 0, heapFraction: 0.6, pool: true },
+  };
+}
+
+// Engine binary ladder: explicit config -> env override -> packaged resources.
+export function resolveEngineBinary(): { path: string | null; tried: string[] } {
+  const cfg = readEngineConfig();
+  const exe = process.platform === "win32" ? "llama-server.exe" : "llama-server";
+  const candidates = [
+    ...(cfg.binaryPath ? [cfg.binaryPath] : []),
+    ...(process.env.EH_ENGINE_BIN ? [process.env.EH_ENGINE_BIN] : []),
+    path.join(process.cwd(), "resources", "engine", exe),
+    path.join(path.dirname(process.execPath), "resources", "engine", exe),
+  ];
+  for (const c of candidates) if (c && fs.existsSync(c)) return { path: c, tried: candidates };
+  return { path: null, tried: candidates };
 }
 
 // ---- model registry: scan user dirs for GGUFs (filesystem-only, cheap) ----
@@ -82,8 +120,10 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
   const cfg = readEngineConfig();
   if (cfg.kind === "none") return Promise.resolve({ ok: false, note: "engine disabled in config (kind: none)" });
   if (engineRunning()) return Promise.resolve({ ok: true, note: `already running (pid ${proc?.pid}) on ${engineEndpoint()}` });
-  if (!fs.existsSync(cfg.binaryPath)) {
-    return Promise.resolve({ ok: false, note: `bundled engine not found at ${cfg.binaryPath} — install via EHC model manager or point engine.binaryPath at chonkllama.cpp build` });
+  const binary = resolveEngineBinary();
+  const binPath = binary.path;
+  if (!binPath) {
+    return Promise.resolve({ ok: false, note: `engine binary not found — tried: ${binary.tried.join(", ")}` });
   }
   const model = ggufPath ?? "";
   if (!model || !fs.existsSync(model)) {
@@ -110,7 +150,7 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
     // pipe buffer will eventually block — never leave it unread.
     const logDir = path.join(require("node:os").homedir(), ".eventhorizon");
     fs.mkdirSync(logDir, { recursive: true });
-    const child = spawn(cfg.binaryPath, [
+    const child = spawn(binPath, [
       "-m", model,
       "--host", "127.0.0.1",
       "--port", String(cfg.port),
@@ -125,7 +165,7 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
         // deviceIndex null => omit the pin so the Chonk pool spans every device.
         ...(deviceIndex !== null && deviceIndex !== undefined ? { VVM_DEVICE_INDEX: String(deviceIndex) } : {}),
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"] as const,
     });
     const logPath = path.join(logDir, `engine-${child.pid ?? "x"}.log`);
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
@@ -174,8 +214,9 @@ export type Sensory = {
 };
 
 export function sensoryDetect(): Sensory {
-  const cfg = readEngineConfig();
-  const dir = path.dirname(cfg.binaryPath);
+  const binary = resolveEngineBinary();
+  if (!binary.path) return { eyes: false, ears: false, mouth: false, notes: [`engine binary not found — tried: ${binary.tried.join(", ")}`] };
+  const dir = path.dirname(binary.path);
   const notes: string[] = [];
   let eyes = false, ears = false, mouth = false;
   try {

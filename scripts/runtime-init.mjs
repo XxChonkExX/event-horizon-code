@@ -10,6 +10,7 @@ const repo = path.join(process.cwd(), ".eventhorizon");
 
 const homeTree = [
   home,
+  path.join(home, "models"),        // agnostic default model dir (engine scans here)
   path.join(home, "mail"),          // agent-to-agent mailbox (AgentWatch Phase B sweeps here)
   path.join(home, "aw-ledger"),     // AgentWatch hash-chained ledger + baseline.json + acknowledged.json
   path.join(home, "worktrees"),     // session worktree metadata (worktrees themselves are repo-local)

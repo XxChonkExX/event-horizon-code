@@ -6,7 +6,7 @@ type RuntimeInfo = { baseUrl: string; password: string; port: number } | null;
 
 declare global {
   interface Window {
-    eventhorizon?: { version: string; getRuntime: () => Promise<RuntimeInfo> };
+    eventhorizon?: { version: string; getRuntime: () => Promise<RuntimeInfo>; pickFolder: () => Promise<string | null> };
   }
 }
 
@@ -41,4 +41,11 @@ export async function authQuery(): Promise<string> {
 
 export function baseUrl(): string {
   return cached?.baseUrl ?? "";
+}
+
+export async function pickFolder(): Promise<string | null> {
+  if (typeof window !== "undefined" && window.eventhorizon?.pickFolder) {
+    return window.eventhorizon.pickFolder();
+  }
+  return null;
 }

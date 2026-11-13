@@ -1,6 +1,7 @@
 // Event Horizon Code — Monaco mount (real editor, MIT, from microsoft/vscode)
 // Language inferred from extension. Content loaded via server read tool (permission: allow).
 // Save button = operator approval for the edit tool (explicit human action).
+// Classes ehc-prefixed to avoid collisions with Monaco's internal stylesheet.
 
 import { onMount, onCleanup } from "solid-js";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
@@ -99,12 +100,12 @@ export default function MonacoMount(props: { file: string; worktree?: string }) 
   onCleanup(() => clearInterval(timer));
 
   return (
-    <div class="monaco-shell">
-      <div class="monaco-toolbar">
+    <div class="ehc-editor-shell">
+      <div class="ehc-toolbar">
         <span>{props.file}</span>
         <button onClick={() => void saveFile()}>Save (approves edit)</button>
       </div>
-      <div class="monaco-mount" ref={ref} />
+      <div class="ehc-monaco" ref={ref} />
     </div>
   );
 }

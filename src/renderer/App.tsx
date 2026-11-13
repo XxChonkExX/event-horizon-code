@@ -6,6 +6,7 @@ import { createSignal, onMount, onCleanup, Show, For } from "solid-js";
 import ToolchainDoctor from "./ToolchainDoctor";
 import SandboxControls from "./SandboxControls";
 import AgentWatchPanel from "./AgentWatchPanel";
+import ModelManager from "./ModelManager";
 import FileTree from "./FileTree";
 import MonacoMount from "./MonacoMount";
 import Terminal from "./Terminal";
@@ -126,6 +127,7 @@ export default function App() {
             <ToolchainDoctor />
             <SandboxControls />
             <AgentWatchPanel />
+            <ModelManager />
           </div>
         </Show>
       </section>

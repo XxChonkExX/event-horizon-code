@@ -50,10 +50,11 @@
     "ggufDirs": ["F:/llmtrainingpipeline", "G:/New folder"],
     "gpu": { "deviceIndex": 0, "heapFraction": 0.6, "pool": true },
     "notes": [
-      "Bundled chonkllama.cpp (chonk-buffer branch) sidecar — OpenAI-compatible /v1.",
-      "ggufDirs are scanned for local models; nothing is downloaded without the user asking.",
+      "Agnostic defaults are always scanned first: ~/.eventhorizon/models + ./models (created by runtime:init).",
+      "ggufDirs below are machine-specific ADDITIONS. Users add folders via Model Manager > Choose folder.",
+      "binaryPath is machine-specific; leave empty on other machines to use the packaged resources/engine binary ladder.",
       "gpu.policy per docs/GPU.md: deviceIndex pins a card, heapFraction caps the Chonk pool, pool=1 enables cross-vendor Chonk Buffer.",
-      "Installers will ship resources/engine/ with pinned chonkllama release binaries (verified by SHA)."
+      "Installers ship resources/engine/ with pinned chonkllama release binaries (verified by SHA)."
     ]
   },
   "agentwatch": {
