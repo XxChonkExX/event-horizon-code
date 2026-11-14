@@ -102,6 +102,25 @@ const THINK_HINTS: Record<string, string> = {
   max: "Think this through thoroughly, step by step, checking your work. Note any uncertainty explicitly.",
 };
 
+// Ollama thinking models (gemma4, qwen3, gpt-oss) accept a native `think` field.
+// Most of them expose binary levels (false|true); some expose effort names. We
+// map our /think: selector onto it so the control actually governs reasoning —
+// previously it only shaped the system prompt and the model thought unchecked
+// until the token budget died (thinking, no answer).
+function mapThink(level?: string): boolean | string {
+  switch ((level ?? "medium").toLowerCase()) {
+    case "low": return false;      // no reasoning channel — fastest, always yields content
+    case "medium": return false;   // binary models have no middle: prefer usable output
+    case "high": return true;
+    case "max": return true;
+    default: return false;
+  }
+}
+
+// Models/endpoints that reject the `think` field — remembered so we only pay the
+// failed round-trip once per model.
+const thinkUnsupported = new Set<string>();
+
 // Direct chat to local Ollama. keepAlive 0 unloads the model from VRAM right after
 // the request — smoke tests leave the GPU clear for whatever else needs it.
 export async function chat(
@@ -112,20 +131,35 @@ export async function chat(
   const baseUrl = opts?.baseUrl ?? process.env.EH_OLLAMA_URL ?? "http://127.0.0.1:11434";
   const think = opts?.think ?? "medium";
   const system = THINK_HINTS[think] ?? THINK_HINTS.medium;
-  const body = {
-    model,
-    messages: [{ role: "system", content: system }, ...messages.map((m) => ({ ...m, images: m.images?.map((i) => (i.startsWith("data:") ? i.slice(i.indexOf(",") + 1) : i)) }))],
-    stream: false,
-    keep_alive: opts?.keepAlive ?? 0,
-    options: { num_predict: opts?.numPredict ?? 256 },
-  };
-  try {
-    const res = await fetch(`${baseUrl}/api/chat`, {
+  const thinkKey = `${baseUrl}|${model}`;
+  const send = async (includeThink: boolean): Promise<globalThis.Response> => {
+    const body: Record<string, unknown> = {
+      model,
+      messages: [{ role: "system", content: system }, ...messages.map((m) => ({ ...m, images: m.images?.map((i) => (i.startsWith("data:") ? i.slice(i.indexOf(",") + 1) : i)) }))],
+      stream: false,
+      keep_alive: opts?.keepAlive ?? 0,
+      options: { num_predict: opts?.numPredict ?? 256 },
+    };
+    if (includeThink) body.think = mapThink(think);
+    return fetch(`${baseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(opts?.timeoutMs ?? 120_000),
     });
+  };
+  try {
+    let res = await send(!thinkUnsupported.has(thinkKey));
+    if (!res.ok && res.status === 400) {
+      // Endpoint/model rejects `think` — remember it and retry without.
+      const errText = await res.text();
+      if (/think/i.test(errText)) {
+        thinkUnsupported.add(thinkKey);
+        res = await send(false);
+      } else {
+        return { ok: false, content: "", model, error: `ollama 400: ${errText.slice(0, 200)}` };
+      }
+    }
     if (!res.ok) {
       return { ok: false, content: "", model, error: `ollama ${res.status}: ${(await res.text()).slice(0, 200)}` };
     }
