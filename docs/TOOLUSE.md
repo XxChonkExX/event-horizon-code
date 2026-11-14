@@ -53,14 +53,20 @@ Composer has an **auto-approve tools** toggle (persisted) for unattended runs.
 
 ## Planned (ordered by leverage)
 
-### 1. MCP client (real)
-`docs/ARCHITECTURE.md` promises it; today it is a stub. Plan:
-- stdio transport (`@modelcontextprotocol/sdk` or hand-rolled JSON-RPC over stdio).
-- On connect: `tools/list`, namespace as `mcp_<server>_<tool>`, merge into the
-  agent's tool set for that session only.
-- Env allowlist per server; servers run as child processes, killed on session end.
-- Tool output stays untrusted (same rule as web content).
-- Progressive discovery once tool count grows (see #3).
+### 1. MCP client — **SHIPPED**
+`src/server/mcp.ts`: newline-delimited JSON-RPC 2.0 over stdio.
+- `initialize` handshake → `tools/list` → tools namespaced `mcp_<server>_<tool>`
+  and merged into the agent tool set when servers are configured.
+- Env allowlist per server (PATH/HOME/TEMP + the server's own vars); children are
+  tracked and killed with the server process (`stopAllMcp` on exit) — no orphans.
+- Tool output is untrusted data (same rule as web content).
+- Config shape (`.harness/config.json` → `mcp.servers`):
+  ```json
+  { "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] } }
+  ```
+- Empty by default: no servers configured = no behavior change.
+- Still to do: per-server permission scoping (currently ask-per-call), and
+  progressive discovery once tool count grows (see #3).
 
 ### 2. Programmatic tool calling / code mode — **SHIPPED**
 Borrowed from Anthropic's PTC guide: `run_js` executes model-authored JS in a
@@ -79,15 +85,15 @@ from Anthropic's `tool_search_with_embeddings` cookbook:
 - Retrieve top-k per turn instead of shipping every schema (~100 tokens each).
 - Engram-native version: index tool docs in the same store as code references.
 
-### 4. Deterministic compute & VM tools (engram_vm)
-The AfterImage `engram_vm/machines` family, wired as tools — arithmetic and
-program execution that is *exact* rather than sampled:
-- `calc_verify` (ti85 AST-whitelist calculator) — already protocolised in the
-  engram router; expose as an agent tool so arithmetic claims can be checked.
-- `run_rv32` / `run_pyvm` / `run_m6502` — sandboxed interpreter machines (no
-  syscalls by construction) for payload analysis and deterministic programs.
-- These live in the detonation tier: model-authored code executes in the VM, not
-  on the host. Directly matches the BlackICE `engram_vm` work.
+### 4. Deterministic compute & VM tools (engram_vm) — **SHIPPED**
+`run_machine` executes on the AfterImage machine registry via subprocess (import,
+never reimplement): **ti85, pyvm, rv32, z80, m6502, thumb2, dataflow**.
+`calc_verify` now routes through the same ti85 machine (one implementation).
+- Machines are deterministic, capped, host-isolated by construction.
+- Python is auto-resolved (`python` → `python3` → `py` → common Windows install
+  paths); `EH_PYTHON` overrides. `EH_ENGRAM_SRC` points at the AfterImage `src/`.
+- Verified: `sqrt(841) + 17.4^3` → `5297.024` exactly, through the agent loop.
+- Still to do: expose per-machine guidance (ISA notes) in the system prompt.
 
 ### 5. Computer use / eyes on the GUI
 Vision is verified (mtmd + mmproj). Remaining work:
@@ -98,6 +104,11 @@ Vision is verified (mtmd + mmproj). Remaining work:
 - Input control (click/type) is higher risk: detonation-tier + explicit opt-in,
   never default. Borrow from OpenAI computer-use guidance: confirm-before-act,
   bounded action budgets, visible indicator while active.
+
+### 5b. Dependency-free search (shipped alongside)
+`rg`/`fd` are probed once and used when present; **pure-JS fallbacks** (workspace
+walk + regex) run otherwise, so `grep`/`glob` work on a bare machine. Python is
+resolved the same way. Verified: `glob *.json` returns files with no `fd` installed.
 
 ### 6. Tool maturity details
 - Per-tool timeouts surfaced in the UI; long-running bash as a background job.

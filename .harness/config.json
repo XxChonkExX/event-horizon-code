@@ -76,6 +76,15 @@
       "When off: no subprocess, no gating, no badge."
     ]
   },
+  "mcp": {
+    "servers": {},
+    "notes": [
+      "MCP client is live: stdio JSON-RPC 2.0, tools namespaced mcp_<server>_<tool> and merged into the agent toolset.",
+      "Shape: { \"name\": { \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \".\"], \"env\": {} } }",
+      "Servers spawn with an env allowlist (PATH/HOME/TEMP + their own vars) and are killed with the server process — no orphans.",
+      "Tool output is treated as untrusted data. Per-call approval follows the permissions block."
+    ]
+  },
   "detonate": {
     "enabled": true,
     "mode": "opt-in",
