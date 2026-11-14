@@ -35,15 +35,18 @@ export async function listModels(ollamaUrl = "http://127.0.0.1:11434"): Promise<
 function toOpenAIMessages(messages: ChatMessage[], system: string) {
   const out: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   for (const m of messages) {
+    const base: Record<string, unknown> = { role: m.role, content: m.content };
+    if (m.tool_calls) base.tool_calls = m.tool_calls;
+    if (m.tool_call_id) base.tool_call_id = m.tool_call_id;
+    if (m.name) base.name = m.name;
     if (m.images && m.images.length > 0) {
       const parts: Array<Record<string, unknown>> = [{ type: "text", text: m.content }];
       for (const img of m.images) {
         parts.push({ type: "image_url", image_url: { url: img.startsWith("data:") ? img : "data:image/png;base64," + img } });
       }
-      out.push({ role: m.role, content: parts });
-    } else {
-      out.push({ role: m.role, content: m.content });
+      base.content = parts;
     }
+    out.push(base);
   }
   return out;
 }
@@ -51,7 +54,7 @@ function toOpenAIMessages(messages: ChatMessage[], system: string) {
 export async function chatOpenAI(
   model: string,
   messages: ChatMessage[],
-  opts: { baseUrl: string; apiKey: string; think?: string; numPredict?: number; timeoutMs?: number }
+  opts: { baseUrl: string; apiKey: string; think?: string; numPredict?: number; timeoutMs?: number; tools?: unknown[] }
 ): Promise<ChatResult> {
   const url = `${opts.baseUrl.replace(/\/+$/, "")}/chat/completions`;
   const system = THINK_HINTS[opts.think ?? "medium"] ?? THINK_HINTS.medium;
@@ -64,6 +67,7 @@ export async function chatOpenAI(
         messages: toOpenAIMessages(messages, system),
         max_tokens: opts.numPredict ?? 400,
         stream: false,
+        ...(opts.tools?.length ? { tools: opts.tools } : {}),
       }),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
     });
@@ -71,29 +75,56 @@ export async function chatOpenAI(
       return { ok: false, content: "", model, error: `openai-compat ${res.status}: ${(await res.text()).slice(0, 200)}` };
     }
     const j = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
+      choices?: Array<{ message?: { content?: string; reasoning_content?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: unknown } }> } }>;
       usage?: { completion_tokens?: number };
     };
+    const toolCalls: ToolCall[] = (j.choices?.[0]?.message?.tool_calls ?? [])
+      .map((tc) => ({ id: tc.id, name: tc.function?.name ?? "", args: parseArgs(tc.function?.arguments) }))
+      .filter((tc) => tc.name);
     return {
       ok: true,
       content: j.choices?.[0]?.message?.content ?? "",
       thinking: j.choices?.[0]?.message?.reasoning_content,
       model,
       tokens: j.usage?.completion_tokens,
+      toolCalls: toolCalls.length ? toolCalls : undefined,
     };
   } catch (e) {
     return { ok: false, content: "", model, error: String(e).slice(0, 200) };
   }
 }
 
+export type ToolCall = { id?: string; name: string; args: Record<string, unknown> };
+
 export type ChatMessage = {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
   // Vision (S1): image data URLs or local paths — converted per provider.
   // Ollama: images[] (base64). OpenAI-compatible: content parts with image_url.
   images?: string[];
+  // Agent loop: assistant tool calls echoed back, and tool results.
+  tool_calls?: unknown[];
+  tool_call_id?: string;
+  name?: string;
 };
-export type ChatResult = { ok: boolean; content: string; thinking?: string; model: string; tokens?: number; error?: string };
+export type ChatResult = { ok: boolean; content: string; thinking?: string; model: string; tokens?: number; toolCalls?: ToolCall[]; error?: string };
+
+function parseArgs(a: unknown): Record<string, unknown> {
+  if (!a) return {};
+  if (typeof a === "object") return a as Record<string, unknown>;
+  try { return JSON.parse(String(a)) as Record<string, unknown>; } catch { return {}; }
+}
+
+// Pass our message shapes through to the wire, preserving tool call plumbing.
+function toWireMessages(messages: ChatMessage[]) {
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+    ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+    ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+    ...(m.name ? { name: m.name } : {}),
+  }));
+}
 
 const THINK_HINTS: Record<string, string> = {
   low: "Answer briefly and directly.",
@@ -126,20 +157,27 @@ const thinkUnsupported = new Set<string>();
 export async function chat(
   model: string,
   messages: ChatMessage[],
-  opts?: { baseUrl?: string; think?: string; numPredict?: number; timeoutMs?: number; keepAlive?: number }
+  // keepAlive: seconds (0 = unload immediately) or a duration string like "5m".
+  opts?: { baseUrl?: string; think?: string; numPredict?: number; timeoutMs?: number; keepAlive?: number | string; tools?: unknown[] }
 ): Promise<ChatResult> {
   const baseUrl = opts?.baseUrl ?? process.env.EH_OLLAMA_URL ?? "http://127.0.0.1:11434";
   const think = opts?.think ?? "medium";
   const system = THINK_HINTS[think] ?? THINK_HINTS.medium;
   const thinkKey = `${baseUrl}|${model}`;
   const send = async (includeThink: boolean): Promise<globalThis.Response> => {
+    // images ride on user turns; Ollama wants raw base64 (no data: prefix)
+    const mapped = toWireMessages(messages).map((m, idx) => ({
+      ...m,
+      ...(messages[idx]?.images ? { images: messages[idx].images!.map((i) => (i.startsWith("data:") ? i.slice(i.indexOf(",") + 1) : i)) } : {}),
+    }));
     const body: Record<string, unknown> = {
       model,
-      messages: [{ role: "system", content: system }, ...messages.map((m) => ({ ...m, images: m.images?.map((i) => (i.startsWith("data:") ? i.slice(i.indexOf(",") + 1) : i)) }))],
+      messages: [{ role: "system", content: system }, ...mapped],
       stream: false,
       keep_alive: opts?.keepAlive ?? 0,
       options: { num_predict: opts?.numPredict ?? 256 },
     };
+    if (opts?.tools?.length) body.tools = opts.tools;
     if (includeThink) body.think = mapThink(think);
     return fetch(`${baseUrl}/api/chat`, {
       method: "POST",
@@ -164,8 +202,14 @@ export async function chat(
       return { ok: false, content: "", model, error: `ollama ${res.status}: ${(await res.text()).slice(0, 200)}` };
     }
     // Reasoning models (gemma4, qwen3…) put chain-of-thought in message.thinking, answer in message.content.
-    const j = (await res.json()) as { message?: { content?: string; thinking?: string }; eval_count?: number };
-    return { ok: true, content: j.message?.content ?? "", thinking: j.message?.thinking, model, tokens: j.eval_count };
+    const j = (await res.json()) as {
+      message?: { content?: string; thinking?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: unknown } }> };
+      eval_count?: number;
+    };
+    const toolCalls: ToolCall[] = (j.message?.tool_calls ?? [])
+      .map((tc) => ({ id: tc.id, name: tc.function?.name ?? "", args: parseArgs(tc.function?.arguments) }))
+      .filter((tc) => tc.name);
+    return { ok: true, content: j.message?.content ?? "", thinking: j.message?.thinking, model, tokens: j.eval_count, toolCalls: toolCalls.length ? toolCalls : undefined };
   } catch (e) {
     return { ok: false, content: "", model, error: String(e).slice(0, 200) };
   }

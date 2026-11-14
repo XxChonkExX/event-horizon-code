@@ -28,9 +28,14 @@
   },
   "permissions": {
     "read": "allow",
+    "ls": "allow",
+    "grep": "allow",
+    "glob": "allow",
     "edit": "ask",
     "write": "ask",
     "bash": "ask",
+    "websearch": "ask",
+    "webfetch": "ask",
     "network": "ask",
     "lsp": "allow"
   },

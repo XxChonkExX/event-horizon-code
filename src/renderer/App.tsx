@@ -60,6 +60,8 @@ export default function App() {
   // Output token budget. Reasoning models (gemma4, qwen3) spend this on their
   // thinking channel first — too small and the reply comes back empty.
   const [tokens, setTokens] = createSignal(loadNum("ehc.tokens", 1024, 64, 8192));
+  // Auto-approve: let the agent run edit/write/bash without a per-call prompt.
+  const [autoApprove, setAutoApprove] = createSignal(localStorage.getItem("ehc.autoApprove") === "1");
 
   onMount(async () => {
     try {
@@ -74,6 +76,7 @@ export default function App() {
     localStorage.setItem("ehc.chatW", String(chatW()));
     localStorage.setItem("ehc.termH", String(termH()));
     localStorage.setItem("ehc.tokens", String(tokens()));
+    localStorage.setItem("ehc.autoApprove", autoApprove() ? "1" : "0");
   };
 
   const toggle = (p: Panel) => setOpen((o) => ({ ...o, [p]: !o[p] }));
@@ -134,7 +137,7 @@ export default function App() {
       const res = await apiFetch("/api/acp/session/prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ params: { sessionId: session, text, think: lvl, model: model() || undefined, numPredict: tokens(), worktree: session } })
+        body: JSON.stringify({ params: { sessionId: session, text, think: lvl, model: model() || undefined, numPredict: tokens(), autoApprove: autoApprove(), worktree: session } })
       });
       const data = (await res.json()) as { reply?: string; thinking?: string; model?: string; tokens?: number; attempts?: number; budget?: number };
       const esc = data.attempts && data.attempts > 1 ? ` · escalated x${data.attempts} to ${data.budget} tok` : "";
@@ -185,6 +188,7 @@ export default function App() {
           messages={messages} input={input} setInput={setInput} onSend={send}
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
           tokens={tokens} setTokens={(n) => { setTokens(clamp(n, 64, 8192)); }}
+          autoApprove={autoApprove} setAutoApprove={(v) => { setAutoApprove(v); persistLayout(); }}
           compact
         />
       </div>
@@ -226,6 +230,7 @@ export default function App() {
           messages={messages} input={input} setInput={setInput} onSend={send}
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
           tokens={tokens} setTokens={(n) => { setTokens(clamp(n, 64, 8192)); }}
+          autoApprove={autoApprove} setAutoApprove={(v) => { setAutoApprove(v); persistLayout(); }}
         />
       </Show>
 

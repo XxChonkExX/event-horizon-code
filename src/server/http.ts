@@ -21,6 +21,8 @@ import { searchEngram, verifyArithmetic } from "./engram";
 import { listSessions, createSession, listTodos, addTodo } from "./store";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
+import { TOOL_SPECS, AGENT_SYSTEM } from "./agentTools";
+import type { ChatMessage } from "./router";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
 import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir } from "./engine";
 
@@ -293,56 +295,89 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
-            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[] };
-            audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img` });
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean };
+            audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img${params.autoApprove ? ":auto" : ""}` });
             // Ladder: explicit provider wins -> running bundled engine -> Ollama -> echo.
             const usedModel = params.model ?? readConfigDefaultModel() ?? "";
             const engineUp = engineEndpoint();
-            const userMsg = { role: "user" as const, content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
+            const userMsg: ChatMessage = { role: "user", content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
+            // Session worktree may be a label ("default"), not a path — resolve safely
+            // so tools never run against a directory that does not exist.
+            const workdir = (() => {
+              const w = (params.worktree ?? "").trim();
+              try { return w && fs.existsSync(w) ? w : process.cwd(); } catch { return process.cwd(); }
+            })();
+            const autoApprove = params.autoApprove === true;
 
-            // One attempt on whichever lane applies. `nudge` adds a conclude-now
-            // instruction on escalated retries (thinking models only).
-            const runOnce = async (budget: number, nudge: boolean): Promise<ChatResult> => {
+            // Conversation accumulates across agent steps (assistant tool calls +
+            // tool results), so the model sees its own actions and their outcomes.
+            const convo: ChatMessage[] = [{ role: "system", content: AGENT_SYSTEM }, userMsg];
+
+            // One model call on whichever lane applies, with the agent tool set.
+            const callModel = async (budget: number, nudge: boolean): Promise<ChatResult> => {
               const msgs = nudge
-                ? [{ role: "system" as const, content: "Stop deliberating. Give your final answer directly and concisely now." }, userMsg]
-                : [userMsg];
+                ? [...convo, { role: "system" as const, content: "Stop deliberating. Use your final answer or a tool call now." }]
+                : convo;
               if (params.provider === "openai") {
                 const secret = readSecret("openai");
                 if (!secret?.apiKey || !secret.baseUrl) {
                   return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
                 }
-                return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs });
+                return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS });
               }
               if (engineUp) {
                 // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
-                return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs });
+                return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS });
               }
               if (usedModel) {
-                return chat(usedModel, msgs, { think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs });
+                // Keep the model warm during a conversation: agent loops make
+                // several calls per prompt and a cold reload costs minutes.
+                return chat(usedModel, msgs, { think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS, keepAlive: "5m" });
               }
               return { ok: false, content: "", model: "none", error: "no model selected" };
             };
 
-            // Escalation: reasoning models can burn the whole budget in their
-            // thinking channel and return empty content. Give them room, then
-            // FORCE a conclusion — double the budget and nudge, bounded so it can
-            // never loop forever. Never freeze the user.
+            const busy = Boolean(usedModel || params.provider === "openai" || engineUp);
             let result: ChatResult | null = null;
             let budget = clampBudget(params.numPredict ?? 1024);
             let attempts = 0;
-            if (usedModel || params.provider === "openai" || engineUp) {
-              const MAX_ATTEMPTS = 3;
-              const CEILING = 8192;
-              while (attempts < MAX_ATTEMPTS) {
-                attempts++;
-                result = await runOnce(budget, attempts > 1);
-                const emptyContent = (result.content ?? "").trim().length === 0;
-                const thought = (result.thinking ?? "").trim().length > 0;
-                if (result.ok && emptyContent && thought && attempts < MAX_ATTEMPTS && budget < CEILING) {
-                  budget = Math.min(budget * 2, CEILING);
-                  audit({ tool: "model.escalate", note: `${result.model} thinking exhausted ${budget / 2} tok -> retry at ${budget}` });
-                  continue;
+            const steps: string[] = [];
+            if (busy) {
+              // Agent loop: model may call tools; we execute (respecting the
+              // permission gate) and hand results back, then let it answer.
+              // Bounded: 4 steps, and each step escalates at most 3x if thinking
+              // eats the budget. Never loops forever.
+              for (let step = 0; step < 4; step++) {
+                let r: ChatResult;
+                let innerAttempts = 0;
+                budget = clampBudget(params.numPredict ?? 1024);
+                while (true) {
+                  innerAttempts++; attempts++;
+                  r = await callModel(budget, innerAttempts > 1);
+                  const empty = (r.content ?? "").trim().length === 0;
+                  const thought = (r.thinking ?? "").trim().length > 0;
+                  if (r.ok && empty && thought && !(r.toolCalls?.length) && innerAttempts < 3 && budget < 8192) {
+                    budget = Math.min(budget * 2, 8192);
+                    audit({ tool: "model.escalate", note: `${r.model} thinking exhausted -> retry at ${budget}` });
+                    continue;
+                  }
+                  break;
                 }
+                if (!r.ok) { result = r; break; }
+                if (r.toolCalls?.length) {
+                  convo.push({ role: "assistant", content: r.content ?? "", tool_calls: r.toolCalls });
+                  for (const tc of r.toolCalls) {
+                    const res = await runTool(tc.name as ToolName, { ...tc.args, ...(autoApprove ? { approved: true } : {}) }, workdir);
+                    const out = (res.ok ? res.out : (res.error ?? "failed")).slice(0, 1500);
+                    const shortArgs = JSON.stringify(tc.args).slice(0, 100);
+                    steps.push(`${res.ok ? "OK" : "X "} ${tc.name}(${shortArgs})${res.needsApproval ? " — needs approval" : ""}\n${out.slice(0, 400)}`);
+                    audit({ tool: `agent.${tc.name}`, note: `ok=${res.ok}${res.needsApproval ? " needsApproval" : ""}` });
+                    broadcast(workdir, "tool-step", { name: tc.name, ok: res.ok, needsApproval: Boolean(res.needsApproval), step });
+                    convo.push({ role: "tool", content: out, name: tc.name, tool_call_id: tc.id });
+                  }
+                  continue; // let the model react to tool results
+                }
+                result = r;
                 break;
               }
             }
@@ -351,18 +386,23 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               const thought = (result.thinking ?? "").trim().length > 0;
               let replyText = result.ok ? result.content : `model error: ${result.error}`;
               if (result.ok && emptyContent && thought) {
-                // Escalation exhausted: state the finding plainly, keep the proof.
                 const tail = (result.thinking ?? "").slice(-400);
                 replyText = `(no final answer after ${attempts} attempts, ${budget} tokens — the model spent every budget thinking. Raise "tokens" in the composer, or lower "think".)\n\n[thinking tail]\n${tail}`;
               }
-              audit({ tool: "model.chat", note: `${result.model} tokens=${result.tokens ?? "?"} ok=${result.ok} attempts=${attempts} budget=${budget}` });
-              const reply = { reply: replyText, thinking: result.thinking, model: result.model, tokens: result.tokens, attempts, budget, think: params.think ?? "medium" };
-              broadcast(params.worktree ?? process.cwd(), "session/update", reply);
+              if (steps.length) {
+                replyText = `— tool steps (${steps.length}) —\n${steps.join("\n\n")}\n\n— answer —\n${replyText}`;
+              }
+              if (!autoApprove && steps.some((s) => s.includes("needs approval"))) {
+                replyText += `\n\n(tool calls needing approval were not executed — enable auto-approve in the composer, or approve via the paletted permission flow.)`;
+              }
+              audit({ tool: "model.chat", note: `${result.model} tokens=${result.tokens ?? "?"} ok=${result.ok} attempts=${attempts} budget=${budget} tools=${steps.length}` });
+              const reply = { reply: replyText, thinking: result.thinking, model: result.model, tokens: result.tokens, attempts, budget, toolSteps: steps.length, think: params.think ?? "medium" };
+              broadcast(workdir, "session/update", reply);
               sendJson(res, 200, reply);
             } else {
               // No model selected — echo + honest hint (never a fake answer).
               const reply = { reply: `echo: ${params.text ?? ""}`, think: params.think ?? "default", hint: "no model selected - pass params.model (see GET /api/models) or set modelRouter.defaultModel" };
-              broadcast(params.worktree ?? process.cwd(), "session/update", reply);
+              broadcast(workdir, "session/update", reply);
               sendJson(res, 200, reply);
             }
           } else if (method === "fs/read_text_file") {

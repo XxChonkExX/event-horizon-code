@@ -166,6 +166,7 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
         ...(deviceIndex !== null && deviceIndex !== undefined ? { VVM_DEVICE_INDEX: String(deviceIndex) } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"] as const,
+      windowsHide: true,
     });
     const logPath = path.join(logDir, `engine-${child.pid ?? "x"}.log`);
     const logStream = fs.createWriteStream(logPath, { flags: "a" });

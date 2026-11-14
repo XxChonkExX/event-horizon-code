@@ -14,6 +14,8 @@ export default function ChatColumn(props: {
   setThink: (v: string) => void;
   tokens: () => number;
   setTokens: (n: number) => void;
+  autoApprove: () => boolean;
+  setAutoApprove: (v: boolean) => void;
   compact?: boolean; // pop-out variant: hide detonation footer
 }) {
   return (
@@ -41,6 +43,8 @@ export default function ChatColumn(props: {
           <option value="high">high</option>
           <option value="max">max</option>
         </select>
+      </div>
+      <div class="opts-row">
         <span title="Output token budget — reasoning models spend this on thinking first; the harness auto-doubles it and forces a conclusion if exhausted.">tokens</span>
         <input
           type="number" min="64" max="8192" step="128"
@@ -48,6 +52,10 @@ export default function ChatColumn(props: {
           onChange={(e) => props.setTokens(Number(e.target.value))}
           class="ehc-tokens"
         />
+        <label class="ehc-auto" title="Let the agent run edit/write/bash tools without asking each time (read/ls/grep/glob are always allowed).">
+          <input type="checkbox" checked={props.autoApprove()} onChange={(e) => props.setAutoApprove(e.target.checked)} />
+          auto-approve tools
+        </label>
       </div>
       {props.compact ? null : <p>Detonation lane available. Unclean inputs route to detonate (microVM, no net).</p>}
     </aside>

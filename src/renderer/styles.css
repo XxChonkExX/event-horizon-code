@@ -190,6 +190,17 @@ aside.chat .model-row input.ehc-tokens {
   border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 13px;
 }
 aside.chat .model-row span { flex: 0 0 auto; }
+aside.chat .opts-row {
+  display: flex; gap: 8px; align-items: center;
+  padding: 0 12px 8px; color: var(--dim); font-size: 12px;
+}
+aside.chat .opts-row span { flex: 0 0 auto; }
+label.ehc-auto {
+  display: flex; align-items: center; gap: 5px;
+  color: var(--dim); font-size: 12px; cursor: pointer;
+  white-space: nowrap;
+}
+label.ehc-auto input { accent-color: var(--accent); margin: 0; }
 aside.chat li { font-size: 13.5px; line-height: 1.45; }
 aside.chat > p { margin: 0; padding: 6px 12px 10px; color: var(--dim); font-size: 12px; }
 
