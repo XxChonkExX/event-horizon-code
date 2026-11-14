@@ -63,6 +63,14 @@ export function addTodo(t: Todo): Todo {
   return t;
 }
 
+export function toggleTodo(id: string, done: boolean): void {
+  if (db) db.prepare("UPDATE todos SET done=? WHERE id=?").run(done ? 1 : 0, id);
+  else {
+    const t = memTodos.find((x) => x.id === id);
+    if (t) t.done = done;
+  }
+}
+
 // ---- conversation history (multi-turn + compaction) ----
 // Content-only persistence: tool_calls are not stored; continuity of
 // user/assistant turns is what matters across turns.

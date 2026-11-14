@@ -8,9 +8,11 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
 import { searchEngram, verifyArithmetic } from "./engram";
+import { listTodos, addTodo, toggleTodo } from "./store";
+import vm from "node:vm";
 import { audit } from "./audit";
 
-export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "calc_verify";
+export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "calc_verify" | "run_machine" | "run_js" | "todo";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean };
 
 function readConfig(): { permissions?: Record<string, string> } {
@@ -176,6 +178,87 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       if (!expr) return { ok: false, error: "expr required", out: "" };
       const r = await verifyArithmetic(expr);
       return r.ok ? { ok: true, out: `${expr} = ${r.value}` } : { ok: false, error: "calculator unavailable", out: "" };
+    }
+    if (tool === "run_machine") {
+      // AfterImage engram machines (import, never reimplement): deterministic,
+      // host-isolated interpreters. Called via the repo's own machines.run().
+      const MACHINES = ["ti85", "pyvm", "rv32", "z80", "m6502", "thumb2", "dataflow"];
+      const machine = String(args.machine ?? "");
+      const code = String(args.code ?? "");
+      if (!MACHINES.includes(machine)) return { ok: false, error: `unknown machine (one of ${MACHINES.join(", ")})`, out: "" };
+      if (!code.trim()) return { ok: false, error: "code required", out: "" };
+      const src = process.env.EH_ENGRAM_SRC ?? "C:/Users/mikeh/Documents/New OpenCode Project/AfterImage-Engram/src";
+      if (!fs.existsSync(path.join(src, "machines.py"))) {
+        return { ok: false, error: "engram machines not found — set EH_ENGRAM_SRC to AfterImage-Engram/src", out: "" };
+      }
+      const driver = `import sys,json; sys.path.insert(0,r"${src}"); import machines; print(json.dumps(machines.run(sys.argv[1], sys.argv[2])))`;
+      return new Promise<ToolResult>((resolve) => {
+        execFile(process.env.PYTHON ?? "python", ["-c", driver, machine, code], { timeout: 20000, windowsHide: true, maxBuffer: 200000 }, (err, stdout, stderr) => {
+          if (err) { audit({ tool, note: `${machine} err` }); return resolve({ ok: false, error: String(err.message).slice(0, 200), out: "" }); }
+          try {
+            const r = JSON.parse(String(stdout).trim().split("\n").pop() || "{}") as { ok: boolean; result?: unknown; err?: string; steps?: number };
+            audit({ tool, note: `${machine} ok=${r.ok}` });
+            resolve({ ok: r.ok, out: JSON.stringify({ machine, result: r.result, steps: r.steps ?? 0, err: r.err ?? null }) });
+          } catch {
+            resolve({ ok: false, error: "machine output unparseable", out: "" });
+          }
+        });
+      });
+    }
+    if (tool === "run_js") {
+      // Programmatic tool calling (Anthropic PTC pattern): the model writes one
+      // program that batches read-only tools instead of one round trip per call.
+      // Light sandbox (node:vm): no require, no fs, no net, no timers — only the
+      // injected stubs. Output capped. Untrusted scripts should use the detonate lane.
+      const code = String(args.code ?? "").trim();
+      if (!code) return { ok: false, error: "code required", out: "" };
+      const stubCalls = { n: 0 };
+      const MAX_CALLS = 16;
+      const stub = (name: string) => async (a: Record<string, unknown>) => {
+        if (++stubCalls.n > MAX_CALLS) throw new Error(`stub call cap (${MAX_CALLS}) exceeded`);
+        const r = await runTool(name as ToolName, a, worktree);
+        return JSON.stringify({ ok: r.ok, out: (r.ok ? r.out : (r.error ?? "")).slice(0, 20000) });
+      };
+      const sandbox: Record<string, unknown> = {
+        read: stub("read"), ls: stub("ls"), grep: stub("grep"), glob: stub("glob"),
+        console: { log: (...a: unknown[]) => { captured.push(a.map(String).join(" ")); } },
+      };
+      const captured: string[] = [];
+      try {
+        const ctx = vm.createContext(sandbox);
+        const script = `(async () => {\n${code}\n})()`;
+        const result = await vm.runInContext(script, ctx, { timeout: 10000 });
+        const out = [
+          captured.length ? `[log]\n${captured.join("\n").slice(0, 2000)}` : "",
+          result !== undefined ? `[return]\n${String(result).slice(0, 20000)}` : "",
+          `[stub calls: ${stubCalls.n}]`,
+        ].filter(Boolean).join("\n");
+        audit({ tool, note: `calls=${stubCalls.n} out=${out.length}` });
+        return { ok: true, out };
+      } catch (e) {
+        return { ok: false, error: `sandbox: ${String(e).slice(0, 200)}`, out: captured.join("\n").slice(0, 2000) };
+      }
+    }
+    if (tool === "todo") {
+      // Plan/progress tracking (OpenAI Agents SDK pattern). Stored per session.
+      const op = String(args.op ?? "list");
+      const sessionId = String(args.sessionId ?? "default");
+      if (op === "add") {
+        const text = String(args.text ?? "").trim();
+        if (!text) return { ok: false, error: "text required", out: "" };
+        const t = addTodo({ id: `todo_${Date.now().toString(36)}`, sessionId, text, done: false });
+        audit({ tool, note: `add ${t.id}` });
+        return { ok: true, out: `Added: ${t.text}` };
+      }
+      if (op === "done") {
+        const id = String(args.id ?? "");
+        const all = listTodos(sessionId);
+        const t = all.find((x) => x.id === id);
+        if (t) { toggleTodo(id, true); return { ok: true, out: `Done: ${t.text}` }; }
+        return { ok: false, error: `no todo ${id}`, out: "" };
+      }
+      const all = listTodos(sessionId);
+      return { ok: true, out: all.length ? all.map((t) => `${t.done ? "[x]" : "[ ]"} ${t.id} — ${t.text}`).join("\n") : "(no todos)" };
     }
     if (tool === "webfetch") {
       // Fetch a URL as text, capped. Untrusted content — the agent is told to treat it as data.
