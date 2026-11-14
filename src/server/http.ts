@@ -18,7 +18,7 @@ import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels, chat, chatOpenAI } from "./router";
 import type { ChatResult } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
-import { listSessions, createSession, listTodos, addTodo } from "./store";
+import { listSessions, createSession, listTodos, addTodo, saveMessages, loadMessages } from "./store";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { TOOL_SPECS, AGENT_SYSTEM } from "./agentTools";
@@ -309,9 +309,36 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             })();
             const autoApprove = params.autoApprove === true;
 
-            // Conversation accumulates across agent steps (assistant tool calls +
-            // tool results), so the model sees its own actions and their outcomes.
-            const convo: ChatMessage[] = [{ role: "system", content: AGENT_SYSTEM }, userMsg];
+            // Conversation accumulates across agent steps AND across turns:
+            // history from previous prompts in this session is seeded first, so
+            // follow-ups ("sure", "make it blue") have context. Compaction keeps
+            // long sessions bounded. Content-only persistence (tool_calls dropped).
+            const HISTORY_CAP = 60_000; // ~15k tokens of prior conversation
+            const histRaw = loadMessages(params.sessionId ?? "default");
+            let hist: ChatMessage[] = histRaw.map((m) => ({ role: m.role as ChatMessage["role"], content: m.content }));
+            if (JSON.stringify(hist).length > HISTORY_CAP && hist.length > 8) {
+              // Compact: keep the most recent turns verbatim, summarize the rest
+              // with the same model (cheap call, no tools) or a deterministic digest.
+              const keep = hist.slice(-6);
+              const older = hist.slice(0, -6);
+              let summary: ChatMessage | null = null;
+              try {
+                const digest = older.map((m) => `[${m.role}] ${m.content}`).join("\n").slice(0, 20_000);
+                const sumRes = await chat(usedModel || "engine", [
+                  { role: "system", content: "You are a conversation compressor. Summarize the earlier part of this coding session: what the user asked, what was done, key file paths and decisions. Be terse and factual; no preamble." },
+                  { role: "user", content: digest },
+                ], { think: "low", numPredict: 512, timeoutMs: 60000 });
+                if (sumRes.ok && (sumRes.content ?? "").trim()) {
+                  summary = { role: "system", content: `[earlier conversation summary]\n${sumRes.content}` };
+                }
+              } catch { /* fall through to deterministic digest */ }
+              if (!summary) {
+                const files = older.flatMap((m) => (m.content.match(/[\w./-]+\.(ts|tsx|js|py|rs|go|md|json)/g) ?? [])).slice(0, 20);
+                summary = { role: "system", content: `[earlier conversation truncated — key files mentioned: ${[...new Set(files)].join(", ") || "none"}]` };
+              }
+              hist = [summary, ...keep];
+            }
+            const convo: ChatMessage[] = [{ role: "system", content: AGENT_SYSTEM }, ...hist, userMsg];
 
             // One model call on whichever lane applies, with the agent tool set.
             const callModel = async (budget: number, nudge: boolean): Promise<ChatResult> => {
@@ -396,6 +423,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                 replyText += `\n\n(tool calls needing approval were not executed — enable auto-approve in the composer, or approve via the paletted permission flow.)`;
               }
               audit({ tool: "model.chat", note: `${result.model} tokens=${result.tokens ?? "?"} ok=${result.ok} attempts=${attempts} budget=${budget} tools=${steps.length}` });
+              // Persist conversation (excluding the volatile system prompt) so the
+              // next turn has context. Tool-result messages keep their content.
+              try {
+                saveMessages(params.sessionId ?? "default", convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
+              } catch { /* persistence is best-effort; audit never blocks */ }
               const reply = { reply: replyText, thinking: result.thinking, model: result.model, tokens: result.tokens, attempts, budget, toolSteps: steps.length, think: params.think ?? "medium" };
               broadcast(workdir, "session/update", reply);
               sendJson(res, 200, reply);

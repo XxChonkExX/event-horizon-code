@@ -28,7 +28,8 @@ export function initStore(): { mode: "sqlite" | "memory" } {
     db.pragma("foreign_keys = ON");
     db.exec(
       "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT, worktree TEXT, created TEXT);" +
-      "CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, sessionId TEXT, text TEXT, done INTEGER);"
+      "CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, sessionId TEXT, text TEXT, done INTEGER);" +
+      "CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sessionId TEXT, seq INTEGER, role TEXT, content TEXT, ts TEXT);"
     );
     return { mode: "sqlite" };
   } catch {
@@ -60,4 +61,27 @@ export function addTodo(t: Todo): Todo {
   if (db) db.prepare("INSERT INTO todos (id,sessionId,text,done) VALUES (?,?,?,?)").run(t.id, t.sessionId, t.text, t.done ? 1 : 0);
   else memTodos.push(t);
   return t;
+}
+
+// ---- conversation history (multi-turn + compaction) ----
+// Content-only persistence: tool_calls are not stored; continuity of
+// user/assistant turns is what matters across turns.
+
+type StoredMessage = { role: string; content: string };
+
+const memMessages = new Map<string, StoredMessage[]>();
+
+export function saveMessages(sessionId: string, msgs: StoredMessage[]): void {
+  if (db) {
+    db.prepare("DELETE FROM messages WHERE sessionId=?").run(sessionId);
+    const ins = db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) VALUES (?,?,?,?,?,?)");
+    msgs.forEach((m, i) => ins.run(`m_${sessionId}_${i}`, sessionId, i, m.role, m.content, new Date().toISOString()));
+  } else {
+    memMessages.set(sessionId, msgs);
+  }
+}
+
+export function loadMessages(sessionId: string): StoredMessage[] {
+  if (db) return db.prepare("SELECT role, content FROM messages WHERE sessionId=? ORDER BY seq").all(sessionId) as StoredMessage[];
+  return memMessages.get(sessionId) ?? [];
 }

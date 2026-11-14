@@ -7,9 +7,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
+import { searchEngram, verifyArithmetic } from "./engram";
 import { audit } from "./audit";
 
-export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch";
+export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "calc_verify";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean };
 
 function readConfig(): { permissions?: Record<string, string> } {
@@ -21,6 +22,21 @@ function readConfig(): { permissions?: Record<string, string> } {
 function permissionFor(tool: ToolName): string {
   const perms = readConfig().permissions ?? {};
   return perms[tool] ?? "ask";
+}
+
+// Workspace jail: tools operate on paths relative to the workspace. Absolute
+// paths and traversal are refused with a clear error (the model is told the
+// constraint in its tool descriptions and can ask the user to relocate files).
+function safePath(worktree: string, p: string): { ok: boolean; abs?: string; error?: string } {
+  if (path.isAbsolute(p)) {
+    return { ok: false, error: "absolute paths are not allowed — use a path relative to the workspace, or ask the user to move the file into the workspace" };
+  }
+  const abs = path.resolve(worktree, p);
+  const root = path.resolve(worktree);
+  if (abs !== root && !abs.startsWith(root + path.sep)) {
+    return { ok: false, error: "path escapes the workspace" };
+  }
+  return { ok: true, abs };
 }
 
 async function agentWatchGate(tool: ToolName, worktree: string) {
@@ -55,26 +71,28 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
 
   try {
     if (tool === "read") {
-      const file = path.join(worktree, String(args.path ?? ""));
-      const text = fs.readFileSync(file, "utf8");
+      const sp = safePath(worktree, String(args.path ?? ""));
+      if (!sp.ok) return { ok: false, error: sp.error, out: "" };
+      const text = fs.readFileSync(sp.abs!, "utf8");
       audit({ tool, note: String(args.path ?? "") });
       return { ok: true, out: text.slice(0, 100000) };
     }
     if (tool === "edit") {
-      const file = path.join(worktree, String(args.path ?? ""));
-      const oldText = fs.readFileSync(file, "utf8");
+      const sp = safePath(worktree, String(args.path ?? ""));
+      if (!sp.ok) return { ok: false, error: sp.error, out: "" };
+      const oldText = fs.readFileSync(sp.abs!, "utf8");
       const newText = String(args.newText ?? "");
       audit({ tool, note: String(args.path ?? "") });
-      // Diff preview is caller's job; here we write atomically.
-      fs.writeFileSync(file, newText);
+      fs.writeFileSync(sp.abs!, newText);
       return { ok: true, out: `Edited ${String(args.path ?? "")} (${oldText.length} -> ${newText.length} bytes)` };
     }
     if (tool === "write") {
-      const file = path.join(worktree, String(args.path ?? ""));
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, String(args.content ?? ""));
+      const sp = safePath(worktree, String(args.path ?? ""));
+      if (!sp.ok) return { ok: false, error: sp.error, out: "" };
+      fs.mkdirSync(path.dirname(sp.abs!), { recursive: true });
+      fs.writeFileSync(sp.abs!, String(args.content ?? ""));
       audit({ tool, note: String(args.path ?? "") });
-      return { ok: true, out: `Wrote ${file}` };
+      return { ok: true, out: `Wrote ${String(args.path ?? "")}` };
     }
     if (tool === "bash") {
       const cmd = String(args.cmd ?? "");
@@ -140,6 +158,24 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       return results.length
         ? { ok: true, out: results.join("\n\n") }
         : { ok: false, error: "no results parsed (network blocked or endpoint changed)", out: "" };
+    }
+    if (tool === "engram_search") {
+      // AfterImage lookup (typed absence is a first-class answer). Import, never
+      // reimplement — the subprocess calls afterimage_* directly.
+      const query = String(args.query ?? "").trim();
+      if (!query) return { ok: false, error: "query required", out: "" };
+      const r = await searchEngram(query, Number(args.topK ?? 5));
+      audit({ tool, note: `${query.slice(0, 50)} -> ${r.records.length}` });
+      return r.absent
+        ? { ok: true, out: `NO RECORDS for "${query}" (${r.coverage}) — do not guess; say it is unknown.` }
+        : { ok: true, out: r.records.map((x, i) => `[${i + 1}] ${x}`).join("\n") };
+    }
+    if (tool === "calc_verify") {
+      // Exact arithmetic (TI-85 AST whitelist) — verify before asserting numbers.
+      const expr = String(args.expr ?? "").trim();
+      if (!expr) return { ok: false, error: "expr required", out: "" };
+      const r = await verifyArithmetic(expr);
+      return r.ok ? { ok: true, out: `${expr} = ${r.value}` } : { ok: false, error: "calculator unavailable", out: "" };
     }
     if (tool === "webfetch") {
       // Fetch a URL as text, capped. Untrusted content — the agent is told to treat it as data.
