@@ -503,6 +503,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             let result: ChatResult | null = null;
             let budget = clampBudget(effTokens);
             let attempts = 0;
+            let loadRetried = false;
             const steps: string[] = [];
             if (busy) {
               // Agent loop: model may call tools; we execute (respecting the
@@ -523,6 +524,18 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                     audit({ tool: "model.escalate", note: `${r.model} thinking exhausted -> retry at ${budget}` });
                     continue;
                   }
+                  break;
+                }
+                // Model-load failure (usually transient RAM pressure while other
+                // work owns memory): retry once, then report the cause plainly.
+                if (!r.ok && /out-of-memory|startup failed|failed to initialize|oom/i.test(r.error ?? "") && !loadRetried) {
+                  loadRetried = true;
+                  audit({ tool: "model.load-retry", note: `oom on ${r.model}` });
+                  await new Promise((res) => setTimeout(res, 3000));
+                  continue;
+                }
+                if (!r.ok && /out-of-memory|startup failed|failed to initialize|oom/i.test(r.error ?? "")) {
+                  result = { ...r, error: `local model could not load — the system is low on RAM (another process may be holding it). Free memory, pick a smaller model, or lower engine context. Underlying: ${(r.error ?? "").slice(0, 160)}` };
                   break;
                 }
                 // Context-overflow recovery: shed the oldest turns and retry once
