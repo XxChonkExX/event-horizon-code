@@ -12,6 +12,8 @@ export default function ChatColumn(props: {
   setModel: (v: string) => void;
   think: () => string;
   setThink: (v: string) => void;
+  tokens: () => number;
+  setTokens: (n: number) => void;
   compact?: boolean; // pop-out variant: hide detonation footer
 }) {
   return (
@@ -39,6 +41,13 @@ export default function ChatColumn(props: {
           <option value="high">high</option>
           <option value="max">max</option>
         </select>
+        <span title="Output token budget — reasoning models spend this on thinking first; the harness auto-doubles it and forces a conclusion if exhausted.">tokens</span>
+        <input
+          type="number" min="64" max="8192" step="128"
+          value={props.tokens()}
+          onChange={(e) => props.setTokens(Number(e.target.value))}
+          class="ehc-tokens"
+        />
       </div>
       {props.compact ? null : <p>Detonation lane available. Unclean inputs route to detonate (microVM, no net).</p>}
     </aside>

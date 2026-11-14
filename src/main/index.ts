@@ -56,10 +56,14 @@ app.whenReady().then(async () => {
   });
   Menu.setApplicationMenu(null);
   const windows = new Map<string, BrowserWindow>();
-  // Multi-window: one BrowserWindow per session/worktree
+  // Multi-window: one BrowserWindow per session/worktree.
+  // Clamp to the work area: at high DPI scaling the logical desktop can be
+  // smaller than 1440x900, and an oversized window opens with panels off-screen.
+  const wa = screen.getPrimaryDisplay().workArea;
   function openWindow(sessionId: string) {
     const win = new BrowserWindow({
-      width: 1440, height: 900,
+      width: Math.min(1440, wa.width),
+      height: Math.min(900, wa.height),
       webPreferences: {
         contextIsolation: true, nodeIntegration: false,
         preload: path.join(__dirname, "../preload/index.js"),

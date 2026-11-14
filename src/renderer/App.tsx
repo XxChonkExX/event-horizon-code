@@ -34,6 +34,14 @@ const loadNum = (key: string, dflt: number, lo: number, hi: number) => {
   return Number.isFinite(v) && v >= lo && v <= hi ? v : dflt;
 };
 
+// Adaptive defaults: on small displays the fixed columns leave the editor with
+// almost nothing. Scale the defaults down instead of demanding a bigger screen.
+const VW = window.innerWidth;
+const VH = window.innerHeight;
+const DEF_SIDEBAR = VW < 1500 ? 200 : 250;
+const DEF_CHAT = VW < 1500 ? 340 : 460;
+const DEF_TERM = VH < 820 ? 170 : 240;
+
 export default function App() {
   const [messages, setMessages] = createSignal<string[]>([]);
   const [input, setInput] = createSignal("");
@@ -45,10 +53,13 @@ export default function App() {
   const [open, setOpen] = createSignal<Record<Panel, boolean>>({ sidebar: true, chat: true, terminal: true, panels: true });
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [shaderIdx, setShaderIdx] = createSignal(0);
-  // Resizable panel sizes (persisted)
-  const [sidebarW, setSidebarW] = createSignal(loadNum("ehc.sidebarW", 250, 160, 520));
-  const [chatW, setChatW] = createSignal(loadNum("ehc.chatW", 460, 280, 800));
-  const [termH, setTermH] = createSignal(loadNum("ehc.termH", 240, 100, 600));
+  // Resizable panel sizes (persisted; adaptive defaults for small displays)
+  const [sidebarW, setSidebarW] = createSignal(loadNum("ehc.sidebarW", DEF_SIDEBAR, 160, 520));
+  const [chatW, setChatW] = createSignal(loadNum("ehc.chatW", DEF_CHAT, 280, 800));
+  const [termH, setTermH] = createSignal(loadNum("ehc.termH", DEF_TERM, 100, 600));
+  // Output token budget. Reasoning models (gemma4, qwen3) spend this on their
+  // thinking channel first — too small and the reply comes back empty.
+  const [tokens, setTokens] = createSignal(loadNum("ehc.tokens", 1024, 64, 8192));
 
   onMount(async () => {
     try {
@@ -62,6 +73,7 @@ export default function App() {
     localStorage.setItem("ehc.sidebarW", String(sidebarW()));
     localStorage.setItem("ehc.chatW", String(chatW()));
     localStorage.setItem("ehc.termH", String(termH()));
+    localStorage.setItem("ehc.tokens", String(tokens()));
   };
 
   const toggle = (p: Panel) => setOpen((o) => ({ ...o, [p]: !o[p] }));
@@ -122,10 +134,11 @@ export default function App() {
       const res = await apiFetch("/api/acp/session/prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ params: { sessionId: session, text, think: lvl, model: model() || undefined, numPredict: 400, worktree: session } })
+        body: JSON.stringify({ params: { sessionId: session, text, think: lvl, model: model() || undefined, numPredict: tokens(), worktree: session } })
       });
-      const data = (await res.json()) as { reply?: string; thinking?: string; model?: string; tokens?: number };
-      const label = data.model ? `${data.model}${data.tokens ? ` · ${data.tokens} tok` : ""}` : "echo";
+      const data = (await res.json()) as { reply?: string; thinking?: string; model?: string; tokens?: number; attempts?: number; budget?: number };
+      const esc = data.attempts && data.attempts > 1 ? ` · escalated x${data.attempts} to ${data.budget} tok` : "";
+      const label = data.model ? `${data.model}${data.tokens ? ` · ${data.tokens} tok` : ""}${esc}` : "echo";
       setMessages((m) => [...m, `— ${label} —\n${data.reply ?? ""}${data.thinking ? `\n\n[thinking]\n${data.thinking}` : ""}`]);
     } catch { /* server not running — local echo already recorded */ }
   };
@@ -171,6 +184,7 @@ export default function App() {
         <ChatColumn
           messages={messages} input={input} setInput={setInput} onSend={send}
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
+          tokens={tokens} setTokens={(n) => { setTokens(clamp(n, 64, 8192)); }}
           compact
         />
       </div>
@@ -211,6 +225,7 @@ export default function App() {
         <ChatColumn
           messages={messages} input={input} setInput={setInput} onSend={send}
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
+          tokens={tokens} setTokens={(n) => { setTokens(clamp(n, 64, 8192)); }}
         />
       </Show>
 

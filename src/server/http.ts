@@ -63,6 +63,8 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
   return false;
 }
 
+const clampBudget = (n: number) => Math.min(8192, Math.max(64, Math.round(n)));
+
 function readConfigDefaultModel(): string | null {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { modelRouter?: { defaultModel?: string | null } };
@@ -294,26 +296,67 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[] };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img` });
             // Ladder: explicit provider wins -> running bundled engine -> Ollama -> echo.
-            let result: ChatResult | null = null;
             const usedModel = params.model ?? readConfigDefaultModel() ?? "";
-            const userMsg = { role: "user" as const, content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
             const engineUp = engineEndpoint();
-            if (params.provider === "openai") {
-              const secret = readSecret("openai");
-              if (!secret?.apiKey || !secret.baseUrl) {
-                result = { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
-              } else {
-                result = await chatOpenAI(usedModel || "gpt-4o-mini", [userMsg], { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
+            const userMsg = { role: "user" as const, content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
+
+            // One attempt on whichever lane applies. `nudge` adds a conclude-now
+            // instruction on escalated retries (thinking models only).
+            const runOnce = async (budget: number, nudge: boolean): Promise<ChatResult> => {
+              const msgs = nudge
+                ? [{ role: "system" as const, content: "Stop deliberating. Give your final answer directly and concisely now." }, userMsg]
+                : [userMsg];
+              if (params.provider === "openai") {
+                const secret = readSecret("openai");
+                if (!secret?.apiKey || !secret.baseUrl) {
+                  return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
+                }
+                return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs });
               }
-            } else if (engineUp) {
-              // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
-              result = await chatOpenAI(usedModel || "engine", [userMsg], { baseUrl: engineUp, apiKey: "local", think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
-            } else if (usedModel) {
-              result = await chat(usedModel, [userMsg], { think: params.think ?? "medium", numPredict: params.numPredict, timeoutMs: params.timeoutMs });
+              if (engineUp) {
+                // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
+                return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs });
+              }
+              if (usedModel) {
+                return chat(usedModel, msgs, { think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs });
+              }
+              return { ok: false, content: "", model: "none", error: "no model selected" };
+            };
+
+            // Escalation: reasoning models can burn the whole budget in their
+            // thinking channel and return empty content. Give them room, then
+            // FORCE a conclusion — double the budget and nudge, bounded so it can
+            // never loop forever. Never freeze the user.
+            let result: ChatResult | null = null;
+            let budget = clampBudget(params.numPredict ?? 1024);
+            let attempts = 0;
+            if (usedModel || params.provider === "openai" || engineUp) {
+              const MAX_ATTEMPTS = 3;
+              const CEILING = 8192;
+              while (attempts < MAX_ATTEMPTS) {
+                attempts++;
+                result = await runOnce(budget, attempts > 1);
+                const emptyContent = (result.content ?? "").trim().length === 0;
+                const thought = (result.thinking ?? "").trim().length > 0;
+                if (result.ok && emptyContent && thought && attempts < MAX_ATTEMPTS && budget < CEILING) {
+                  budget = Math.min(budget * 2, CEILING);
+                  audit({ tool: "model.escalate", note: `${result.model} thinking exhausted ${budget / 2} tok -> retry at ${budget}` });
+                  continue;
+                }
+                break;
+              }
             }
             if (result) {
-              audit({ tool: "model.chat", note: `${result.model} tokens=${result.tokens ?? "?"} ok=${result.ok}` });
-              const reply = { reply: result.ok ? result.content : `model error: ${result.error}`, thinking: result.thinking, model: result.model, tokens: result.tokens, think: params.think ?? "medium" };
+              const emptyContent = (result.content ?? "").trim().length === 0;
+              const thought = (result.thinking ?? "").trim().length > 0;
+              let replyText = result.ok ? result.content : `model error: ${result.error}`;
+              if (result.ok && emptyContent && thought) {
+                // Escalation exhausted: state the finding plainly, keep the proof.
+                const tail = (result.thinking ?? "").slice(-400);
+                replyText = `(no final answer after ${attempts} attempts, ${budget} tokens — the model spent every budget thinking. Raise "tokens" in the composer, or lower "think".)\n\n[thinking tail]\n${tail}`;
+              }
+              audit({ tool: "model.chat", note: `${result.model} tokens=${result.tokens ?? "?"} ok=${result.ok} attempts=${attempts} budget=${budget}` });
+              const reply = { reply: replyText, thinking: result.thinking, model: result.model, tokens: result.tokens, attempts, budget, think: params.think ?? "medium" };
               broadcast(params.worktree ?? process.cwd(), "session/update", reply);
               sendJson(res, 200, reply);
             } else {

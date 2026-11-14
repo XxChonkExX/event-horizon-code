@@ -17,15 +17,29 @@ export default function ToolchainDoctor() {
   const [checks, setChecks] = createSignal<ToolCheck[]>([]);
   const [loading, setLoading] = createSignal(true);
 
-  onMount(async () => {
+  const refresh = async () => {
     try {
       const data = await apiJson<ToolCheck[]>("/api/toolchain");
       setChecks(data);
+      localStorage.setItem("ehc.toolchain", JSON.stringify(data));
     } catch {
-      setChecks([]);
+      if (checks().length === 0) setChecks([]);
     } finally {
       setLoading(false);
     }
+  };
+
+  onMount(() => {
+    // Show the last known result immediately (the probe set is ~80 spawns and
+    // can idle a long time under load); refresh in the background.
+    try {
+      const cached = localStorage.getItem("ehc.toolchain");
+      if (cached) {
+        setChecks(JSON.parse(cached) as ToolCheck[]);
+        setLoading(false);
+      }
+    } catch { /* corrupt cache — ignore */ }
+    void refresh();
   });
 
   const byLang = () => {
@@ -43,6 +57,7 @@ export default function ToolchainDoctor() {
   return (
     <div class="toolchain-doctor">
       <h3>Toolchain Doctor</h3>
+      <button onClick={() => void refresh()}>Refresh</button>
       {byLang().map(([name, items]) => {
         const allOk = items.every((i) => i.ok);
         return (
