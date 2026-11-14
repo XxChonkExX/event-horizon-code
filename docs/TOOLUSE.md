@@ -25,7 +25,7 @@ Agent loop in `src/server/http.ts` (`session/prompt`):
 
 | Tool | Gate | Purpose |
 |---|---|---|
-| `read` | allow | read a workspace text file (100KB cap) |
+| `read` | allow | read a workspace text file (100KB cap, workspace-jailed) |
 | `ls` | allow | list a directory (workspace-jailed) |
 | `grep` | allow | ripgrep content search |
 | `glob` | allow | fd file/dir discovery |
@@ -34,6 +34,11 @@ Agent loop in `src/server/http.ts` (`session/prompt`):
 | `bash` | ask | shell command (15s timeout, windowsHide) |
 | `websearch` | ask | keyless DuckDuckGo search → titles/snippets/urls |
 | `webfetch` | ask | fetch a URL as text (HTML stripped, 20KB cap) |
+| `engram_search` | allow | AfterImage lookup — typed absence, no guessing |
+| `calc_verify` | allow | exact arithmetic (TI-85 AST whitelist) |
+| `run_machine` | allow | deterministic emulators: ti85, pyvm, rv32, z80, m6502, thumb2, dataflow |
+| `run_js` | ask | **programmatic tool calling** — batch read/ls/grep/glob in one script |
+| `todo` | allow | plan/progress tracking, persisted per session |
 
 Composer has an **auto-approve tools** toggle (persisted) for unattended runs.
 
@@ -57,15 +62,14 @@ Composer has an **auto-approve tools** toggle (persisted) for unattended runs.
 - Tool output stays untrusted (same rule as web content).
 - Progressive discovery once tool count grows (see #3).
 
-### 2. Programmatic tool calling / code mode
-Borrowed from Anthropic's PTC guide and OpenAI's code-interpreter pattern: instead
-of one round trip per call, the model writes a small program that calls several
-tools and returns only the result. Big context + latency win for multi-file work.
-- New tool `run_js`: executes model-authored JS in a **detonation-tier sandbox**
-  (no net, no fs beyond the tool API, capped time/memory) with typed stubs for
-  `read/ls/grep/glob` injected as functions.
-- Governance: every call the script makes still passes the permission gate.
-- Deterministic alternative for compute: see #4.
+### 2. Programmatic tool calling / code mode — **SHIPPED**
+Borrowed from Anthropic's PTC guide: `run_js` executes model-authored JS in a
+`node:vm` sandbox (no require/fs/net/timers) with async stubs for
+`read/ls/grep/glob`, 16-call cap, 10s timeout, output capped. The model batches
+multi-file investigation into one round trip.
+- Honest limit: `node:vm` is a light sandbox, not a security boundary. Untrusted
+  scripts belong in the detonation lane (sbx microVM) — that upgrade is planned.
+- Governance: stubs call the same gated tool path; permissions still apply.
 
 ### 3. Tool search / progressive discovery
 With MCP servers the tool count can explode past what fits in context. Borrowed

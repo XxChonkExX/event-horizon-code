@@ -158,7 +158,9 @@ export async function chat(
   model: string,
   messages: ChatMessage[],
   // keepAlive: seconds (0 = unload immediately) or a duration string like "5m".
-  opts?: { baseUrl?: string; think?: string; numPredict?: number; timeoutMs?: number; keepAlive?: number | string; tools?: unknown[] }
+  // numCtx: context window. Ollama's default for vision-capable models can be
+  // 131k, which allocates large CPU buffers — cap it (8k is ample for coding).
+  opts?: { baseUrl?: string; think?: string; numPredict?: number; numCtx?: number; timeoutMs?: number; keepAlive?: number | string; tools?: unknown[] }
 ): Promise<ChatResult> {
   const baseUrl = opts?.baseUrl ?? process.env.EH_OLLAMA_URL ?? "http://127.0.0.1:11434";
   const think = opts?.think ?? "medium";
@@ -175,7 +177,7 @@ export async function chat(
       messages: [{ role: "system", content: system }, ...mapped],
       stream: false,
       keep_alive: opts?.keepAlive ?? 0,
-      options: { num_predict: opts?.numPredict ?? 256 },
+      options: { num_predict: opts?.numPredict ?? 256, num_ctx: opts?.numCtx ?? 8192 },
     };
     if (opts?.tools?.length) body.tools = opts.tools;
     if (includeThink) body.think = mapThink(think);
