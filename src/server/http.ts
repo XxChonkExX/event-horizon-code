@@ -22,7 +22,7 @@ import {
   createSession, listTodos, addTodo, saveMessages, loadMessages,
   listSessionsWithMeta, renameSession, deleteSession, touchSession,
   listInstructions, putInstruction, removeInstruction,
-  usageSummary, recordUsage, listProfiles, upsertProfile,
+  usageSummary, recordUsage, listProfiles, upsertProfile, getProfile,
 } from "./store";
 import os from "node:os";
 import { runTool } from "./tools";
@@ -412,10 +412,15 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
-            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean };
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img${params.autoApprove ? ":auto" : ""}` });
+            // Request param > active profile > project config > empty.
+            const profile = getProfile(params.profileId ?? process.env.EH_PROFILE ?? "default");
+            const prof = profile?.settings ?? {};
+            const profStr = (k: string): string | undefined => (typeof prof[k] === "string" ? (prof[k] as string) : undefined);
+            const profNum = (k: string): number | undefined => (typeof prof[k] === "number" ? (prof[k] as number) : undefined);
             // Ladder: explicit provider wins -> running bundled engine -> Ollama -> echo.
-            const usedModel = params.model ?? readConfigDefaultModel() ?? "";
+            const usedModel = params.model ?? profStr("model") ?? readConfigDefaultModel() ?? "";
             const engineUp = engineEndpoint();
             const userMsg: ChatMessage = { role: "user", content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
             // Session worktree may be a label ("default"), not a path — resolve safely
@@ -424,7 +429,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               const w = (params.worktree ?? "").trim();
               try { return w && fs.existsSync(w) ? w : process.cwd(); } catch { return process.cwd(); }
             })();
-            const autoApprove = params.autoApprove === true;
+            const autoApprove = params.autoApprove === true || prof["autoApprove"] === true;
+            const effThink = params.think ?? profStr("think") ?? "medium";
+            const effTokens = params.numPredict ?? profNum("tokens") ?? 1024;
 
             // Conversation accumulates across agent steps AND across turns:
             // history from previous prompts in this session is seeded first, so
@@ -478,23 +485,23 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                 if (!secret?.apiKey || !secret.baseUrl) {
                   return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
                 }
-                return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS });
+                return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS });
               }
               if (engineUp) {
                 // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
-                return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS });
+                return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS });
               }
               if (usedModel) {
                 // Keep the model warm during a conversation: agent loops make
                 // several calls per prompt and a cold reload costs minutes.
-                return chat(usedModel, msgs, { think: params.think ?? "medium", numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS, keepAlive: "5m" });
+                return chat(usedModel, msgs, { think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS, keepAlive: "5m" });
               }
               return { ok: false, content: "", model: "none", error: "no model selected" };
             };
 
             const busy = Boolean(usedModel || params.provider === "openai" || engineUp);
             let result: ChatResult | null = null;
-            let budget = clampBudget(params.numPredict ?? 1024);
+            let budget = clampBudget(effTokens);
             let attempts = 0;
             const steps: string[] = [];
             if (busy) {
@@ -505,7 +512,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               for (let step = 0; step < 4; step++) {
                 let r: ChatResult;
                 let innerAttempts = 0;
-                budget = clampBudget(params.numPredict ?? 1024);
+                budget = clampBudget(effTokens);
                 while (true) {
                   innerAttempts++; attempts++;
                   r = await callModel(budget, innerAttempts > 1);
@@ -566,7 +573,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                 touchSession(params.sessionId ?? "default");
                 if (result.tokens) recordUsage(params.sessionId ?? "default", result.model, result.tokens);
               } catch { /* persistence is best-effort; audit never blocks */ }
-              const reply = { reply: replyText, thinking: result.thinking, model: result.model, tokens: result.tokens, attempts, budget, toolSteps: steps.length, think: params.think ?? "medium" };
+              const reply = { reply: replyText, thinking: result.thinking, model: result.model, tokens: result.tokens, attempts, budget, toolSteps: steps.length, think: effThink };
               broadcast(workdir, "session/update", reply);
               sendJson(res, 200, reply);
             } else {

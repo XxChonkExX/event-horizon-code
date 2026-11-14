@@ -59,8 +59,15 @@ default). The project-level defaults stay in `.harness/config.json`.
 | `GET /api/profiles` | list |
 | `POST /api/profiles` | upsert `{id?, name, settings}` |
 
-Reserved for: default model, think/tokens, auto-approve, tool allowlists, extra
-system prompt. Wiring them into prompt defaults is the next step.
+**Wired into prompt defaults** (resolution order: request param → profile → project
+config → built-in default):
+- `settings.model` — default model when the request omits one
+- `settings.think` — default reasoning level
+- `settings.tokens` — default output budget
+- `settings.autoApprove` — default tool-approval posture
+
+Profile selection: `params.profileId` → `EH_PROFILE` env → the profile named
+`default`. Create one via `POST /api/profiles` with `{"id":"default", ...}`.
 
 ## Logs
 
