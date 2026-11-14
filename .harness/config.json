@@ -32,6 +32,8 @@
     "grep": "allow",
     "glob": "allow",
     "engram_search": "allow",
+    "engram_register": "allow",
+    "remember": "allow",
     "calc_verify": "allow",
     "run_machine": "allow",
     "todo": "allow",

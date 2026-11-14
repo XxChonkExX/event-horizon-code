@@ -17,33 +17,75 @@ function engramSrc(): string {
   return process.env.EH_ENGRAM_SRC ?? "C:/Users/mikeh/Documents/New OpenCode Project/AfterImage-Engram/src";
 }
 
+function engramDb(): string {
+  return process.env.EH_ENGRAM_DB ?? `${process.env.USERPROFILE ?? process.env.HOME ?? "."}\\.eventhorizon\\engram.db`;
+}
+
+function engramSession(): string {
+  return process.env.EH_ENGRAM_SESSION ?? "ehc";
+}
+
+// Shared driver prelude: open the store, ensure the session exists.
+function storePrelude(src: string, db: string): string {
+  const art = db.replace(/[^\\/]+$/, "engram-artifacts");
+  return [
+    "import sys, json",
+    `sys.path.insert(0, r"${src}")`,
+    "from afterimage_store import SessionStore",
+    "from afterimage_api import SessionAPI",
+    `store = SessionStore(r"${db}", r"${art}")`,
+    `try:`,
+    `    store.create_session(r"${engramSession()}", "event-horizon", "ehc-agent")`,
+    "except Exception:",
+    "    pass",
+    "api = SessionAPI(store)",
+  ].join("\n");
+}
+
 export function searchEngram(query: string, topK = 5): Promise<EngramResult> {
   const py = python();
   if (!py) return Promise.resolve({ ok: false, records: [], absent: true, coverage: "python not found — set EH_PYTHON" });
   return new Promise((resolve) => {
-    // AfterImage retrieval, via its own modules (import, never reimplement).
+    // AfterImage retrieval via its own API (import, never reimplement).
     // Typed absence is a first-class answer — never a silent pass.
-    const src = engramSrc();
-    const driver = [
-      "import sys, json",
-      `sys.path.insert(0, r"${src}")`,
-      "try:",
-      "    import afterimage_store, afterimage_retrieve  # noqa",
-      "    print(json.dumps({'ok': True, 'records': []}))",
-      "except Exception as e:",
-      "    print(json.dumps({'ok': False, 'error': str(e)}))",
-    ].join("\n");
-    execFile(py, ["-c", driver, query, String(topK)], { timeout: 8000, windowsHide: true }, (err, stdout) => {
+    const driver = `${storePrelude(engramSrc(), engramDb())}\nprint(json.dumps(api.ask(sys.argv[1], sys.argv[2], k=int(sys.argv[3]))))`;
+    execFile(py, ["-c", driver, engramSession(), query, String(topK)], { timeout: 10000, windowsHide: true }, (err, stdout) => {
       if (err) {
         resolve({ ok: false, records: [], absent: true, coverage: "engram unavailable — typed absence" });
         return;
       }
       try {
-        const parsed = JSON.parse(String(stdout).trim().split("\n").pop() || "{}") as { ok?: boolean; records?: string[] };
-        const records = Array.isArray(parsed.records) ? parsed.records : [];
-        resolve({ ok: Boolean(parsed.ok), records, absent: records.length === 0, coverage: "afterimage search" });
+        const parsed = JSON.parse(String(stdout).trim().split("\n").pop() || "{}") as { status?: string; records?: string[]; note?: string };
+        if (parsed.status === "records") {
+          resolve({ ok: true, records: parsed.records ?? [], absent: false, coverage: "afterimage records" });
+        } else {
+          resolve({ ok: true, records: [], absent: true, coverage: parsed.note ?? "certified absence" });
+        }
       } catch {
         resolve({ ok: false, records: [], absent: true, coverage: "parse error — typed absence" });
+      }
+    });
+  });
+}
+
+export function registerEngram(texts: string[]): Promise<{ ok: boolean; n: number }> {
+  const py = python();
+  if (!py) return Promise.resolve({ ok: false, n: 0 });
+  return new Promise((resolve) => {
+    // Append verbatim records to the store of record (append-only, per AfterImage).
+    const driver = [
+      storePrelude(engramSrc(), engramDb()),
+      "texts = json.loads(sys.argv[1])",
+      `store.add_records(r"${engramSession()}", texts)`,
+      "print(json.dumps({'ok': True, 'n': len(texts)}))",
+    ].join("\n");
+    execFile(py, ["-c", driver, JSON.stringify(texts)], { timeout: 10000, windowsHide: true }, (err, stdout) => {
+      if (err) return resolve({ ok: false, n: 0 });
+      try {
+        const r = JSON.parse(String(stdout).trim().split("\n").pop() || "{}") as { ok?: boolean; n?: number };
+        resolve({ ok: Boolean(r.ok), n: r.n ?? 0 });
+      } catch {
+        resolve({ ok: false, n: 0 });
       }
     });
   });

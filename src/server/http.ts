@@ -18,7 +18,13 @@ import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels, chat, chatOpenAI } from "./router";
 import type { ChatResult } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
-import { listSessions, createSession, listTodos, addTodo, saveMessages, loadMessages } from "./store";
+import {
+  createSession, listTodos, addTodo, saveMessages, loadMessages,
+  listSessionsWithMeta, renameSession, deleteSession, touchSession,
+  listInstructions, putInstruction, removeInstruction,
+  usageSummary, recordUsage, listProfiles, upsertProfile,
+} from "./store";
+import os from "node:os";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { TOOL_SPECS, AGENT_SYSTEM } from "./agentTools";
@@ -67,6 +73,23 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
 }
 
 const clampBudget = (n: number) => Math.min(8192, Math.max(64, Math.round(n)));
+
+// Workspace memory: AGENTS.md (the open convention, also used by Claude Code and
+// OpenCode) plus .harness/memory.md (agent-written project memory). Read fresh so
+// edits apply immediately; capped so a runaway file cannot flood the context.
+function readWorkspaceMemory(workdir: string): string {
+  const parts: string[] = [];
+  for (const rel of ["AGENTS.md", path.join(".harness", "memory.md")]) {
+    const p = path.join(workdir, rel);
+    try {
+      const st = fs.statSync(p);
+      if (st.isFile() && st.size > 0 && st.size <= 200_000) {
+        parts.push(`# ${rel}\n${fs.readFileSync(p, "utf8").slice(0, 20_000)}`);
+      }
+    } catch { /* absent is fine */ }
+  }
+  return parts.length ? "\n\nWorkspace memory (persistent project instructions):\n" + parts.join("\n\n") : "";
+}
 
 function readConfigDefaultModel(): string | null {
   try {
@@ -189,7 +212,100 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     }
 
     if (req.method === "GET" && url.pathname === "/api/sessions") {
-      return sendJson(res, 200, listSessions());
+      return sendJson(res, 200, listSessionsWithMeta());
+    }
+
+    if (req.method === "PATCH" && url.pathname.startsWith("/api/sessions/")) {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const id = url.pathname.split("/").pop() ?? "";
+          const b = JSON.parse(raw || "{}") as { title?: string };
+          if (b.title) { renameSession(id, b.title); audit({ tool: "session.rename", note: id }); }
+          sendJson(res, 200, { ok: true });
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/sessions/")) {
+      const id = url.pathname.split("/").pop() ?? "";
+      deleteSession(id);
+      audit({ tool: "session.delete", note: id });
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/instructions") {
+      const sid = url.searchParams.get("sessionId") ?? "default";
+      return sendJson(res, 200, listInstructions(sid));
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/instructions") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { sessionId?: string; key?: string; text?: string };
+          if (!b.text) return sendJson(res, 400, { error: "text required" });
+          putInstruction(b.sessionId ?? "default", b.key ?? `note-${Date.now().toString(36)}`, b.text);
+          audit({ tool: "instruction.put", note: b.key ?? "auto" });
+          sendJson(res, 200, { ok: true, instructions: listInstructions(b.sessionId ?? "default") });
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/instructions/")) {
+      const key = url.pathname.split("/").pop() ?? "";
+      const sid = url.searchParams.get("sessionId") ?? "default";
+      removeInstruction(sid, key);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/usage") {
+      const sid = url.searchParams.get("sessionId") ?? undefined;
+      return sendJson(res, 200, usageSummary(sid));
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/profiles") {
+      return sendJson(res, 200, listProfiles());
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/profiles") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { id?: string; name?: string; settings?: Record<string, unknown> };
+          const p = upsertProfile({ id: b.id ?? `profile_${Date.now().toString(36)}`, name: b.name ?? "profile", settings: b.settings ?? {}, created: new Date().toISOString() });
+          audit({ tool: "profile.upsert", note: p.id });
+          sendJson(res, 200, p);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/logs/audit") {
+      // Local, redacted-by-construction tail (tool names + notes only).
+      const n = Math.min(Number(url.searchParams.get("n") ?? 100), 500);
+      try {
+        const p = path.join(os.homedir(), ".eventhorizon", "audit.jsonl");
+        const lines = fs.readFileSync(p, "utf8").trim().split("\n");
+        return sendJson(res, 200, lines.slice(-n).map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } }));
+      } catch { return sendJson(res, 200, []); }
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/logs/engine") {
+      const n = Math.min(Number(url.searchParams.get("n") ?? 120), 500);
+      try {
+        const dir = path.join(os.homedir(), ".eventhorizon");
+        const logs = fs.readdirSync(dir).filter((f) => f.startsWith("engine-") && f.endsWith(".log")).sort();
+        if (!logs.length) return sendJson(res, 200, { log: null, tail: [] });
+        const latest = logs[logs.length - 1];
+        const tail = fs.readFileSync(path.join(dir, latest), "utf8").trim().split("\n").slice(-n);
+        return sendJson(res, 200, { log: latest, tail });
+      } catch { return sendJson(res, 200, { log: null, tail: [] }); }
     }
 
     if (req.method === "POST" && url.pathname === "/api/sessions") {
@@ -339,7 +455,15 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               }
               hist = [summary, ...keep];
             }
-            const convo: ChatMessage[] = [{ role: "system", content: AGENT_SYSTEM }, ...hist, userMsg];
+            // Durable session instructions replay in the system prompt and are
+            // re-injected after any compaction — they never fall out of context.
+            const instr = listInstructions(params.sessionId ?? "default");
+            const instructionBlock = instr.length
+              ? "\n\nSession instructions (durable — remembered via the remember tool, they persist across compaction):\n" +
+                instr.map((i) => `- [${i.key}] ${i.text}`).join("\n")
+              : "";
+            const memoryBlock = readWorkspaceMemory(workdir);
+            const convo: ChatMessage[] = [{ role: "system", content: AGENT_SYSTEM + memoryBlock + instructionBlock }, ...hist, userMsg];
             // Tools = built-ins + any MCP servers configured (namespaced mcp_*).
             if (hasMcpServers()) { try { await ensureMcpServers(); } catch { /* audited in mcp.ts */ } }
             const tools = [...TOOL_SPECS, ...mcpTools()];
@@ -394,6 +518,14 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                   }
                   break;
                 }
+                // Context-overflow recovery: shed the oldest turns and retry once
+                // (Claude Code / OpenCode both compact-and-retry on "too long").
+                if (!r.ok && /context|too long|exceed|overflow/i.test(r.error ?? "") && step === 0 && convo.length > 10) {
+                  const keep = convo.slice(-8);
+                  convo.splice(0, convo.length, convo[0], ...keep);
+                  audit({ tool: "model.context-recover", note: `shed to ${convo.length} messages` });
+                  continue;
+                }
                 if (!r.ok) { result = r; break; }
                 if (r.toolCalls?.length) {
                   convo.push({ role: "assistant", content: r.content ?? "", tool_calls: r.toolCalls });
@@ -431,6 +563,8 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               // next turn has context. Tool-result messages keep their content.
               try {
                 saveMessages(params.sessionId ?? "default", convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
+                touchSession(params.sessionId ?? "default");
+                if (result.tokens) recordUsage(params.sessionId ?? "default", result.model, result.tokens);
               } catch { /* persistence is best-effort; audit never blocks */ }
               const reply = { reply: replyText, thinking: result.thinking, model: result.model, tokens: result.tokens, attempts, budget, toolSteps: steps.length, think: params.think ?? "medium" };
               broadcast(workdir, "session/update", reply);

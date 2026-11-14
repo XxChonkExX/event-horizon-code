@@ -7,12 +7,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
-import { searchEngram, verifyArithmetic } from "./engram";
-import { listTodos, addTodo, toggleTodo } from "./store";
+import { searchEngram, verifyArithmetic, registerEngram } from "./engram";
+import { listTodos, addTodo, toggleTodo, putInstruction } from "./store";
 import vm from "node:vm";
 import { audit } from "./audit";
 
-export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "calc_verify" | "run_machine" | "run_js" | "todo";
+export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean };
 
 function readConfig(): { permissions?: Record<string, string> } {
@@ -268,6 +268,39 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       return r.absent
         ? { ok: true, out: `NO RECORDS for "${query}" (${r.coverage}) — do not guess; say it is unknown.` }
         : { ok: true, out: r.records.map((x, i) => `[${i + 1}] ${x}`).join("\n") };
+    }
+    if (tool === "engram_register") {
+      // Append verbatim records to the AfterImage store (append-only by design).
+      const raw = args.texts ?? args.text ?? [];
+      const texts = (Array.isArray(raw) ? raw : [raw]).map(String).filter((t) => t.trim());
+      if (!texts.length) return { ok: false, error: "text or texts[] required", out: "" };
+      const r = await registerEngram(texts);
+      audit({ tool, note: `registered ${r.n}` });
+      return r.ok
+        ? { ok: true, out: `Registered ${r.n} record(s) into the engram store. They are now retrievable via engram_search.` }
+        : { ok: false, error: "engram store unavailable (python or AfterImage missing)", out: "" };
+    }
+    if (tool === "remember") {
+      // Durable memory, two scopes:
+      //  session (default) — keyed instruction, replays in the system prompt,
+      //    survives compaction.
+      //  project — appended to .harness/memory.md, shared across sessions and
+      //    injected like AGENTS.md.
+      const text = String(args.text ?? "").trim();
+      if (!text) return { ok: false, error: "text required", out: "" };
+      const scope = String(args.scope ?? "session");
+      if (scope === "project") {
+        const p = path.join(worktree, ".harness", "memory.md");
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        if (!fs.existsSync(p)) fs.writeFileSync(p, "# Project memory (written by the agent)\n\n");
+        fs.appendFileSync(p, `- ${text}\n`);
+        audit({ tool, note: "remember project" });
+        return { ok: true, out: `Added to project memory (.harness/memory.md): ${text}` };
+      }
+      const key = String(args.key ?? `note-${Date.now().toString(36)}`);
+      putInstruction(String(args.sessionId ?? "default"), key, text);
+      audit({ tool, note: `remember ${key}` });
+      return { ok: true, out: `Remembered [${key}]: ${text}` };
     }
     if (tool === "calc_verify") {
       // Exact arithmetic (TI-85 AST whitelist) — verify before asserting numbers.
