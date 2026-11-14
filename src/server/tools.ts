@@ -26,6 +26,58 @@ function permissionFor(tool: ToolName): string {
   return perms[tool] ?? "ask";
 }
 
+// External-binary resolution with caching. `python` is often not on PATH on
+// Windows (it lives under %LOCALAPPDATA%\Programs\Python\...), and ripgrep/fd
+// may be absent entirely — so we probe candidates once and fall back to
+// pure-JS implementations for search rather than failing the tool.
+const binCache = new Map<string, string | null>();
+export function resolveBin(candidates: string[]): string | null {
+  const key = candidates.join("|");
+  if (binCache.has(key)) return binCache.get(key) ?? null;
+  const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+  for (const c of candidates) {
+    if (!c) continue;
+    try {
+      execFileSync(c, ["--version"], { timeout: 4000, windowsHide: true, stdio: "ignore" });
+      binCache.set(key, c);
+      return c;
+    } catch { /* try next */ }
+  }
+  // Last resort: common Windows Python install locations
+  if (candidates.includes("python")) {
+    const base = path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Python");
+    try {
+      for (const d of fs.readdirSync(base)) {
+        const exe = path.join(base, d, "python.exe");
+        if (fs.existsSync(exe)) { binCache.set(key, exe); return exe; }
+      }
+    } catch { /* no python dir */ }
+  }
+  binCache.set(key, null);
+  return null;
+}
+
+export const PYTHON_CANDIDATES = [process.env.EH_PYTHON ?? "", "python", "python3", "py"];
+
+// Pure-JS workspace walk used when fd/rg are unavailable.
+function walkFiles(root: string, maxFiles = 2000): string[] {
+  const out: string[] = [];
+  const stack = [root];
+  const skip = new Set([".git", "node_modules", "out", "dist", ".eventhorizon"]);
+  while (stack.length && out.length < maxFiles) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      if (skip.has(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) stack.push(full);
+      else out.push(full);
+    }
+  }
+  return out;
+}
+
 // Workspace jail: tools operate on paths relative to the workspace. Absolute
 // paths and traversal are refused with a clear error (the model is told the
 // constraint in its tool descriptions and can ask the user to relocate files).
@@ -107,18 +159,63 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       });
     }
     if (tool === "grep") {
-      return new Promise<ToolResult>((resolve) => {
-        execFile("rg", ["-n", String(args.pattern ?? ""), String(args.path ?? ".")], { cwd: worktree, timeout: 8000, windowsHide: true }, (err, stdout) => {
-          resolve({ ok: !err, out: String(stdout).slice(0, 50000) });
+      const pattern = String(args.pattern ?? "");
+      const where = String(args.path ?? ".");
+      const rg = resolveBin(["rg"]);
+      if (rg) {
+        return new Promise<ToolResult>((resolve) => {
+          execFile(rg, ["-n", pattern, where], { cwd: worktree, timeout: 8000, windowsHide: true }, (err, stdout) => {
+            resolve({ ok: !err, out: String(stdout).slice(0, 50000) });
+          });
         });
-      });
+      }
+      // JS fallback: walk + regex line scan (no ripgrep required).
+      try {
+        const re = new RegExp(pattern, "i");
+        const target = path.resolve(worktree, where);
+        const files = fs.existsSync(target) && fs.statSync(target).isFile() ? [target] : walkFiles(fs.existsSync(target) ? target : worktree);
+        const hits: string[] = [];
+        for (const f of files) {
+          let text = "";
+          try { text = fs.readFileSync(f, "utf8"); } catch { continue; }
+          text.split("\n").forEach((line, i) => {
+            if (hits.length < 200 && re.test(line)) hits.push(`${path.relative(worktree, f)}:${i + 1}:${line.trim().slice(0, 200)}`);
+          });
+        }
+        audit({ tool, note: `js-fallback ${hits.length} hits` });
+        return { ok: true, out: hits.join("\n") || "(no matches)" };
+      } catch (e) {
+        return { ok: false, error: String(e).slice(0, 200), out: "" };
+      }
     }
     if (tool === "glob") {
-      return new Promise<ToolResult>((resolve) => {
-        execFile("fd", [String(args.pattern ?? ".")], { cwd: worktree, timeout: 8000, windowsHide: true }, (err, stdout) => {
-          resolve({ ok: !err, out: String(stdout).slice(0, 50000) });
+      const pattern = String(args.pattern ?? "*");
+      const fd = resolveBin(["fd"]);
+      if (fd) {
+        return new Promise<ToolResult>((resolve) => {
+          execFile(fd, [pattern], { cwd: worktree, timeout: 8000, windowsHide: true }, (err, stdout) => {
+            resolve({ ok: !err, out: String(stdout).slice(0, 50000) });
+          });
         });
-      });
+      }
+      // JS fallback: convert the glob to a regex and walk the workspace.
+      try {
+        const rx = new RegExp(
+          "^" + pattern
+            .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*\*\//g, "(?:.*/)?")
+            .replace(/\*\*/g, ".*")
+            .replace(/\*/g, "[^/]*")
+            .replace(/\?/g, ".")
+            + "$"
+        );
+        const rel = walkFiles(worktree).map((f) => path.relative(worktree, f).split(path.sep).join("/"));
+        const hits = rel.filter((r) => rx.test(r)).slice(0, 500);
+        audit({ tool, note: `js-fallback ${hits.length} files` });
+        return { ok: true, out: hits.join("\n") || "(no matches)" };
+      } catch (e) {
+        return { ok: false, error: String(e).slice(0, 200), out: "" };
+      }
     }
     if (tool === "ls") {
       const dir = path.resolve(worktree, String(args.path ?? "."));
@@ -192,8 +289,10 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
         return { ok: false, error: "engram machines not found — set EH_ENGRAM_SRC to AfterImage-Engram/src", out: "" };
       }
       const driver = `import sys,json; sys.path.insert(0,r"${src}"); import machines; print(json.dumps(machines.run(sys.argv[1], sys.argv[2])))`;
+      const py = resolveBin(PYTHON_CANDIDATES);
+      if (!py) return { ok: false, error: "python not found — install Python or set EH_PYTHON to its path", out: "" };
       return new Promise<ToolResult>((resolve) => {
-        execFile(process.env.PYTHON ?? "python", ["-c", driver, machine, code], { timeout: 20000, windowsHide: true, maxBuffer: 200000 }, (err, stdout, stderr) => {
+        execFile(py, ["-c", driver, machine, code], { timeout: 20000, windowsHide: true, maxBuffer: 200000 }, (err, stdout, stderr) => {
           if (err) { audit({ tool, note: `${machine} err` }); return resolve({ ok: false, error: String(err.message).slice(0, 200), out: "" }); }
           try {
             const r = JSON.parse(String(stdout).trim().split("\n").pop() || "{}") as { ok: boolean; result?: unknown; err?: string; steps?: number };

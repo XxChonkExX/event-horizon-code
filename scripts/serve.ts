@@ -24,5 +24,14 @@ async function main() {
 
 main().catch((e) => { console.error("[ehc] fatal:", e); process.exit(1); });
 
+// Parent-death watchdog: when launched via run-electron-node (npm run serve),
+// killing the launcher does not reap this process on Windows. Poll the parent
+// and exit with it, so a stale server never keeps holding the port.
+if (process.env.EH_NO_WATCHDOG !== "1") {
+  setInterval(() => {
+    try { process.kill(process.ppid, 0); } catch { process.exit(0); }
+  }, 4000);
+}
+
 // Hold the event loop open; the http server keeps it alive anyway.
 setInterval(() => {}, 1 << 30);

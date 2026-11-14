@@ -22,6 +22,7 @@ import { listSessions, createSession, listTodos, addTodo, saveMessages, loadMess
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { TOOL_SPECS, AGENT_SYSTEM } from "./agentTools";
+import { ensureMcpServers, mcpTools, isMcpTool, callMcpTool, hasMcpServers } from "./mcp";
 import type { ChatMessage } from "./router";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
 import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir } from "./engine";
@@ -339,6 +340,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               hist = [summary, ...keep];
             }
             const convo: ChatMessage[] = [{ role: "system", content: AGENT_SYSTEM }, ...hist, userMsg];
+            // Tools = built-ins + any MCP servers configured (namespaced mcp_*).
+            if (hasMcpServers()) { try { await ensureMcpServers(); } catch { /* audited in mcp.ts */ } }
+            const tools = [...TOOL_SPECS, ...mcpTools()];
 
             // One model call on whichever lane applies, with the agent tool set.
             const callModel = async (budget: number, nudge: boolean): Promise<ChatResult> => {
