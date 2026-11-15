@@ -39,6 +39,34 @@ export function isUnclean(text: string): boolean {
   return UNCLEAN_PATTERNS.some((re) => re.test(text));
 }
 
+// Static gate for scripts offered to the clean-path sandbox (run_js). These
+// constructs are either vm-escape attempts (constructor chains, dynamic
+// Function, __proto__), host access (require, process, node:), or network
+// (fetch, WebAssembly). Property access on `process` is caught, so a script
+// grepping for the word "process" is not.
+const SCRIPT_GATE: Array<[RegExp, string]> = [
+  [/\brequire\s*\(/, "require()"],
+  [/\bimport\s*\(/, "dynamic import()"],
+  [/^\s*import\s+[^;]*\bfrom\b/m, "static import statement"],
+  [/\bprocess\s*[.[]/, "process access"],
+  [/\bglobalThis\b/, "globalThis access"],
+  [/\bFunction\s*\(/, "dynamic Function()"],
+  [/\beval\s*\(/, "eval()"],
+  [/\.constructor\b|\[\s*["']constructor["']\s*\]/, "constructor-chain access"],
+  [/__proto__/, "__proto__ access"],
+  [/\bfetch\s*\(/, "network fetch()"],
+  [/\bWebAssembly\b/, "WebAssembly"],
+  [/\bimportScripts\b/, "importScripts()"],
+  [/\bchild_process\b/, "child_process reference"],
+  [/\bnode:/, "node: builtin module reference"],
+];
+
+export function scanUncleanScript(code: string): string[] {
+  const hits: string[] = [];
+  for (const [re, label] of SCRIPT_GATE) if (re.test(code)) hits.push(label);
+  return hits;
+}
+
 // Pure. Builds an isolated run plan. Nothing executes here.
 export function buildDetonatePlan(worktree: string, tier: DetonateTier, artifactPath?: string): DetonatePolicy & { args: string[]; env: Record<string, string>; steps: string[] } {
   const name = path.basename(worktree);
@@ -63,15 +91,33 @@ export function buildDetonatePlan(worktree: string, tier: DetonateTier, artifact
 }
 
 // Execute inside sandbox. Light: timeout enforced, output capped, always kills.
-export function runDetonate(plan: DetonatePolicy & { args: string[] }): Promise<{ code: number | null; out: string; killed: boolean }> {
+// A missing sbx is a stated refusal, never a silent fallback to the host.
+export function runDetonate(plan: DetonatePolicy & { args: string[] }): Promise<{ code: number | null; out: string; killed: boolean; missing?: boolean }> {
   return new Promise((resolve) => {
+    let settled = false;
+    const refuse = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ code: 1, out: "sbx is not installed - the detonation lane requires sbx (microVM). Install sbx, or use tier=review. Refusing to fall back to the host.", killed: false, missing: true });
+    };
     const cmd = "sbx";
     const child = execFile(cmd, plan.args, { cwd: plan.worktree, timeout: plan.timeoutMs, maxBuffer: plan.maxOutputBytes }, (err, stdout, stderr) => {
+      if (settled) return;
+      // ENOENT: sbx is absent. refuse() owns the settled flag - do not set it
+      // here first, or refuse bails and the promise never resolves (the caller
+      // then hangs forever while the event loop drains).
+      if (err && (err as { code?: unknown }).code === "ENOENT") return refuse();
+      settled = true;
       const out = ((stdout as string) || "") + ((stderr as string) || "");
       resolve({ code: err ? (err as { code?: number }).code ?? 1 : 0, out: out.slice(0, plan.maxOutputBytes), killed: false });
     });
-    child.on("error", () => resolve({ code: 1, out: "sbx not available — detonation requires sbx. Decline to fall back to host.", killed: false }));
-    const killer = setTimeout(() => { child.kill("SIGKILL"); resolve({ code: null, out: "killed: timeout exceeded", killed: true }); }, plan.timeoutMs + 2000);
+    child.on("error", refuse);
+    const killer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      resolve({ code: null, out: "killed: timeout exceeded", killed: true });
+    }, plan.timeoutMs + 2000);
     child.on("close", () => clearTimeout(killer));
   });
 }

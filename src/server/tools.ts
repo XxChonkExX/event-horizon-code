@@ -5,6 +5,7 @@
 // AgentWatch lineManager plugs here: gateDecision blocks edit/bash until reviewed.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFile, exec } from "node:child_process";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
@@ -13,6 +14,7 @@ import { listTodos, addTodo, toggleTodo, putInstruction } from "./store";
 import vm from "node:vm";
 import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
+import { buildDetonatePlan, runDetonate, quarantineCheck, scanUncleanScript, type DetonateTier } from "./detonate";
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean };
@@ -26,6 +28,19 @@ function readConfig(): { permissions?: Record<string, string> } {
 function permissionFor(tool: ToolName): string {
   const perms = readConfig().permissions ?? {};
   return perms[tool] ?? "ask";
+}
+
+function readDetonateConfig(): { enabled: boolean; timeoutMs?: number; maxOutputBytes?: number } {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as {
+      detonate?: { enabled?: boolean; policy?: { timeoutMs?: number; maxOutputBytes?: number } };
+    };
+    return {
+      enabled: raw.detonate?.enabled === true,
+      timeoutMs: raw.detonate?.policy?.timeoutMs,
+      maxOutputBytes: raw.detonate?.policy?.maxOutputBytes,
+    };
+  } catch { return { enabled: false }; }
 }
 
 // External-binary resolution with caching. `python` is often not on PATH on
@@ -374,10 +389,47 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
     if (tool === "run_js") {
       // Programmatic tool calling (Anthropic PTC pattern): the model writes one
       // program that batches read-only tools instead of one round trip per call.
-      // Light sandbox (node:vm): no require, no fs, no net, no timers — only the
-      // injected stubs. Output capped. Untrusted scripts should use the detonate lane.
+      // Tiers, driven by the detonate block in .harness/config.json:
+      //   review (default) - clean-path node:vm sandbox, static gate first
+      //   execute/redteam  - detonation lane (microVM via sbx). If sbx is
+      //                      unavailable we refuse; never a silent host fallback.
       const code = String(args.code ?? "").trim();
       if (!code) return { ok: false, error: "code required", out: "" };
+      const tier = String(args.tier ?? "review") as DetonateTier;
+      const det = readDetonateConfig();
+
+      if (tier !== "review") {
+        if (!det.enabled) {
+          audit({ tool, note: "detonate disabled in config" });
+          return { ok: false, error: "the detonation lane is disabled (.harness/config.json detonate.enabled=false). Rewrite the script without host/network access, or enable the lane in config.", out: "" };
+        }
+        const artifact = path.join(os.tmpdir(), `ehc-detonate-${Date.now().toString(36)}.mjs`);
+        fs.writeFileSync(artifact, code);
+        const plan = buildDetonatePlan(worktree, tier, artifact);
+        plan.timeoutMs = det.timeoutMs ?? plan.timeoutMs;
+        plan.maxOutputBytes = det.maxOutputBytes ?? plan.maxOutputBytes;
+        audit({ tool, note: `detonate tier=${tier}` });
+        const r = await runDetonate(plan);
+        try { fs.rmSync(artifact, { force: true }); } catch { /* best effort */ }
+        if (r.missing) {
+          return { ok: false, error: "the detonation lane needs sbx (microVM), which is not installed. Install sbx, or run with tier=review in the clean sandbox.", out: r.out };
+        }
+        const q = quarantineCheck(worktree);
+        const head = `detonation lane (${tier}) exit=${r.code}${r.killed ? " KILLED: timeout" : ""}` +
+          (q.ok ? "" : ` | quarantine: host changed (${q.changed.slice(0, 3).join(", ")})`);
+        return { ok: !r.killed && r.code === 0, out: `${head}\n\n${r.out}`, error: r.code ? `exit code ${r.code}` : undefined };
+      }
+
+      const violations = scanUncleanScript(code);
+      if (violations.length) {
+        audit({ tool, note: `gate blocked: ${violations.join(", ")}` });
+        return {
+          ok: false,
+          error: `clean-path gate refused this script: ${violations.join(", ")}. Such constructs can escape the sandbox or reach the host/network. Rewrite without them, or call again with tier="execute" to use the detonation lane (isolated microVM, requires sbx).`,
+          out: "",
+        };
+      }
+
       const stubCalls = { n: 0 };
       const MAX_CALLS = 16;
       const stub = (name: string) => async (a: Record<string, unknown>) => {
@@ -385,15 +437,17 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
         const r = await runTool(name as ToolName, a, worktree);
         return JSON.stringify({ ok: r.ok, out: (r.ok ? r.out : (r.error ?? "")).slice(0, 20000) });
       };
+      const captured: string[] = [];
       const sandbox: Record<string, unknown> = {
         read: stub("read"), ls: stub("ls"), grep: stub("grep"), glob: stub("glob"),
         console: { log: (...a: unknown[]) => { captured.push(a.map(String).join(" ")); } },
       };
-      const captured: string[] = [];
       try {
-        const ctx = vm.createContext(sandbox);
+        // codeGeneration off closes eval / new Function inside the sandbox (the
+        // main vm-escape vector) and costs nothing for analysis scripts.
+        const ctx = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
         const script = `(async () => {\n${code}\n})()`;
-        const result = await vm.runInContext(script, ctx, { timeout: 10000 });
+        const result = await vm.runInContext(script, ctx, { timeout: 10_000, displayErrors: true });
         const out = [
           captured.length ? `[log]\n${captured.join("\n").slice(0, 2000)}` : "",
           result !== undefined ? `[return]\n${String(result).slice(0, 20000)}` : "",

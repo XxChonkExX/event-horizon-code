@@ -22,8 +22,8 @@ export const TOOL_SPECS: ToolDef[] = [
     type: "function",
     function: {
       name: "run_js",
-      description: "Programmatic tool calling: write one JavaScript program that calls read/ls/grep/glob (async, return JSON strings) as many times as needed and returns the final result. Far fewer round trips than one call per tool. Sandboxed: no filesystem, no network, no require — only the stubs. Cap: 16 stub calls, 10s.",
-      parameters: { type: "object", properties: { code: str("An async IIFE body, e.g. `const f = JSON.parse(await glob('*.ts')); return f;`. Await stubs; return a value or console.log.") }, required: ["code"] },
+      description: "Programmatic tool calling: write one JavaScript program that calls read/ls/grep/glob (async, return JSON strings) as many times as needed and returns the final result. Far fewer round trips than one call per tool. Clean path (tier=review, default) is a hardened sandbox: no fs, no network, no require/eval/Function/constructor chains - a static gate refuses scripts containing them. tier=execute or tier=redteam routes to the detonation lane (isolated microVM via sbx; refuses plainly if sbx is not installed). Cap: 16 stub calls, 10s.",
+      parameters: { type: "object", properties: { code: str("An async IIFE body, e.g. `const f = JSON.parse(await glob('*.ts')); return f;`. Await stubs; return a value or console.log."), tier: str("review (default, clean sandbox) | execute | redteam (detonation lane).") }, required: ["code"] },
     },
   },
   {
