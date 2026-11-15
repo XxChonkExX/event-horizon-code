@@ -141,6 +141,14 @@ Vision is verified (mtmd + mmproj). Remaining work:
   bounded action budgets, visible indicator while active.
 
 ### 5b. Dependency-free search (shipped alongside)
+
+### 5c. SOP workflows - **SHIPPED**
+Repeatable delivery workflows with agent / script / human-gate nodes and rework
+edges, adapted from Tencent LoopForge (MIT). The agent loop was extracted into
+`src/server/agentLoop.ts` so chat, SOP agent nodes, and future multi-window
+agents all run the same bounded loop with the same discipline. The run-mode
+preference (`gated` | `automated`) makes unattended runs a first-class option.
+See docs/SOPS.md.
 `rg`/`fd` are probed once and used when present; **pure-JS fallbacks** (workspace
 walk + regex) run otherwise, so `grep`/`glob` work on a bare machine. Python is
 resolved the same way. Verified: `glob *.json` returns files with no `fd` installed.

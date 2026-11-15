@@ -273,8 +273,24 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
   if (!result && !busy) {
     return { ok: false, reply: `echo: ${p.text}`, model: "none", attempts: 0, budget, toolSteps: 0, think: effThink, error: "no model selected - pass a model, start the engine, or run Ollama" };
   }
+  if (!result) {
+    // The loop spent every step on tool calls without reaching a final answer.
+    // The conversation (tool results included) is still persisted so the next
+    // turn can pick up where this one stopped.
+    try {
+      saveMessages(p.sessionId, convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
+      touchSession(p.sessionId);
+    } catch { /* best-effort */ }
+    return {
+      ok: false,
+      reply: `- tool steps (${steps.length}) -\n${steps.join("\n\n").slice(0, 4000)}\n\n- answer -\n(no final answer - the agent spent all 4 steps on tool calls. Narrow the task or raise the budget and re-run.)`,
+      model: usedModel || "none",
+      attempts, budget, toolSteps: steps.length, think: effThink,
+      error: "agent loop exhausted without a final answer",
+    };
+  }
 
-  const res = result as ChatResult;
+  const res = result;
   const emptyContent = (res.content ?? "").trim().length === 0;
   const thought = (res.thinking ?? "").trim().length > 0;
   let replyText = res.ok ? res.content : `model error: ${res.error}`;
