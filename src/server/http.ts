@@ -28,6 +28,8 @@ import os from "node:os";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { TOOL_SPECS, AGENT_SYSTEM, AGENT_CODER_SYSTEM } from "./agentTools";
+import type { ToolDef } from "./agentTools";
+import { splitToolset, searchTools } from "./toolSearch";
 import { ensureMcpServers, mcpTools, isMcpTool, callMcpTool, hasMcpServers } from "./mcp";
 import type { ChatMessage } from "./router";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
@@ -478,8 +480,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             const persona = params.agent === "coder" ? AGENT_CODER_SYSTEM : AGENT_SYSTEM;
             const convo: ChatMessage[] = [{ role: "system", content: persona + memoryBlock + instructionBlock }, ...hist, userMsg];
             // Tools = built-ins + any MCP servers configured (namespaced mcp_*).
+            // Beyond a threshold, advertise a core set + tool_search and load the
+            // rest on demand - a 60-tool MCP server would otherwise flood context.
             if (hasMcpServers()) { try { await ensureMcpServers(); } catch { /* audited in mcp.ts */ } }
-            const tools = [...TOOL_SPECS, ...mcpTools()];
+            const allTools: ToolDef[] = [...TOOL_SPECS, ...mcpTools()];
+            const { advertised, search: toolSearchEnabled } = splitToolset(allTools);
 
             // One model call on whichever lane applies, with the agent tool set.
             const callModel = async (budget: number, nudge: boolean): Promise<ChatResult> => {
@@ -491,16 +496,16 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                 if (!secret?.apiKey || !secret.baseUrl) {
                   return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
                 }
-                return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS });
+                return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: advertised });
               }
               if (engineUp) {
                 // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
-                return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS });
+                return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: advertised });
               }
               if (usedModel) {
                 // Keep the model warm during a conversation: agent loops make
                 // several calls per prompt and a cold reload costs minutes.
-                return chat(usedModel, msgs, { think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: TOOL_SPECS, keepAlive: "5m" });
+                return chat(usedModel, msgs, { think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: advertised, keepAlive: "5m" });
               }
               return { ok: false, content: "", model: "none", error: "no model selected" };
             };
@@ -556,6 +561,26 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                 if (r.toolCalls?.length) {
                   convo.push({ role: "assistant", content: r.content ?? "", tool_calls: r.toolCalls });
                   for (const tc of r.toolCalls) {
+                    if (tc.name === "tool_search") {
+                      // Deferred loading: return matching full schemas AND load
+                      // them into the advertised set for the next step, so the
+                      // model can call what it just found.
+                      const query = String(tc.args.query ?? "");
+                      const matches = searchTools(query, allTools, Number(tc.args.limit ?? 6) || 6);
+                      const have = new Set(advertised.map((t) => t.function.name));
+                      for (const m of matches) {
+                        const def = allTools.find((t) => t.function.name === m.name);
+                        if (def && !have.has(m.name)) advertised.push(def);
+                      }
+                      const out = matches.length
+                        ? matches.map((m) => JSON.stringify({ name: m.name, description: m.description, parameters: m.parameters })).join("\n")
+                        : `NO MATCHING TOOLS for "${query.slice(0, 80)}". Say so instead of improvising a tool call.`;
+                      steps.push(`OK tool_search(${JSON.stringify(query).slice(0, 80)})\n${out.slice(0, 400)}`);
+                      audit({ tool: "agent.tool_search", note: `${query.slice(0, 50)} -> ${matches.length}` });
+                      broadcast(workdir, "tool-step", { name: "tool_search", ok: true, step });
+                      convo.push({ role: "tool", content: out, name: "tool_search", tool_call_id: tc.id });
+                      continue;
+                    }
                     const res = await runTool(tc.name as ToolName, { ...tc.args, ...(autoApprove ? { approved: true } : {}) }, workdir);
                     const out = (res.ok ? res.out : (res.error ?? "failed")).slice(0, 1500);
                     const shortArgs = JSON.stringify(tc.args).slice(0, 100);

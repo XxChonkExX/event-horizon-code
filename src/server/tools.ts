@@ -15,6 +15,7 @@ import vm from "node:vm";
 import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
 import { buildDetonatePlan, runDetonate, quarantineCheck, scanUncleanScript, type DetonateTier } from "./detonate";
+import { isMcpTool, callMcpTool } from "./mcp";
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean };
@@ -173,6 +174,13 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
   }
 
   try {
+    // MCP tools (namespaced mcp_<server>_<tool>) execute through the MCP client.
+    // Output is capped and audited like every other tool result.
+    if (isMcpTool(tool)) {
+      const r = await callMcpTool(tool, args);
+      audit({ tool, note: `mcp ok=${r.ok}` });
+      return { ok: r.ok, out: (r.out ?? "").slice(0, 20000), error: r.ok ? undefined : "mcp tool failed" };
+    }
     if (tool === "read") {
       const sp = safePath(worktree, String(args.path ?? ""));
       if (!sp.ok) return { ok: false, error: sp.error, out: "" };
