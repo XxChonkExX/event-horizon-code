@@ -292,10 +292,23 @@ pre {
   padding: 8px; overflow: auto; color: var(--ok); font-size: 12px;
 }
 .checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.session-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; }
+.session-list li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.session-list li.current .session-title { color: var(--ok); }
+.session-row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.session-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+.session-meta { font-size: 11px; color: var(--muted, #8a8a98); }
+.checkpoint-list { margin: 4px 0 0 8px; display: flex; flex-direction: column; gap: 4px; }
+.checkpoint-row { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+.checkpoint-row button { font-size: 11px; padding: 2px 6px; }
+.proposal-list { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.proposal-list label { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }
+.memory-lines { margin: 4px 0; padding-left: 16px; font-size: 12px; }
+.memory-lines li { margin: 2px 0; }
 .review-actions { display: flex; gap: 6px; margin-top: 8px; }
 .review-actions button:first-child { border-color: var(--ok); }
 .review-actions button:last-child { border-color: var(--bad); }
-.toolchain-doctor, .sandbox-controls, .agentwatch-panel, .model-manager, .profiles-panel {
+.toolchain-doctor, .sandbox-controls, .agentwatch-panel, .model-manager, .profiles-panel, .sessions-panel, .memory-panel {
   background: rgba(34, 34, 43, 0.85);
   border: 1px solid var(--border); border-radius: 8px;
   padding: 10px 12px;

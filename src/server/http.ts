@@ -31,7 +31,7 @@ import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal,
 import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, sensoryDetect, addGgufDir, engineInfill } from "./engine";
 import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTemplateFiles } from "./chatTemplates";
 import { runAgentTurn } from "./agentLoop";
-import { extractMemories, applyMemories } from "./memory";
+import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -901,6 +901,10 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     }
 
     // ---- auto-memory: propose from a session, operator approves ----
+    if (req.method === "GET" && url.pathname === "/api/memory") {
+      const wt = resolveWorktree(url.searchParams.get("worktree") ?? undefined);
+      return sendJson(res, 200, { path: path.join(wt, ".harness", "memory.md"), lines: existingMemoryLines(wt) });
+    }
     if (req.method === "POST" && url.pathname === "/api/memory/extract") {
       let raw = "";
       req.on("data", (c) => { raw += c; });

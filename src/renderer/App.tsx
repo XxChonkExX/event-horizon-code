@@ -9,6 +9,8 @@ import SandboxControls from "./SandboxControls";
 import AgentWatchPanel from "./AgentWatchPanel";
 import ModelManager from "./ModelManager";
 import ProfilesPanel from "./ProfilesPanel";
+import SessionsPanel from "./SessionsPanel";
+import MemoryPanel from "./MemoryPanel";
 import FileTree from "./FileTree";
 import MonacoMount from "./MonacoMount";
 import Terminal from "./Terminal";
@@ -247,6 +249,8 @@ export default function App() {
             <AgentWatchPanel />
             <ModelManager />
             <ProfilesPanel />
+            <SessionsPanel />
+            <MemoryPanel />
           </div>
         </Show>
       </section>
