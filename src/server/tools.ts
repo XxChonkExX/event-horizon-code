@@ -5,14 +5,15 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, exec } from "node:child_process";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
 import { searchEngram, verifyArithmetic, registerEngram } from "./engram";
 import { listTodos, addTodo, toggleTodo, putInstruction } from "./store";
 import vm from "node:vm";
 import { audit } from "./audit";
+import { engineEndpoint } from "./engine";
 
-export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember";
+export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean };
 
 function readConfig(): { permissions?: Record<string, string> } {
@@ -100,6 +101,38 @@ async function agentWatchGate(tool: ToolName, worktree: string) {
   const sweep = await sweepWorkspace(worktree);
   const gate = gateDecisionV2(sweep);
   return gate;
+}
+
+// Detect the project's verification command. Priority: verify > test >
+// typecheck > build, run through whichever package manager owns the lockfile.
+function detectVerify(worktree: string): { cmd: string; label: string } | null {
+  const has = (f: string) => fs.existsSync(path.join(worktree, f));
+  if (has("package.json")) {
+    let scripts: Record<string, string> = {};
+    try { scripts = JSON.parse(fs.readFileSync(path.join(worktree, "package.json"), "utf8")).scripts ?? {}; } catch { /* unreadable */ }
+    const pick = ["verify", "test", "typecheck", "build"].find((s) => typeof scripts[s] === "string" && (scripts[s] ?? "").trim());
+    const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lockb") || has("bun.lock") ? "bun" : "npm";
+    if (pick) {
+      const cmd = pm === "pnpm" ? `pnpm run ${pick}` : pm === "yarn" ? `yarn ${pick}` : pm === "bun" ? `bun run ${pick}` : `npm run ${pick}`;
+      return { cmd, label: `${pm} ${pick}` };
+    }
+  }
+  if (has("Cargo.toml")) return { cmd: "cargo test", label: "cargo test" };
+  if (has("go.mod")) return { cmd: "go test ./...", label: "go test" };
+  if (has("pyproject.toml") || has("setup.py") || has("requirements.txt")) {
+    const py = resolveBin(PYTHON_CANDIDATES) ?? "python";
+    return { cmd: `"${py}" -m pytest -q`, label: "pytest" };
+  }
+  return null;
+}
+
+function runVerify(cmd: string, worktree: string, timeoutMs = 180_000): Promise<ToolResult> {
+  return new Promise((resolve) => {
+    exec(cmd, { cwd: worktree, timeout: timeoutMs, maxBuffer: 800_000, windowsHide: true, env: { ...process.env, CI: "1" } }, (err, stdout, stderr) => {
+      const out = (String(stdout ?? "") + String(stderr ?? "")).slice(0, 60_000);
+      resolve({ ok: !err, out, error: err ? String(err.message ?? err).slice(0, 200) : undefined });
+    });
+  });
 }
 
 export async function runTool(tool: ToolName, args: Record<string, unknown>, worktree = process.cwd()): Promise<ToolResult> {
@@ -406,6 +439,42 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
         .replace(/\s{2,}/g, " ");
       audit({ tool, note: url.slice(0, 80) });
       return { ok: true, out: stripped.slice(0, 20000) };
+    }
+    if (tool === "code_complete") {
+      // DeepSeek-Coder style FIM: fill the gap between a prefix and suffix.
+      // Only meaningful when the bundled engine is running with a FIM model.
+      const prefix = String(args.prefix ?? "");
+      const suffix = String(args.suffix ?? "");
+      if (!prefix && !suffix) return { ok: false, error: "prefix and/or suffix required", out: "" };
+      const ep = engineEndpoint();
+      if (!ep) return { ok: false, error: "engine not running - FIM completion needs the bundled engine (and ideally engine.spmInfill)", out: "" };
+      try {
+        const res = await fetch(ep.replace(/\/v1$/, "") + "/infill", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input_prefix: prefix, input_suffix: suffix, max_tokens: Number(args.maxTokens ?? 256), temperature: 0.2 }),
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (!res.ok) return { ok: false, error: `infill ${res.status}: ${(await res.text()).slice(0, 120)}`, out: "" };
+        const j = (await res.json()) as { content?: string };
+        audit({ tool, note: `prefix=${prefix.length} suffix=${suffix.length}` });
+        return { ok: true, out: j.content ?? "" };
+      } catch (e) {
+        return { ok: false, error: String(e).slice(0, 200), out: "" };
+      }
+    }
+    if (tool === "verify") {
+      // Run the project's own checks. Detect the package manager and the best
+      // available script so "verify" works across ecosystems without config.
+      const v = detectVerify(worktree);
+      if (!v) return { ok: false, error: "no recognisable project (looked for package.json, Cargo.toml, go.mod, pyproject.toml)", out: "" };
+      const r = await runVerify(v.cmd, worktree);
+      audit({ tool, note: `${v.label} ok=${r.ok}` });
+      return {
+        ok: r.ok,
+        out: `${v.label} ${r.ok ? "PASSED" : "FAILED"}\n\n${r.out || "(no output)"}`,
+        error: r.ok ? undefined : (r.error ?? "verify command failed"),
+      };
     }
     return { ok: false, error: `unknown tool ${tool}`, out: "" };
   } catch (e) {

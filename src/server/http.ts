@@ -27,11 +27,12 @@ import {
 import os from "node:os";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
-import { TOOL_SPECS, AGENT_SYSTEM } from "./agentTools";
+import { TOOL_SPECS, AGENT_SYSTEM, AGENT_CODER_SYSTEM } from "./agentTools";
 import { ensureMcpServers, mcpTools, isMcpTool, callMcpTool, hasMcpServers } from "./mcp";
 import type { ChatMessage } from "./router";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
-import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir } from "./engine";
+import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir, engineInfill } from "./engine";
+import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTemplateFiles } from "./chatTemplates";
 
 
 export type ServerOpts = { port: number; password: string; host?: string };
@@ -412,7 +413,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
-            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string };
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string; agent?: string };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img${params.autoApprove ? ":auto" : ""}` });
             // Request param > active profile > project config > empty.
             const profile = getProfile(params.profileId ?? process.env.EH_PROFILE ?? "default");
@@ -470,7 +471,10 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                 instr.map((i) => `- [${i.key}] ${i.text}`).join("\n")
               : "";
             const memoryBlock = readWorkspaceMemory(workdir);
-            const convo: ChatMessage[] = [{ role: "system", content: AGENT_SYSTEM + memoryBlock + instructionBlock }, ...hist, userMsg];
+            // Agent persona: "coder" borrows DeepSeek-coder discipline (read-first,
+            // minimal diff, verify); anything else uses the standard agent prompt.
+            const persona = params.agent === "coder" ? AGENT_CODER_SYSTEM : AGENT_SYSTEM;
+            const convo: ChatMessage[] = [{ role: "system", content: persona + memoryBlock + instructionBlock }, ...hist, userMsg];
             // Tools = built-ins + any MCP servers configured (namespaced mcp_*).
             if (hasMcpServers()) { try { await ensureMcpServers(); } catch { /* audited in mcp.ts */ } }
             const tools = [...TOOL_SPECS, ...mcpTools()];
@@ -809,6 +813,31 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "GET" && url.pathname === "/api/engine/status") {
       return sendJson(res, 200, { config: readEngineConfig(), ...(await engineHealth()) });
     }
+    if (req.method === "GET" && url.pathname === "/api/engine/templates") {
+      // The vendored canonical template set (from llama.cpp, MIT) plus the
+      // family detection for a given model. Powers the engine picker UI.
+      const model = url.searchParams.get("model") ?? "";
+      return sendJson(res, 200, {
+        dir: templateDir(),
+        families: familyCatalog(),
+        files: listTemplateFiles(),
+        detected: model ? (detectTemplate(model) ?? null) : null,
+        resolved: model ? (resolveTemplate("auto", model) ?? null) : null,
+      });
+    }
+    if (req.method === "POST" && url.pathname === "/api/engine/infill") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { input_prefix?: string; input_suffix?: string; max_tokens?: number; temperature?: number };
+          const r = await engineInfill(b);
+          audit({ tool: "engine.infill", note: `ok=${r.ok}` });
+          sendJson(res, r.ok ? 200 : 400, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
     if (req.method === "GET" && url.pathname === "/api/engine/models") {
       const cfg = readEngineConfig();
       return sendJson(res, 200, scanGgufDirs(cfg.ggufDirs));
@@ -832,8 +861,8 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       req.on("data", (c) => { raw += c; });
       req.on("end", async () => {
         try {
-          const b = JSON.parse(raw || "{}") as { ggufPath?: string; heapFraction?: number; deviceIndex?: number | null; pool?: boolean; extraArgs?: string[]; mmprojPath?: string };
-          const r = await startEngine(b.ggufPath, { heapFraction: b.heapFraction, deviceIndex: b.deviceIndex, pool: b.pool, extraArgs: b.extraArgs, mmprojPath: b.mmprojPath });
+          const b = JSON.parse(raw || "{}") as { ggufPath?: string; heapFraction?: number; deviceIndex?: number | null; pool?: boolean; extraArgs?: string[]; mmprojPath?: string; ctx?: number; chatTemplate?: string };
+          const r = await startEngine(b.ggufPath, { heapFraction: b.heapFraction, deviceIndex: b.deviceIndex, pool: b.pool, extraArgs: b.extraArgs, mmprojPath: b.mmprojPath, ctx: b.ctx, chatTemplate: b.chatTemplate });
           audit({ tool: "engine.start", note: r.note.slice(0, 120) });
           sendJson(res, r.ok ? 200 : 400, r);
         } catch { sendJson(res, 400, { error: "bad request" }); }

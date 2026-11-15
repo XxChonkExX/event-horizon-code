@@ -12,6 +12,7 @@ import { spawn, ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { resolveTemplate } from "./chatTemplates";
 
 export type EngineConfig = {
   kind: "bundled" | "external" | "none";
@@ -19,6 +20,21 @@ export type EngineConfig = {
   port: number;
   ggufDirs: string[];
   gpu: { deviceIndex: number; heapFraction: number; pool: boolean };
+  // Context window. llama-server otherwise uses the model's trained context
+  // (often 40k+), which allocates a huge KV cache and OOMs next to other work.
+  ctx?: number;
+  // Apply the GGUF's chat template via the Jinja engine (--jinja). REQUIRED for
+  // tool calling: without it llama-server never emits tool_calls, and the agent
+  // silently narrates actions instead of performing them.
+  jinja?: boolean;
+  // Canonical chat template selector: "auto" (detect from the model name),
+  // a family id from chatTemplates.ts (e.g. "qwen3"), a *.jinja file name in
+  // resources/templates, or an explicit path. "auto" keeps tool calling working
+  // even when a GGUF's embedded template was stripped of tool blocks.
+  chatTemplate?: string;
+  // DeepSeek-Coder style FIM: enable --spm-infill for models that prefer
+  // Suffix/Prefix/Middle tokens (exposed as POST /api/engine/infill).
+  spmInfill?: boolean;
 };
 
 // Agnostic defaults: home runtime dir + repo-local models. Machine-specific
@@ -56,6 +72,10 @@ export function readEngineConfig(): EngineConfig {
     port: raw.engine?.port ?? 8901,
     ggufDirs: dirs,
     gpu: raw.engine?.gpu ?? { deviceIndex: 0, heapFraction: 0.6, pool: true },
+    ctx: raw.engine?.ctx ?? 8192,
+    jinja: raw.engine?.jinja ?? true,
+    chatTemplate: raw.engine?.chatTemplate ?? "auto",
+    spmInfill: raw.engine?.spmInfill ?? false,
   };
 }
 
@@ -113,7 +133,9 @@ export type EngineOverrides = {
   deviceIndex?: number | null; // null = pool spans all devices (multi-GPU)
   pool?: boolean;
   extraArgs?: string[];
-  mmprojPath?: string; // vision encoder (mtmd) — pairs with VLM GGUFs
+  mmprojPath?: string; // vision encoder (mtmd) - pairs with VLM GGUFs
+  ctx?: number;        // context window (KV cache size)
+  chatTemplate?: string; // override the canonical template selector
 };
 
 export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ ok: boolean; note: string }> {
@@ -150,11 +172,20 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
     // pipe buffer will eventually block — never leave it unread.
     const logDir = path.join(require("node:os").homedir(), ".eventhorizon");
     fs.mkdirSync(logDir, { recursive: true });
+    const ctx = Math.max(1024, ov?.ctx ?? cfg.ctx ?? 8192);
+    const jinja = cfg.jinja !== false;
+    // Canonical template: restores tool calling when a GGUF's embedded template
+    // was stripped of its tool blocks. "auto" detects the family from the name.
+    const tpl = resolveTemplate(ov?.chatTemplate ?? cfg.chatTemplate ?? "auto", model);
     const child = spawn(binPath, [
       "-m", model,
       "--host", "127.0.0.1",
       "--port", String(cfg.port),
       "-ngl", "99",
+      "-c", String(ctx),
+      ...(jinja ? ["--jinja"] : []),
+      ...(cfg.spmInfill ? ["--spm-infill"] : []),
+      ...(tpl ? ["--chat-template-file", tpl.path] : []),
       ...(ov?.mmprojPath ? ["--mmproj", ov.mmprojPath] : []),
       ...(ov?.extraArgs ?? []),
     ], {
@@ -174,7 +205,8 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
     child.stderr?.pipe(logStream);
     proc = child;
     startedAt = Date.now();
-    const note = `engine starting (pid ${child.pid}) on http://127.0.0.1:${cfg.port} — model ${path.basename(model)} — log ${logPath}`;
+    const tplNote = tpl ? ` [template ${tpl.id ?? tpl.file}${tpl.tools ? "" : " (no tools)"}]` : " [embedded template]";
+    const note = `engine starting (pid ${child.pid}) on http://127.0.0.1:${cfg.port} - model ${path.basename(model)}${tplNote} - log ${logPath}`;
     child.on("exit", (code) => {
       proc = null;
       logStream.end();
@@ -201,6 +233,27 @@ export function engineHealth(): Promise<{ running: boolean; healthy: boolean; en
   return fetch(`${base}/health`, { signal: AbortSignal.timeout(4000) })
     .then((r) => ({ running: true, healthy: r.ok, endpoint, uptimeMs: Date.now() - startedAt }))
     .catch(() => ({ running: true, healthy: false, endpoint, uptimeMs: Date.now() - startedAt }));
+}
+
+// DeepSeek-Coder style FIM: complete the middle given a prefix and suffix.
+// Used for code completion (editor inline hints, and the code_complete tool).
+export async function engineInfill(body: { input_prefix?: string; input_suffix?: string; max_tokens?: number; temperature?: number }): Promise<{ ok: boolean; content?: string; error?: string }> {
+  const ep = engineEndpoint();
+  if (!ep) return { ok: false, error: "engine not running - start it first" };
+  const base = ep.replace(/\/v1$/, "");
+  try {
+    const res = await fetch(`${base}/infill`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ max_tokens: 256, temperature: 0.2, ...body }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) return { ok: false, error: `infill ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    const j = (await res.json()) as { content?: string };
+    return { ok: true, content: j.content ?? "" };
+  } catch (e) {
+    return { ok: false, error: String(e).slice(0, 200) };
+  }
 }
 
 process.on("exit", () => { if (proc) { try { proc.kill(); } catch { /* ignore */ } } });

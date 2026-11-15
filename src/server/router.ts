@@ -28,6 +28,24 @@ export async function listModels(ollamaUrl = "http://127.0.0.1:11434"): Promise<
   });
 }
 
+// Normalize whatever shape we stored (our ToolCall {id,name,args}, or an OpenAI
+// {id,type,function:{name,arguments}}) into the wire format every backend wants.
+// llama-server rejects a tool_calls item with a missing `type`, which is exactly
+// what the internal shape produces, so convert here rather than at each call site.
+function toOpenAIToolCalls(tcs: unknown): Array<Record<string, unknown>> | undefined {
+  if (!Array.isArray(tcs) || !tcs.length) return undefined;
+  return tcs.map((tc) => {
+    const t = tc as { id?: string; name?: string; args?: unknown; function?: { name?: string; arguments?: unknown } };
+    const name = t.name ?? t.function?.name ?? "";
+    const args = t.args !== undefined ? t.args : t.function?.arguments;
+    return {
+      id: t.id ?? `call_${Math.random().toString(36).slice(2, 10)}`,
+      type: "function",
+      function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) },
+    };
+  });
+}
+
 // OpenAI-compatible chat (BYOK): works with OpenAI, OpenCode Console gateway
 // (https://opencode.ai/inference/openai/v1), OpenRouter, vLLM, llama-server /v1, etc.
 // Key comes from .harness/secrets.json (gitignored) — never from git, never logged.
@@ -36,7 +54,8 @@ function toOpenAIMessages(messages: ChatMessage[], system: string) {
   const out: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   for (const m of messages) {
     const base: Record<string, unknown> = { role: m.role, content: m.content };
-    if (m.tool_calls) base.tool_calls = m.tool_calls;
+    const tcs = toOpenAIToolCalls(m.tool_calls);
+    if (tcs) base.tool_calls = tcs;
     if (m.tool_call_id) base.tool_call_id = m.tool_call_id;
     if (m.name) base.name = m.name;
     if (m.images && m.images.length > 0) {
@@ -120,7 +139,7 @@ function toWireMessages(messages: ChatMessage[]) {
   return messages.map((m) => ({
     role: m.role,
     content: m.content,
-    ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+    ...(() => { const tcs = toOpenAIToolCalls(m.tool_calls); return tcs ? { tool_calls: tcs } : {}; })(),
     ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
     ...(m.name ? { name: m.name } : {}),
   }));
