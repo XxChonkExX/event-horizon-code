@@ -74,6 +74,15 @@
     "maxConcurrent": 8,
     "worktreePerSession": true
   },
+  "sensory": {
+    "stt": { "bin": "", "model": "" },
+    "tts": { "bin": "", "voice": "" },
+    "candidateDirs": [],
+    "notes": [
+      "Ears (STT) = whisper.cpp + a ggml model; mouth (TTS) = piper + a voice. Nothing is bundled or downloaded automatically (house rule): drop binaries into resources/sensory or ~/.eventhorizon/sensory, or set explicit paths here.",
+      "GET /api/sensory/doctor states exactly what is missing, what was tried, and where to install. Endpoints refuse plainly until the sidecars exist."
+    ]
+  },
   "sop": {
     "defaultMode": "gated",
     "notes": [

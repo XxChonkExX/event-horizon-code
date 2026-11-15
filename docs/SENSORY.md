@@ -25,36 +25,40 @@ The bundled engine already contains `mtmd.dll` + `llama-mtmd-cli.exe`. Vision fl
 **Live verification (this machine):** treatment-Q8_0.gguf (Gemma-4-12b fine-tune) + `mmproj-gemma-4-12B-it-Q8_0.gguf` (159MB, ggml-org) via `--mmproj`. Server: `loaded multimodal model`. Test: 256x256 PNG, cyan "42" on black, drawn with System.Drawing, sent as data-URL content part. Model read it: *"the number '42' in a bright blue font against a black background... the answer is '42'"*, finish=stop, 10.5 t/s with vision. The mmproj pairs with **any Gemma-4-12b-derived GGUF** (Glitter Boy, Red Team line — one `--mmproj` flag each).
 
 Use cases: read error dialogs, review UI screenshots, parse architecture diagrams, verify visual output of frontend work. The agent gets eyes on the thing it built.
+## Ears - speech-to-text (S2) - **surface implemented, sidecar not installed**
 
-## Ears — speech-to-text (S2)
+`src/server/sensory.ts` implements the ears ladder. Nothing is bundled or
+downloaded automatically (house rule) - the module detects what exists and
+refuses plainly otherwise:
 
-whisper.cpp builds from the same ggml substrate — same repo family as chonkllama. Plan:
+- Detection: config paths (`.harness/config.json` `sensory.stt.{bin,model}`) >
+  `resources/sensory/` > `~/.eventhorizon/sensory/`. Every path tried is listed
+  in the doctor.
+- Endpoint: `POST /api/sensory/transcribe {audioBase64}` (16 kHz mono WAV) ->
+  runs the whisper CLI (timestamps stripped) -> `{text}`. Transcripts land in
+  the composer for editing before send (never auto-send).
+- Absence: `{ok:false, error:"ears (STT) not ready - install whisper.cpp and a
+  ggml model (GET /api/sensory/doctor says exactly what is missing)"}`.
+- `GET /api/sensory/doctor` states what to install, where to drop it, and what
+  was tried - no download happens on its own.
 
-- Bundle `whisper-server` (CPU default; Vulkan pooled optional) + a small model (user-downloads per house rule; base/small en are ~75-466MB).
-- Endpoint: `POST /api/sensory/stt` (multipart audio) → text into the composer.
-- UX: hold-mic button in composer, transcript lands in the input for editing before send (never auto-send).
+## Mouth - text-to-speech (S2) - **surface implemented, sidecar not installed**
 
-## Mouth — text-to-speech (S2)
+- Piper (MIT) as an onnx sidecar. CPU is plenty; voices are 20-80MB.
+- Endpoint: `POST /api/sensory/speak {text}` -> piper -> WAV returned as a data
+  URL for the renderer to play.
+- Detection mirrors ears (`sensory.tts.{bin,voice}` + candidate dirs).
 
-- Piper (MIT) or Kokoro (Apache-2.0) as an onnx sidecar. CPU is plenty; voices are 20-80MB.
-- Endpoint: `POST /api/sensory/tts {text, voice}` → wav stream.
-- UX: opt-in "speak replies" toggle per session; status bar badge; never on by default.
+## Status surface
 
-## Factory model
+- `GET /api/sensory/status` - ears/mouth presence as facts (bin, asset, ready)
+  plus the tried paths.
+- `GET /api/sensory/doctor` - install guidance without downloading anything.
+- `/api/engine/sensory` - integrated eyes/ears/mouth flags (mtmd for vision,
+  the sidecar module for ears and mouth).
+- The **Sensory panel** in the workbench shows all three with ready/missing
+  state and the doctor's guidance.
 
-Each sense is a sidecar with the same lifecycle as the LLM engine (`src/server/engine.ts`):
-config block → capability detection → spawn/stop → health → audited. The Toolchain Doctor /
-capability panel reports eyes/ears/mouth present-or-missing as stated facts, never silent passes.
-
-## Phases
-
-- **S1 (next, CPU-light):** content-parts plumbing in router + `/api/engine/sensory` capability detection (checks for `mtmd.dll`, `whisper-server`, `piper` near the engine binary) + screenshot tool stub.
-- **S2:** whisper sidecar + mic button; piper sidecar + speak toggle.
-- **S3:** screen-watcher agent mode (periodic screenshots as context, opt-in), video/pipeline ingest via VulkanVM storage-stream.
-
-## Licensing (planned bundles)
-
-- whisper.cpp — MIT (ggml-org/whisper.cpp)
-- Piper — MIT (rhasspy/piper); voices — various permissive, recorded per voice in Model Manager
-- Kokoro — Apache-2.0 (alternative voice engine)
-- mtmd — part of llama.cpp, MIT (already covered by chonkllama row in NOTICE.md)
+When you choose to install: drop `whisper-cli.exe` + a `ggml-*.bin` model and
+`piper.exe` + a voice (`*.onnx` + `*.onnx.json`) into `resources/sensory/` or
+`~/.eventhorizon/sensory/` - detection picks them up with no code changes.

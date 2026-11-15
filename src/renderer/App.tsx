@@ -11,6 +11,7 @@ import ModelManager from "./ModelManager";
 import ProfilesPanel from "./ProfilesPanel";
 import SessionsPanel from "./SessionsPanel";
 import MemoryPanel from "./MemoryPanel";
+import SensoryPanel from "./SensoryPanel";
 import FileTree from "./FileTree";
 import MonacoMount from "./MonacoMount";
 import Terminal from "./Terminal";
@@ -251,6 +252,7 @@ export default function App() {
             <ProfilesPanel />
             <SessionsPanel />
             <MemoryPanel />
+            <SensoryPanel />
           </div>
         </Show>
       </section>

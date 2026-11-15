@@ -305,10 +305,12 @@ pre {
 .proposal-list label { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; }
 .memory-lines { margin: 4px 0; padding-left: 16px; font-size: 12px; }
 .memory-lines li { margin: 2px 0; }
+.sensory-list { margin: 4px 0; padding-left: 14px; font-size: 12px; }
+.sensory-list li { margin: 3px 0; }
 .review-actions { display: flex; gap: 6px; margin-top: 8px; }
 .review-actions button:first-child { border-color: var(--ok); }
 .review-actions button:last-child { border-color: var(--bad); }
-.toolchain-doctor, .sandbox-controls, .agentwatch-panel, .model-manager, .profiles-panel, .sessions-panel, .memory-panel {
+.toolchain-doctor, .sandbox-controls, .agentwatch-panel, .model-manager, .profiles-panel, .sessions-panel, .memory-panel, .sensory-panel {
   background: rgba(34, 34, 43, 0.85);
   border: 1px solid var(--border); border-radius: 8px;
   padding: 10px 12px;

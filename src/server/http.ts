@@ -32,6 +32,7 @@ import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, 
 import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTemplateFiles } from "./chatTemplates";
 import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
+import { sensoryStatus, doctor as sensoryDoctor, transcribe, speak } from "./sensory";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -988,6 +989,40 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       const id = decodeURIComponent(url.pathname.slice("/api/sops/runs/".length, -"/cancel".length));
       const r = cancelRun(id);
       return sendJson(res, r.ok ? 200 : 400, r.run ? { ok: true, status: r.run.status } : r);
+    }
+
+    // ---- sensory sidecars: ears (STT) + mouth (TTS), honest about absence ----
+    if (req.method === "GET" && url.pathname === "/api/sensory/status") {
+      return sendJson(res, 200, sensoryStatus());
+    }
+    if (req.method === "GET" && url.pathname === "/api/sensory/doctor") {
+      return sendJson(res, 200, sensoryDoctor());
+    }
+    if (req.method === "POST" && url.pathname === "/api/sensory/transcribe") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { audioBase64?: string; language?: string };
+          if (!b.audioBase64) return sendJson(res, 400, { error: "audioBase64 (16 kHz mono WAV) required" });
+          const r = await transcribe(b.audioBase64, { language: b.language });
+          sendJson(res, r.ok ? 200 : 400, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/sensory/speak") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { text?: string };
+          if (!b.text?.trim()) return sendJson(res, 400, { error: "text required" });
+          const r = await speak(b.text.slice(0, 4000));
+          sendJson(res, r.ok ? 200 : 400, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
     }
 
     if (req.method === "GET" && url.pathname === "/api/engine/templates") {

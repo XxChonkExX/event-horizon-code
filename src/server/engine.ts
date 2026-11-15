@@ -13,6 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { resolveTemplate } from "./chatTemplates";
+import { sensoryStatus } from "./sensory";
 
 export type EngineConfig = {
   kind: "bundled" | "external" | "none";
@@ -269,19 +270,21 @@ export type Sensory = {
 
 export function sensoryDetect(): Sensory {
   const binary = resolveEngineBinary();
-  if (!binary.path) return { eyes: false, ears: false, mouth: false, notes: [`engine binary not found — tried: ${binary.tried.join(", ")}`] };
-  const dir = path.dirname(binary.path);
   const notes: string[] = [];
-  let eyes = false, ears = false, mouth = false;
+  let eyes = false;
   try {
-    eyes = fs.existsSync(path.join(dir, "mtmd.dll")) || fs.existsSync(path.join(dir, "mtmd.so"));
-    ears = fs.existsSync(path.join(dir, "whisper-server.exe")) || fs.existsSync(path.join(dir, "whisper-server"));
-    mouth = fs.existsSync(path.join(dir, "piper.exe")) || fs.existsSync(path.join(dir, "piper"));
+    if (binary.path) {
+      const dir = path.dirname(binary.path);
+      eyes = fs.existsSync(path.join(dir, "mtmd.dll")) || fs.existsSync(path.join(dir, "mtmd.so"));
+    }
     if (!eyes) notes.push("mtmd.dll not found next to engine — vision models will reject images");
-    if (!ears) notes.push("whisper sidecar not bundled yet (Phase S2) — STT via BYOK or nothing");
-    if (!mouth) notes.push("tts sidecar not bundled yet (Phase S2) — speech replies via BYOK or nothing");
   } catch {
     notes.push("engine dir unreadable — sensory detection failed");
   }
-  return { eyes, ears, mouth, notes };
+  // Ears/mouth live in the sensory sidecar module (S2): real detection with
+  // candidate-dir ladders, not hardcoded absences.
+  const s = sensoryStatus();
+  if (!s.ears.ready) notes.push("ears (STT) not ready — install whisper.cpp (see /api/sensory/doctor)");
+  if (!s.mouth.ready) notes.push("mouth (TTS) not ready — install piper (see /api/sensory/doctor)");
+  return { eyes, ears: s.ears.ready, mouth: s.mouth.ready, notes };
 }
