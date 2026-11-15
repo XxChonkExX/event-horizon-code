@@ -31,6 +31,7 @@ import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal,
 import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, sensoryDetect, addGgufDir, engineInfill } from "./engine";
 import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTemplateFiles } from "./chatTemplates";
 import { runAgentTurn } from "./agentLoop";
+import { extractMemories, applyMemories } from "./memory";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -895,6 +896,34 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         if (b.path) lspManager.kill(wt, b.path); else lspManager.killWorktree(wt);
         audit({ tool: "lsp.kill", note: `${b.path ?? wt}` });
         sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // ---- auto-memory: propose from a session, operator approves ----
+    if (req.method === "POST" && url.pathname === "/api/memory/extract") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { sessionId?: string; worktree?: string; model?: string };
+          const r = await extractMemories(b.sessionId ?? "default", resolveWorktree(b.worktree), { model: b.model });
+          sendJson(res, 200, r);
+        } catch (e) {
+          sendJson(res, 400, { error: "bad request", cause: String((e as Error)?.message ?? e).slice(0, 200) });
+        }
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/memory/apply") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { worktree?: string; texts?: string[] };
+          const r = applyMemories(resolveWorktree(b.worktree), b.texts ?? []);
+          sendJson(res, 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;
     }
