@@ -150,6 +150,16 @@ export function getProfile(id: string): Profile | null {
   return listProfiles().find((p) => p.id === id) ?? null;
 }
 
+export function deleteProfile(id: string): boolean {
+  const existed = getProfile(id) !== null;
+  if (db) db.prepare("DELETE FROM profiles WHERE id=?").run(id);
+  else {
+    const i = memProfiles.findIndex((x) => x.id === id);
+    if (i >= 0) memProfiles.splice(i, 1);
+  }
+  return existed;
+}
+
 // ---- session lifecycle helpers ----
 
 export function touchSession(id: string): void {

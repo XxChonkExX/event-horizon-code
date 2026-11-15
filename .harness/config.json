@@ -1,7 +1,15 @@
 {
   "modelRouter": {
-    "priority": ["ollama", "llamacpp", "openai-compatible", "anthropic", "gemini"],
-    "ollama": { "baseUrl": "http://127.0.0.1:11434" },
+    "priority": [
+      "ollama",
+      "llamacpp",
+      "openai-compatible",
+      "anthropic",
+      "gemini"
+    ],
+    "ollama": {
+      "baseUrl": "http://127.0.0.1:11434"
+    },
     "defaultModel": null,
     "modelChoice": "user-at-runtime",
     "notes": [
@@ -22,7 +30,12 @@
     ]
   },
   "reasoning": {
-    "defaults": { "plan": "medium", "build": "high", "explore": "low", "review": "medium" },
+    "defaults": {
+      "plan": "medium",
+      "build": "high",
+      "explore": "low",
+      "review": "medium"
+    },
     "perMessage": "/think:low|medium|high|max",
     "budgetForcing": true
   },
@@ -49,7 +62,10 @@
     "lsp": "allow"
   },
   "engram": {
-    "packs": ["./engrams/packs/core", "./engrams/packs/codetraining"],
+    "packs": [
+      "./engrams/packs/core",
+      "./engrams/packs/codetraining"
+    ],
     "typedAbsence": true,
     "verifyArithmetic": true
   },
@@ -69,8 +85,15 @@
     "kind": "bundled",
     "binaryPath": "C:/Users/mikeh/Documents/New OpenCode Project/chonkllama.cpp/build-vk/bin/Release/llama-server.exe",
     "port": 8901,
-    "ggufDirs": ["F:/llmtrainingpipeline", "G:/New folder"],
-    "gpu": { "deviceIndex": 0, "heapFraction": 0.35, "pool": true },
+    "ggufDirs": [
+      "F:/llmtrainingpipeline",
+      "G:/New folder"
+    ],
+    "gpu": {
+      "deviceIndex": 0,
+      "heapFraction": 0.35,
+      "pool": true
+    },
     "ctx": 8192,
     "chatTemplate": "auto",
     "notes": [
@@ -111,11 +134,18 @@
       "allowNetwork": false,
       "allowCredentials": false
     },
-    "tiers": ["review", "execute", "redteam"],
+    "tiers": [
+      "review",
+      "execute",
+      "redteam"
+    ],
     "notes": [
       "Detonation lane only. Clean worktrees never receive untrusted code.",
       "BlackICE engram_vm pattern: pyvm, rv32, ti85, mathcheck, dataflow. Deterministic, no syscalls.",
       "Model Gemma-4-12b-RedTeam-BlackICE is user-chosen at runtime if wanted (ChonkE/Gemma-4-12b-RedTeam-BlackICE on HF). Not shipped, not default."
     ]
+  },
+  "profile": {
+    "active": "default"
   }
 }

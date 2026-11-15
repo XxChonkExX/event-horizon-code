@@ -21,7 +21,7 @@ import {
   createSession, listTodos, addTodo, loadMessages,
   listSessionsWithMeta, renameSession, deleteSession,
   listInstructions, putInstruction, removeInstruction,
-  usageSummary, listProfiles, upsertProfile,
+  usageSummary, listProfiles, upsertProfile, getProfile, deleteProfile,
 } from "./store";
 import os from "node:os";
 import { runTool } from "./tools";
@@ -86,6 +86,25 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
 function resolveWorktree(w: string | undefined): string {
   const s = (w ?? "").trim();
   try { return s && fs.existsSync(s) ? s : process.cwd(); } catch { return process.cwd(); }
+}
+
+// Active profile id, persisted in .harness/config.json (profile.active) so the
+// preference survives restarts. The agent loop applies the same precedence:
+// request param > EH_PROFILE > this value > "default".
+function readActiveProfile(): string {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { profile?: { active?: string } };
+    return cfg.profile?.active ?? "default";
+  } catch { return "default"; }
+}
+
+function writeActiveProfile(id: string): void {
+  const cfgPath = path.join(process.cwd(), ".harness", "config.json");
+  let raw: Record<string, unknown> = {};
+  try { raw = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as Record<string, unknown>; } catch { /* fresh config */ }
+  raw.profile = { ...(raw.profile as object | undefined), active: id };
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+  fs.writeFileSync(cfgPath, JSON.stringify(raw, null, 2));
 }
 
 export function startHttpServer(opts: ServerOpts): http.Server {
@@ -262,6 +281,34 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const p = upsertProfile({ id: b.id ?? `profile_${Date.now().toString(36)}`, name: b.name ?? "profile", settings: b.settings ?? {}, created: new Date().toISOString() });
           audit({ tool: "profile.upsert", note: p.id });
           sendJson(res, 200, p);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/profiles/")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/profiles/".length));
+      const existed = deleteProfile(id);
+      if (existed && readActiveProfile() === id) {
+        writeActiveProfile("default");
+        audit({ tool: "profile.active", note: "reset to default after delete" });
+      }
+      audit({ tool: "profile.delete", note: `${id} existed=${existed}` });
+      return sendJson(res, 200, { ok: existed, error: existed ? undefined : "no such profile" });
+    }
+    if (req.method === "GET" && url.pathname === "/api/profiles/active") {
+      return sendJson(res, 200, { id: readActiveProfile() });
+    }
+    if (req.method === "POST" && url.pathname === "/api/profiles/active") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { id?: string };
+          const id = (b.id ?? "default").trim() || "default";
+          if (!getProfile(id)) return sendJson(res, 400, { error: `no such profile: ${id}` });
+          writeActiveProfile(id);
+          audit({ tool: "profile.active", note: id });
+          sendJson(res, 200, { id });
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;

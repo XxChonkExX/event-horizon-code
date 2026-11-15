@@ -8,6 +8,7 @@ import ToolchainDoctor from "./ToolchainDoctor";
 import SandboxControls from "./SandboxControls";
 import AgentWatchPanel from "./AgentWatchPanel";
 import ModelManager from "./ModelManager";
+import ProfilesPanel from "./ProfilesPanel";
 import FileTree from "./FileTree";
 import MonacoMount from "./MonacoMount";
 import Terminal from "./Terminal";
@@ -220,6 +221,7 @@ export default function App() {
             <SandboxControls />
             <AgentWatchPanel />
             <ModelManager />
+            <ProfilesPanel />
           </div>
         </Show>
       </section>

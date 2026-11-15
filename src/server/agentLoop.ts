@@ -84,6 +84,15 @@ function readConfigDefaultModel(): string | null {
   } catch { return null; }
 }
 
+// Active profile: explicit param > .harness/config.json profile.active > "default".
+// Without this fallback a default profile silently stops applying to plain chat.
+function activeProfileId(): string {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { profile?: { active?: string } };
+    return cfg.profile?.active ?? "default";
+  } catch { return "default"; }
+}
+
 function readSecret(provider: string): { baseUrl?: string; apiKey?: string } | null {
   try {
     const s = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "secrets.json"), "utf8")) as Record<string, { baseUrl?: string; apiKey?: string }>;
@@ -93,7 +102,7 @@ function readSecret(provider: string): { baseUrl?: string; apiKey?: string } | n
 
 export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult> {
   // Request param > active profile > project config > empty.
-  const profile = p.profileId ? safeProfile(p.profileId) : null;
+  const profile = safeProfile(p.profileId ?? activeProfileId());
   const prof = profile?.settings ?? {};
   const profStr = (k: string): string | undefined => (typeof prof[k] === "string" ? (prof[k] as string) : undefined);
   const profNum = (k: string): number | undefined => (typeof prof[k] === "number" ? (prof[k] as number) : undefined);

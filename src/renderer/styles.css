@@ -295,7 +295,7 @@ pre {
 .review-actions { display: flex; gap: 6px; margin-top: 8px; }
 .review-actions button:first-child { border-color: var(--ok); }
 .review-actions button:last-child { border-color: var(--bad); }
-.toolchain-doctor, .sandbox-controls, .agentwatch-panel {
+.toolchain-doctor, .sandbox-controls, .agentwatch-panel, .model-manager, .profiles-panel {
   background: rgba(34, 34, 43, 0.85);
   border: 1px solid var(--border); border-radius: 8px;
   padding: 10px 12px;
