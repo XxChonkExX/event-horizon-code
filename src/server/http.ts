@@ -824,9 +824,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       req.on("data", (c) => { raw += c; });
       req.on("end", () => {
         try {
-          const b = JSON.parse(raw || "{}") as { worktree?: string; sessionId?: string; mode?: string };
+          const b = JSON.parse(raw || "{}") as { worktree?: string; sessionId?: string; mode?: string; task?: string };
           const worktree = resolveWorktree(b.worktree);
-          const r = startRun(name, { worktree, sessionId: b.sessionId, mode: b.mode });
+          const r = startRun(name, { worktree, sessionId: b.sessionId, mode: b.mode, task: b.task });
           if (!r.ok) return sendJson(res, 400, r);
           sendJson(res, 200, { runId: r.run!.id, mode: r.run!.mode, status: r.run!.status });
         } catch (e) {

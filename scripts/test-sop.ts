@@ -135,6 +135,19 @@ async function main(): Promise<void> {
   check("listSops sees the fixtures", listSops().length >= 9);
   check("unknown SOP refused", startRun("nope", { worktree: process.cwd() }).ok === false);
 
+  // 11. the run's task reaches agent nodes (LoopForge: runs link to requirements)
+  fs.writeFileSync(path.join(process.env.EH_SOPS_DIR!, "tasked.json"), JSON.stringify({
+    name: "tasked", mode: "automated",
+    nodes: [{ id: "echo-task", type: "script", cmd: `node -e "console.log('task check')"`, }],
+  }), "utf8");
+  // (task injection is verified against a run record: the task is stored verbatim)
+  const r11 = startRun("tasked", { worktree: process.cwd(), task: "Fix the flaky login test" });
+  const id11 = r11.run!.id;
+  await until(() => getRun(id11)!.status === "done", 30000, "tasked completion");
+  check("run records the task", getRun(id11)!.task === "Fix the flaky login test", getRun(id11)!.task ?? "(none)");
+  const persisted = JSON.parse(fs.readFileSync(path.join(process.env.EH_SOPS_DIR!, "runs", `${id11}.json`), "utf8")) as { task?: string };
+  check("task persisted with the run record", persisted.task === "Fix the flaky login test");
+
   console.log(failures === 0 ? "[ehc] sop workflow tests: ALL PASS" : `[ehc] sop workflow tests: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 }

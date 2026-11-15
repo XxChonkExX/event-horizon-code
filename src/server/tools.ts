@@ -99,9 +99,26 @@ function walkFiles(root: string, maxFiles = 2000): string[] {
 // Workspace jail: tools operate on paths relative to the workspace. Absolute
 // paths and traversal are refused with a clear error (the model is told the
 // constraint in its tool descriptions and can ask the user to relocate files).
+// Credential files are refused outright: an agent (especially in automated
+// mode) must never read or write BYOK keys or env files.
+const CREDENTIAL_FILES = /(^|[\\/])(\.harness[\\/]secrets\.json|\.env(\..+)?|credentials?\.(json|ya?ml)|id_rsa|\.netrc)$/i;
+
+function isCredentialPath(rel: string): boolean {
+  const norm = rel.replace(/\\/g, "/").toLowerCase();
+  // .example/.template/.sample files are templates, not secrets - always allowed.
+  if (/\.(example|template|sample)$/.test(norm)) return false;
+  if (norm.includes(".harness/secrets.json")) return true;
+  // .env / .env.local / .env.production hold real values.
+  if (/(^|\/)\.env(\..+)?$/.test(norm)) return true;
+  return CREDENTIAL_FILES.test(norm);
+}
+
 function safePath(worktree: string, p: string): { ok: boolean; abs?: string; error?: string } {
   if (path.isAbsolute(p)) {
     return { ok: false, error: "absolute paths are not allowed — use a path relative to the workspace, or ask the user to move the file into the workspace" };
+  }
+  if (isCredentialPath(p)) {
+    return { ok: false, error: "refused: credential files (.harness/secrets.json, .env) are never agent-readable or agent-writable. Ask the user to edit them by hand." };
   }
   const abs = path.resolve(worktree, p);
   const root = path.resolve(worktree);
@@ -207,6 +224,13 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
     }
     if (tool === "bash") {
       const cmd = String(args.cmd ?? "");
+      // Defense in depth: the file-tool jail blocks direct credential reads,
+      // but a shell could still cat them. Refuse commands that name credential
+      // files (.env.example is allowed - it is a template, not a secret).
+      if (/\bsecrets\.json\b/i.test(cmd) || /(^|[^\w.])\.env(\.[^.]+)?\b/i.test(cmd.replace(/\.env\.example/g, "")) || /\bid_rsa\b|\.netrc\b|credentials?\.(json|ya?ml)\b/i.test(cmd)) {
+        audit({ tool, note: "refused: credential file access" });
+        return { ok: false, error: "refused: commands that read or write credential files (.harness/secrets.json, .env, keys) are not allowed. Ask the user instead.", out: "" };
+      }
       const parsed = cmd.trim().split(/\s+/);
       return new Promise<ToolResult>((resolve) => {
         execFile(parsed[0], parsed.slice(1), { cwd: worktree, timeout: 15000, maxBuffer: 200000, windowsHide: true }, (err, stdout, stderr) => {

