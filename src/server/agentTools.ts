@@ -149,6 +149,14 @@ export const TOOL_SPECS: ToolDef[] = [
   {
     type: "function",
     function: {
+      name: "screenshot",
+      description: "Capture the screen (Windows, primary virtual screen) as a PNG. The image is attached to the conversation so a vision-capable model can see it; with a text-only model the capture is stated as useless rather than pretended. Use to check UI state, verify a visual fix, or read something on screen.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "bash",
       description: "Run a shell command in the workspace directory (15s timeout). Use for builds, tests, and git. Requires user approval unless auto-approve is on.",
       parameters: { type: "object", properties: { cmd: str("Command line to execute.") }, required: ["cmd"] },
@@ -170,6 +178,7 @@ export const AGENT_SYSTEM = [
   "  run_js                — programmatic tool calling: batch read/ls/grep/glob in one script, return one result",
   "  verify                — run the project's tests/typecheck/build and report PASSED or FAILED",
   "  code_complete         — fill-in-the-middle completion between a prefix and suffix (needs the engine + a FIM model)",
+  "  screenshot            — capture the screen as an image attached to the conversation (needs a vision model to be seen)",
   "  todo                  — plan and track progress (persisted, visible to the user)",
   "",
   "Rules:",

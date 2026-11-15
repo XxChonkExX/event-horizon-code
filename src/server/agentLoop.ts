@@ -207,6 +207,7 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
       }
       let r: ChatResult;
       let innerAttempts = 0;
+      let imageRetried = false;
       budget = clampBudget(effTokens);
       while (true) {
         innerAttempts++; attempts++;
@@ -216,6 +217,19 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
         if (r.ok && empty && thought && !(r.toolCalls?.length) && innerAttempts < 3 && budget < 8192) {
           budget = Math.min(budget * 2, 8192);
           audit({ tool: "model.escalate", note: `${r.model} thinking exhausted -> retry at ${budget}` });
+          continue;
+        }
+        // Vision degradation: a text-only model rejects attached images. Retry
+        // once without them and say so, instead of failing the turn.
+        if (!r.ok && convo.some((m) => m.images?.length) && !imageRetried) {
+          imageRetried = true;
+          for (let i = convo.length - 1; i >= 0; i--) {
+            if (convo[i].images?.length) {
+              convo.splice(i, 1);
+              convo.splice(i, 0, { role: "user", content: "(image removed: the current model cannot see images - state that you are unable to view the screen with this model.)" });
+            }
+          }
+          audit({ tool: "model.vision-fallback", note: `${r.model} rejected image -> retried without` });
           continue;
         }
         break;
@@ -272,6 +286,11 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
           audit({ tool: `agent.${tc.name}`, note: `ok=${res.ok}${res.needsApproval ? " needsApproval" : ""}` });
           p.onStep?.({ name: tc.name, ok: res.ok, needsApproval: Boolean(res.needsApproval), step });
           convo.push({ role: "tool", content: out, name: tc.name, tool_call_id: tc.id });
+          if (res.image) {
+            // Vision handoff: tool-result images are not portable across both
+            // model lanes, so the pixels ride as a labelled user turn.
+            convo.push({ role: "user", content: "(image attached from the tool result above - analyze it for the task)", images: [res.image] });
+          }
         }
         continue; // let the model react to tool results
       }

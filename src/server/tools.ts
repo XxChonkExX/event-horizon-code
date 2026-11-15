@@ -17,8 +17,8 @@ import { engineEndpoint } from "./engine";
 import { buildDetonatePlan, runDetonate, quarantineCheck, scanUncleanScript, type DetonateTier } from "./detonate";
 import { isMcpTool, callMcpTool } from "./mcp";
 
-export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete";
-export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean };
+export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
+export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean; image?: string };
 
 function readConfig(): { permissions?: Record<string, string> } {
   try {
@@ -549,6 +549,38 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       } catch (e) {
         return { ok: false, error: String(e).slice(0, 200), out: "" };
       }
+    }
+    if (tool === "screenshot") {
+      // Computer use, step 1: eyes on the primary screen. Windows-native via
+      // System.Drawing (no deps). The PNG is returned as a data URL and attached
+      // to the conversation, so a vision-capable model can actually see it -
+      // capture without a vision model is stated as such, never pretended.
+      if (process.platform !== "win32") return { ok: false, error: "screenshot is Windows-only right now (System.Drawing capture); macOS/Linux lanes are planned", out: "" };
+      const dir = path.join(worktree, ".eventhorizon", "shots");
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `shot-${Date.now().toString(36)}.png`);
+      const ps = [
+        "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;",
+        "$b = [System.Windows.Forms.SystemInformation]::VirtualScreen;",
+        "$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height;",
+        "$g = [System.Drawing.Graphics]::FromImage($bmp);",
+        "$g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size);",
+        `$bmp.Save('${file.replace(/'/g, "''")}');`,
+        "$g.Dispose(); $bmp.Dispose();",
+      ].join("");
+      const ok = await new Promise<boolean>((resolve) => {
+        exec(`powershell.exe -NoProfile -NonInteractive -Command "${ps.replace(/"/g, '\\"')}"`, { timeout: 20_000, windowsHide: true }, (err) => resolve(!err));
+      });
+      if (!ok || !fs.existsSync(file)) {
+        return { ok: false, error: "capture failed - no interactive desktop session, or PowerShell refused. State that you cannot see the screen.", out: "" };
+      }
+      const b64 = fs.readFileSync(file).toString("base64");
+      audit({ tool, note: `${Math.round(b64.length / 1024)} KB -> ${path.basename(file)}` });
+      return {
+        ok: true,
+        out: `screenshot captured: ${path.basename(file)} (${Math.round(b64.length / 1024)} KB). Analyze the attached image.`,
+        image: `data:image/png;base64,${b64}`,
+      };
     }
     if (tool === "verify") {
       // Run the project's own checks. Detect the package manager and the best

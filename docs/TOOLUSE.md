@@ -131,11 +131,13 @@ never reimplement): **ti85, pyvm, rv32, z80, m6502, thumb2, dataflow**.
 - Still to do: expose per-machine guidance (ISA notes) in the system prompt.
 
 ### 5. Computer use / eyes on the GUI
-Vision is verified (mtmd + mmproj). Remaining work:
-- `screenshot` tool: capture the active window or screen to PNG (native bridge in
-  main process; PowerShell fallback).
-- Feed as an image content part into the next model turn (both lanes already
-  accept images).
+Vision is verified (mtmd + mmproj). **Step 1 shipped**: the `screenshot` tool
+(Windows-native via System.Drawing, no deps) captures the virtual screen to a
+PNG, returned as a data URL and attached to the conversation so a vision-capable
+model sees it; a text-only model gets an honest retry-without-image fallback
+("unable to view the screen with this model") instead of a failed turn. Capture
+is permission-gated (`screenshot: ask`). Remaining work:
+- Active-window capture, macOS/Linux lanes.
 - Input control (click/type) is higher risk: detonation-tier + explicit opt-in,
   never default. Borrow from OpenAI computer-use guidance: confirm-before-act,
   bounded action budgets, visible indicator while active.
