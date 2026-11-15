@@ -14,7 +14,21 @@ type PtyModule = {
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 function ptyModule(): PtyModule | null { try { return require("@lydell/node-pty") as PtyModule; } catch { return null; } }
 
-type TermSession = { id: string; worktree: string; pty: ReturnType<PtyModule["spawn"]> };
+type TermExit = { exitCode: number | null; signal: number | null };
+
+type TermSession = {
+  id: string;
+  worktree: string;
+  pty: ReturnType<PtyModule["spawn"]>;
+  // Command terminals (ACP): output is retained for terminal/output polling,
+  // capped at the requested byte limit. Interactive shells leave these unset.
+  command?: string;
+  buffer?: string;
+  truncated?: boolean;
+  byteLimit?: number;
+  exit?: TermExit | null;
+  waiters?: Array<(e: TermExit) => void>;
+};
 const sessions = new Map<string, TermSession>();
 
 export function ptyAvailable(): boolean { return ptyModule() !== null; }
@@ -47,6 +61,103 @@ export function openTerminal(worktree: string): { ok: boolean; id?: string; erro
 }
 
 export function getTerminal(id: string): TermSession | null { return sessions.get(id) ?? null; }
+
+// node-pty's Windows conpty requires an existing file - a bare "node" throws
+// "File not found". Resolve bare commands over PATH + PATHEXT, exactly like a
+// shell would, before handing them to the pty.
+function resolveExecutable(cmd: string): string {
+  if (!cmd || cmd.includes("\\") || cmd.includes("/")) return cmd;
+  const exts = [""].concat((process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";"));
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const candidate = path.join(dir, cmd + ext);
+      try { if (fs.statSync(candidate).isFile()) return candidate; } catch { /* keep searching */ }
+    }
+  }
+  return cmd; // not found - the pty will state the error plainly
+}
+
+// ACP terminal/create: run a specific command in a PTY (not a shell), retain
+// capped output for polling, and expose exit status. Untracked waiters are
+// resolved on exit; the caller polls terminal/output for incremental text.
+export function openCommandTerminal(
+  worktree: string,
+  command: string,
+  args: string[],
+  opts?: { outputByteLimit?: number; env?: Record<string, string> },
+): { ok: boolean; id?: string; error?: string; cwdNote?: string } {
+  const pty = ptyModule();
+  if (!pty) return { ok: false, error: "node-pty native module unavailable - ACP terminals disabled (stated blind spot)" };
+  if (!command.trim()) return { ok: false, error: "command required" };
+  let cwd = path.resolve(worktree);
+  let cwdNote: string | undefined;
+  if (!fs.existsSync(cwd)) {
+    const fallback = path.resolve(process.cwd());
+    cwdNote = `requested worktree "${worktree}" does not exist - started in ${fallback}`;
+    cwd = fs.existsSync(fallback) ? fallback : require("node:os").homedir();
+  }
+  const byteLimit = Math.max(1024, Math.min(opts?.outputByteLimit ?? 512_000, 4_000_000));
+  const p = pty.spawn(resolveExecutable(command), args, {
+    name: "xterm-256color", cols: 120, rows: 30, cwd,
+    env: { ...process.env, ...(opts?.env ?? {}) },
+  });
+  const id = `acpterm_${Date.now().toString(36)}`;
+  const s: TermSession = { id, worktree: cwd, pty: p, command, buffer: "", truncated: false, byteLimit, exit: null, waiters: [] };
+  sessions.set(id, s);
+  audit({ tool: "terminal.open-command", note: `${id} pid=${p.pid} cmd=${command} cwd=${cwd}` });
+  p.onData((d: string) => {
+    if (s.exit) return;
+    s.buffer = (s.buffer ?? "") + d;
+    if (Buffer.byteLength(s.buffer, "utf8") > s.byteLimit!) {
+      s.buffer = s.buffer.slice(0, s.byteLimit!);
+      s.truncated = true;
+    }
+  });
+  p.onExit((e: { exitCode: number }) => {
+    s.exit = { exitCode: e.exitCode, signal: null };
+    for (const w of s.waiters ?? []) { try { w(s.exit); } catch { /* waiter gone */ } }
+    s.waiters = [];
+  });
+  return { ok: true, id, cwdNote };
+}
+
+// ACP terminal/output: the retained output so far plus exit status.
+export function terminalBuffer(id: string): { ok: boolean; output?: string; truncated?: boolean; exit_code?: number | null; signal?: number | null; error?: string } {
+  const s = sessions.get(id);
+  if (!s) return { ok: false, error: `no such terminal: ${id}` };
+  return {
+    ok: true,
+    output: s.buffer ?? "",
+    truncated: s.truncated ?? false,
+    exit_code: s.exit ? s.exit.exitCode : null,
+    signal: s.exit ? s.exit.signal : null,
+  };
+}
+
+// ACP terminal/wait_for_exit. Resolves immediately if already exited; otherwise
+// when the process exits. Optional timeoutMs bounds the HTTP request (0 = wait).
+export function waitForTerminalExit(id: string, timeoutMs = 0): Promise<{ ok: boolean; exit_code?: number | null; signal?: number | null; error?: string }> {
+  const s = sessions.get(id);
+  if (!s) return Promise.resolve({ ok: false, error: `no such terminal: ${id}` });
+  if (s.exit) return Promise.resolve({ ok: true, exit_code: s.exit.exitCode, signal: s.exit.signal });
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (e: TermExit): void => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      resolve({ ok: true, exit_code: e.exitCode, signal: e.signal });
+    };
+    (s.waiters ??= []).push(finish);
+    const timer = timeoutMs > 0 ? setTimeout(() => {
+      if (done) return;
+      done = true;
+      s.waiters = (s.waiters ?? []).filter((w) => w !== finish);
+      resolve({ ok: false, error: `terminal still running after ${timeoutMs}ms` });
+    }, timeoutMs) : null;
+  });
+}
 
 export function terminalInput(id: string, data: string): boolean {
   const s = sessions.get(id);

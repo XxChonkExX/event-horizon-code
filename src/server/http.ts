@@ -32,12 +32,22 @@ import type { ToolDef } from "./agentTools";
 import { splitToolset, searchTools } from "./toolSearch";
 import { ensureMcpServers, mcpTools, isMcpTool, callMcpTool, hasMcpServers } from "./mcp";
 import type { ChatMessage } from "./router";
-import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable } from "./terminal";
+import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable, openCommandTerminal, terminalBuffer, waitForTerminalExit } from "./terminal";
 import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir, engineInfill } from "./engine";
 import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTemplateFiles } from "./chatTemplates";
 
 
 export type ServerOpts = { port: number; password: string; host?: string };
+
+// ACP session state that outlives a single request:
+//  - sessionWorktrees: the directory a session operates in (for terminal/create
+//    and fs/write_text_file when the client omits cwd).
+//  - sessionModes: "default" (ask on write/bash) or "auto" (unattended runs).
+//  - cancelledSessions: cooperative cancel - the prompt loop checks between
+//    steps; a model call already in flight finishes, then the loop stops.
+const sessionWorktrees = new Map<string, string>();
+const sessionModes = new Map<string, string>();
+const cancelledSessions = new Set<string>();
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
@@ -403,8 +413,17 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       "/api/acp/session/new": "session/new",
       "/api/acp/session/prompt": "session/prompt",
       "/api/acp/session/update": "session/update",
+      "/api/acp/session/load": "session/load",
+      "/api/acp/session/set_mode": "session/set_mode",
+      "/api/acp/session/cancel": "session/cancel",
       "/api/acp/session/request_permission": "session/request_permission",
       "/api/acp/fs/read_text_file": "fs/read_text_file",
+      "/api/acp/fs/write_text_file": "fs/write_text_file",
+      "/api/acp/terminal/create": "terminal/create",
+      "/api/acp/terminal/output": "terminal/output",
+      "/api/acp/terminal/wait_for_exit": "terminal/wait_for_exit",
+      "/api/acp/terminal/kill": "terminal/kill",
+      "/api/acp/terminal/release": "terminal/release",
     };
     if (req.method === "POST" && acpMap[url.pathname]) {
       let raw = "";
@@ -413,12 +432,24 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         try {
           const body = JSON.parse(raw || "{}") as { params?: Record<string, unknown> };
           const method = acpMap[url.pathname];
-          // Minimal live behavior: initialize echoes version, session/new creates a session row, prompt broadcasts via SSE, others stub.
           if (method === "initialize") {
-            sendJson(res, 200, { protocolVersion: "0.1.0", capabilities: { fs: ["read_text_file"] } });
+            // Declares what this agent actually supports; a client should not
+            // offer UI for anything absent here.
+            sendJson(res, 200, {
+              protocolVersion: "0.1.0",
+              agentCapabilities: {
+                loadSession: true,
+                promptCapabilities: { image: true, audio: false, embeddedContext: false },
+              },
+              authMethods: [],
+              fs: { read_text_file: true, write_text_file: true },
+              terminal: ptyAvailable(),
+              modes: ["default", "auto"],
+            });
           } else if (method === "session/new") {
             const params = (body.params ?? {}) as { title?: string; worktree?: string };
             const s = createSession({ id: `ses_${Date.now().toString(36)}`, title: params.title ?? "session", worktree: params.worktree ?? process.cwd(), created: new Date().toISOString() });
+            sessionWorktrees.set(s.id, resolveWorktree(params.worktree));
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
@@ -434,7 +465,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             const engineUp = engineEndpoint();
             const userMsg: ChatMessage = { role: "user", content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
             const workdir = resolveWorktree(params.worktree);
-            const autoApprove = params.autoApprove === true || prof["autoApprove"] === true;
+            const autoApprove = params.autoApprove === true || sessionModes.get(params.sessionId ?? "default") === "auto" || prof["autoApprove"] === true;
             const effThink = params.think ?? profStr("think") ?? "medium";
             const effTokens = params.numPredict ?? profNum("tokens") ?? 1024;
 
@@ -511,6 +542,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             };
 
             const busy = Boolean(usedModel || params.provider === "openai" || engineUp);
+            const sessionId = params.sessionId ?? "default";
+            sessionWorktrees.set(sessionId, workdir);
+            // A cancel that arrived before this prompt (or while an earlier turn
+            // ran) should not swallow this one.
+            cancelledSessions.delete(sessionId);
             let result: ChatResult | null = null;
             let budget = clampBudget(effTokens);
             let attempts = 0;
@@ -522,6 +558,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               // Bounded: 4 steps, and each step escalates at most 3x if thinking
               // eats the budget. Never loops forever.
               for (let step = 0; step < 4; step++) {
+                // Cooperative cancel (ACP session/cancel): honoured between steps.
+                if (cancelledSessions.has(sessionId)) {
+                  result = { ok: true, content: "(cancelled by request - run stopped between agent steps)", model: usedModel || "none" };
+                  break;
+                }
                 let r: ChatResult;
                 let innerAttempts = 0;
                 budget = clampBudget(effTokens);
@@ -594,6 +635,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                 result = r;
                 break;
               }
+              cancelledSessions.delete(sessionId);
             }
             if (result) {
               const emptyContent = (result.content ?? "").trim().length === 0;
@@ -640,6 +682,79 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             } catch {
               sendJson(res, 200, { content: "", error: "read failed" });
             }
+          } else if (method === "session/load") {
+            // Resume a session: history + durable instructions + todos, so an
+            // ACP client (or a new window) picks up exactly where it left off.
+            const params = (body.params ?? {}) as { sessionId?: string };
+            const sid = params.sessionId ?? "default";
+            audit({ tool: "acp.session.load", note: sid });
+            sendJson(res, 200, {
+              sessionId: sid,
+              messages: loadMessages(sid),
+              instructions: listInstructions(sid),
+              todos: listTodos(sid),
+            });
+          } else if (method === "session/set_mode") {
+            // Session modes: "default" (ask on write/bash) or "auto" (unattended).
+            const params = (body.params ?? {}) as { sessionId?: string; mode?: string };
+            const mode = params.mode === "auto" ? "auto" : "default";
+            sessionModes.set(params.sessionId ?? "default", mode);
+            audit({ tool: "acp.session.mode", note: `${params.sessionId ?? ""}:${mode}` });
+            sendJson(res, 200, { sessionId: params.sessionId ?? "default", mode });
+          } else if (method === "session/cancel") {
+            // Cooperative cancellation: the prompt loop checks between steps.
+            const params = (body.params ?? {}) as { sessionId?: string };
+            cancelledSessions.add(params.sessionId ?? "default");
+            audit({ tool: "acp.session.cancel", note: params.sessionId ?? "" });
+            sendJson(res, 200, { ok: true, note: "cancel requested - applies between agent steps" });
+          } else if (method === "fs/write_text_file") {
+            const params = (body.params ?? {}) as { path?: string; content?: string; sessionId?: string };
+            const critical = isUnclean(path.basename(params.path ?? "") + " " + (params.path ?? ""));
+            if (critical) {
+              sendJson(res, 200, { content: "", error: "blocked: unclean path requires detonate lane", critical: true });
+              return;
+            }
+            const worktree = sessionWorktrees.get(params.sessionId ?? "default") ?? process.cwd();
+            const r = await runTool("write", { path: params.path ?? "", content: params.content ?? "", approved: false }, worktree);
+            audit({ tool: "acp.fs.write", note: `${params.path ?? ""} ok=${r.ok}` });
+            sendJson(res, 200, r.needsApproval ? { needsApproval: true, error: r.error } : { ok: r.ok, error: r.error });
+          } else if (method === "terminal/create") {
+            // ACP terminal: run a specific command in a PTY, not a shell.
+            const params = (body.params ?? {}) as { sessionId?: string; cwd?: string; command?: string; args?: string[]; env?: Array<{ name?: string; value?: string }>; output_byte_limit?: number };
+            const cmd = params.command ?? "";
+            const cmdText = `${cmd} ${(params.args ?? []).join(" ")}`;
+            if (isUnclean(cmdText)) {
+              audit({ tool: "acp.terminal.create", note: "blocked unclean command" });
+              sendJson(res, 200, { error: "blocked: unclean command requires the detonate lane", critical: true });
+              return;
+            }
+            const cwd = resolveWorktree(params.cwd || sessionWorktrees.get(params.sessionId ?? ""));
+            const env: Record<string, string> = {};
+            for (const e of params.env ?? []) if (e.name) env[e.name] = e.value ?? "";
+            const r = ptyAvailable()
+              ? openCommandTerminal(cwd, cmd, params.args ?? [], { outputByteLimit: params.output_byte_limit, env })
+              : { ok: false, error: "node-pty native module unavailable - ACP terminals disabled (stated blind spot)" };
+            audit({ tool: "acp.terminal.create", note: `${cmd.slice(0, 60)} ok=${r.ok}` });
+            if (!r.ok) return sendJson(res, 200, r);
+            if (params.sessionId) sessionWorktrees.set(params.sessionId, cwd);
+            sendJson(res, 200, { terminalId: (r as { id?: string }).id, cwdNote: (r as { cwdNote?: string }).cwdNote });
+          } else if (method === "terminal/output") {
+            const params = (body.params ?? {}) as { terminalId?: string };
+            const t = terminalBuffer(params.terminalId ?? "");
+            sendJson(res, 200, t.ok
+              ? { output: t.output, truncated: t.truncated, exit_code: t.exit_code, signal: t.signal }
+              : { error: t.error });
+          } else if (method === "terminal/wait_for_exit") {
+            const params = (body.params ?? {}) as { terminalId?: string; timeoutMs?: number };
+            const t = await waitForTerminalExit(params.terminalId ?? "", params.timeoutMs ?? 0);
+            sendJson(res, 200, t.ok
+              ? { exit_code: t.exit_code, signal: t.signal }
+              : { error: t.error });
+          } else if (method === "terminal/kill" || method === "terminal/release") {
+            const params = (body.params ?? {}) as { terminalId?: string };
+            const ok = killTerminal(params.terminalId ?? "");
+            audit({ tool: `acp.terminal.${method.split("/")[1]}`, note: `${params.terminalId ?? ""} ok=${ok}` });
+            sendJson(res, 200, { ok });
           } else if (method === "session/request_permission") {
             const params = (body.params ?? {}) as { tool?: string; approved?: boolean };
             // In real UI the frontend prompts the operator. Server records the decision.
@@ -648,7 +763,14 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           } else {
             sendJson(res, 200, { type: method, ok: true });
           }
-        } catch { sendJson(res, 400, { error: "bad request" }); }
+        } catch (e) {
+          // A swallowed ACP error looks like "bad request" to the client with no
+          // way to debug it - state the cause in the audit log and on stderr.
+          const msg = String((e as Error)?.message ?? e).slice(0, 200);
+          audit({ tool: "acp.error", note: `${acpMap[url.pathname] ?? url.pathname}: ${msg}` });
+          console.error(`[ehc] acp ${url.pathname} failed: ${msg}`);
+          sendJson(res, 400, { error: "bad request", cause: msg });
+        }
       });
       return;
     }
