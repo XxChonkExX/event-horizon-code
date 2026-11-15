@@ -336,6 +336,10 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
   // Persist conversation (excluding the volatile system prompt) so the
   // next turn has context. Tool-result messages keep their content.
   try {
+    // The loop breaks on a final answer before pushing it into convo, so record
+    // it here: without this, replayed history (and the next turn's context) is
+    // missing every answer - only the user's request and the tool results.
+    if ((res.content ?? "").trim()) convo.push({ role: "assistant", content: res.content });
     saveMessages(p.sessionId, convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
     touchSession(p.sessionId);
     // Per-turn checkpoint (OpenCode-style): every prompt is a fork/revert point.

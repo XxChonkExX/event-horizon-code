@@ -561,6 +561,11 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       const file = path.join(dir, `shot-${Date.now().toString(36)}.png`);
       const ps = [
         "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;",
+        // DPI awareness: without this, a scaled desktop reports logical bounds
+        // while CopyFromScreen captures physical pixels - a 150% display would
+        // clip the capture to the top-left region.
+        "Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class DpiFix { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); }';",
+        "[DpiFix]::SetProcessDPIAware() | Out-Null;",
         "$b = [System.Windows.Forms.SystemInformation]::VirtualScreen;",
         "$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height;",
         "$g = [System.Drawing.Graphics]::FromImage($bmp);",

@@ -209,6 +209,28 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       return subscribe(wt, res, req.headers.origin);
     }
 
+    // ---- workspace file listing (lazy, one directory per call) ----
+    if (req.method === "GET" && url.pathname === "/api/files") {
+      const base = resolveWorktree(url.searchParams.get("worktree") ?? undefined);
+      const rel = (url.searchParams.get("path") ?? ".").replace(/^[/\\]+/, "");
+      const dir = path.resolve(base, rel);
+      if (dir !== path.resolve(base) && !dir.startsWith(path.resolve(base) + path.sep)) {
+        return sendJson(res, 400, { error: "path escapes the workspace" });
+      }
+      const SKIP = new Set([".git", "node_modules", "out", "dist", "build", ".eventhorizon", ".harness"]);
+      try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true })
+          .filter((e) => !SKIP.has(e.name) && !e.name.startsWith("."))
+          .slice(0, 400)
+          .map((e) => ({ name: e.name, type: e.isDirectory() ? "dir" : "file" }))
+          .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "dir" ? -1 : 1));
+        sendJson(res, 200, { path: rel, entries });
+      } catch {
+        sendJson(res, 400, { error: "cannot list directory" });
+      }
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/models") {
       const models = await listModels();
       return sendJson(res, 200, models);
@@ -283,6 +305,13 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "GET" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/checkpoints")) {
       const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/checkpoints".length));
       return sendJson(res, 200, listCheckpoints(id));
+    }
+    // Conversation history for a session - the chat column replays this on
+    // mount so reopening a window continues the conversation instead of
+    // showing an empty pane.
+    if (req.method === "GET" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/messages")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/messages".length));
+      return sendJson(res, 200, { sessionId: id, messages: loadMessages(id) });
     }
 
     if (req.method === "GET" && url.pathname === "/api/instructions") {

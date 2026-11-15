@@ -3,7 +3,7 @@
 // Look: OpenCode (deep space, glow accents, shader backdrop with easy intensity cycle).
 // Pop-outs: terminal / chat in their own OS windows (?popout=<kind> route).
 
-import { createSignal, onMount, onCleanup, Show } from "solid-js";
+import { createSignal, onMount, onCleanup, Show, For, type JSX } from "solid-js";
 import ToolchainDoctor from "./ToolchainDoctor";
 import SandboxControls from "./SandboxControls";
 import AgentWatchPanel from "./AgentWatchPanel";
@@ -21,7 +21,7 @@ import StatusBar from "./StatusBar";
 import CommandPalette, { type Action } from "./CommandPalette";
 import ShaderBackground from "./ShaderBackground";
 import Splitter from "./Splitter";
-import ChatColumn from "./ChatColumn";
+import ChatColumn, { type ChatMsg } from "./ChatColumn";
 import { apiFetch, apiJson, popoutWindow, growWindow } from "./api";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
@@ -47,7 +47,9 @@ const DEF_CHAT = VW < 1500 ? 340 : 460;
 const DEF_TERM = VH < 820 ? 170 : 240;
 
 export default function App() {
-  const [messages, setMessages] = createSignal<string[]>([]);
+  const [messages, setMessages] = createSignal<ChatMsg[]>([]);
+  // Status notes (worktree/fork/checkpoint) surface in the chat as notices.
+  const notice = (text: string) => setMessages((m) => [...m, { role: "assistant" as const, text }]);
   const [input, setInput] = createSignal("");
   const [activeFile, setActiveFile] = createSignal<string>("src/server/index.ts");
   const [openFiles, setOpenFiles] = createSignal<string[]>(["src/server/index.ts"]);
@@ -66,6 +68,21 @@ export default function App() {
   const [tokens, setTokens] = createSignal(loadNum("ehc.tokens", 1024, 64, 8192));
   // Auto-approve: let the agent run edit/write/bash without a per-call prompt.
   const [autoApprove, setAutoApprove] = createSignal(localStorage.getItem("ehc.autoApprove") === "1");
+  // While a turn is in flight the composer shows a working indicator.
+  const [sending, setSending] = createSignal(false);
+  // Panels row: the eight tools render one at a time (tab bar), not eight
+  // half-clipped columns.
+  const PANELS: Array<{ id: string; label: string; el: () => JSX.Element }> = [
+    { id: "sessions", label: "Sessions", el: () => <SessionsPanel /> },
+    { id: "memory", label: "Memory", el: () => <MemoryPanel /> },
+    { id: "models", label: "Models", el: () => <ModelManager /> },
+    { id: "profiles", label: "Profiles", el: () => <ProfilesPanel /> },
+    { id: "sensory", label: "Sensory", el: () => <SensoryPanel /> },
+    { id: "agentwatch", label: "AgentWatch", el: () => <AgentWatchPanel /> },
+    { id: "doctor", label: "Doctor", el: () => <ToolchainDoctor /> },
+    { id: "sandbox", label: "Sandbox", el: () => <SandboxControls /> },
+  ];
+  const [panelTab, setPanelTab] = createSignal(loadNum("ehc.panelTab", 0, 0, PANELS.length - 1));
 
   onMount(async () => {
     try {
@@ -73,6 +90,15 @@ export default function App() {
       setModels(list.map((m) => m.id));
       if (list.length) setModel(list[0].id);
     } catch { /* server not up yet — picker stays empty */ }
+    // Replay this session's history so reopening a window continues the
+    // conversation instead of showing an empty pane.
+    try {
+      const h = await apiJson<{ messages: Array<{ role: string; content: string }> }>(`/api/sessions/${encodeURIComponent(session)}/messages`);
+      const msgs = h.messages
+        .filter((m) => m.role !== "system" && m.content?.trim())
+        .map((m) => ({ role: (m.role === "user" || m.role === "tool" ? m.role : "assistant") as ChatMsg["role"], text: m.content }));
+      if (msgs.length) setMessages(msgs);
+    } catch { /* fresh session */ }
   });
 
   const persistLayout = () => {
@@ -132,11 +158,12 @@ export default function App() {
 
   const send = async () => {
     const text = input().trim();
-    if (!text) return;
+    if (!text || sending()) return;
     const thinkMatch = text.match(/\/think:(low|medium|high|max)/i);
     const lvl = thinkMatch ? thinkMatch[1].toLowerCase() : think();
-    setMessages((m) => [...m, text]);
+    setMessages((m) => [...m, { role: "user", text }]);
     setInput("");
+    setSending(true);
     try {
       const res = await apiFetch("/api/acp/session/prompt", {
         method: "POST",
@@ -146,16 +173,20 @@ export default function App() {
       const data = (await res.json()) as { reply?: string; thinking?: string; model?: string; tokens?: number; attempts?: number; budget?: number };
       const esc = data.attempts && data.attempts > 1 ? ` · escalated x${data.attempts} to ${data.budget} tok` : "";
       const label = data.model ? `${data.model}${data.tokens ? ` · ${data.tokens} tok` : ""}${esc}` : "echo";
-      setMessages((m) => [...m, `— ${label} —\n${data.reply ?? ""}${data.thinking ? `\n\n[thinking]\n${data.thinking}` : ""}`]);
-    } catch { /* server not running — local echo already recorded */ }
+      setMessages((m) => [...m, { role: "assistant", text: `— ${label} —\n${data.reply ?? ""}${data.thinking ? `\n\n[thinking]\n${data.thinking}` : ""}` }]);
+    } catch {
+      setMessages((m) => [...m, { role: "assistant", text: `— error —\nserver unreachable - is the runtime running?` }]);
+    } finally {
+      setSending(false);
+    }
   };
 
   const newWorktree = async () => {
     try {
       const r = await apiFetch("/api/worktrees", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       const d = (await r.json()) as { ok: boolean; path?: string };
-      setMessages((m) => [...m, `worktree ${d.ok ? "created" : "failed"}: ${d.path ?? "?"}`]);
-    } catch { setMessages((m) => [...m, "worktree failed — server unreachable"]); }
+      notice(`worktree ${d.ok ? "created" : "failed"}: ${d.path ?? "?"}`);
+    } catch { notice("worktree failed — server unreachable"); }
   };
 
   // Fork this session and open the branch in a second window: two agents, two
@@ -165,20 +196,20 @@ export default function App() {
       const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       const d = (await r.json()) as { sessionId?: string; error?: string };
       if (d.sessionId) {
-        setMessages((m) => [...m, `session forked -> ${d.sessionId} (opening in a new window)`]);
+        notice(`session forked -> ${d.sessionId} (opening in a new window)`);
         void popoutWindow("chat", d.sessionId);
       } else {
-        setMessages((m) => [...m, `fork failed: ${d.error ?? "?"}`]);
+        notice(`fork failed: ${d.error ?? "?"}`);
       }
-    } catch { setMessages((m) => [...m, "fork failed — server unreachable"]); }
+    } catch { notice("fork failed — server unreachable"); }
   };
 
   const checkpointSession = async () => {
     try {
       const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/checkpoints`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "manual checkpoint" }) });
       const d = (await r.json()) as { seq?: number; error?: string };
-      setMessages((m) => [...m, d.seq !== undefined ? `checkpoint saved at message ${d.seq}` : `checkpoint failed: ${d.error ?? "?"}`]);
-    } catch { setMessages((m) => [...m, "checkpoint failed — server unreachable"]); }
+      notice(d.seq !== undefined ? `checkpoint saved at message ${d.seq}` : `checkpoint failed: ${d.error ?? "?"}`);
+    } catch { notice("checkpoint failed — server unreachable"); }
   };
 
   const actions = (): Action[] => [
@@ -227,7 +258,12 @@ export default function App() {
   return (
     <div class="workbench" style={{ "grid-template-columns": cols(), "grid-template-rows": rows() }}>
       <ShaderBackground intensity={shaderIntensity} />
-      <header>Event Horizon Code — session {session} — {activeFile()}</header>
+      <header>
+        <b>Event Horizon</b>
+        <span class="header-dim">session</span>
+        <span class="status-badge">{session}</span>
+        <span class="header-file">{activeFile()}</span>
+      </header>
 
       <ActivityBar open={open} toggle={toggle} palette={() => setPaletteOpen(true)} />
 
@@ -245,14 +281,17 @@ export default function App() {
         <MonacoMount file={activeFile()} />
         <Show when={open().panels}>
           <div class="panels">
-            <ToolchainDoctor />
-            <SandboxControls />
-            <AgentWatchPanel />
-            <ModelManager />
-            <ProfilesPanel />
-            <SessionsPanel />
-            <MemoryPanel />
-            <SensoryPanel />
+            <div class="panel-tabs" role="tablist">
+              <For each={PANELS}>{(p, i) => (
+                <button
+                  class="panel-tab"
+                  classList={{ "panel-tab-on": panelTab() === i() }}
+                  role="tab"
+                  onClick={() => { setPanelTab(i()); localStorage.setItem("ehc.panelTab", String(i())); }}
+                >{p.label}</button>
+              )}</For>
+            </div>
+            <div class="panel-body">{PANELS[panelTab()].el()}</div>
           </div>
         </Show>
       </section>
@@ -264,6 +303,7 @@ export default function App() {
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
           tokens={tokens} setTokens={(n) => { setTokens(clamp(n, 64, 8192)); }}
           autoApprove={autoApprove} setAutoApprove={(v) => { setAutoApprove(v); persistLayout(); }}
+          sending={sending}
         />
       </Show>
 
