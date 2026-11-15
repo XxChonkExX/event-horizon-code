@@ -1,5 +1,6 @@
-// Event Horizon Code — Tool registry (MCP-compatible, permission-gated)
-// Tools: read, edit, write, bash, grep, glob. MCP client stub for external tools.
+// Event Horizon Code — Tool registry (permission-gated)
+// Built-in tools (read/edit/write/bash/grep/glob/ls/web/websearch/engram/
+// verify/code_complete) plus MCP tools merged in by mcp.ts as mcp_<server>_<tool>.
 // Permissions from .harness/config.json: allow / ask / deny per tool pattern.
 // AgentWatch lineManager plugs here: gateDecision blocks edit/bash until reviewed.
 

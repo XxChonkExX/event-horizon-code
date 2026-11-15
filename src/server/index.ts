@@ -39,11 +39,11 @@ export async function startLocalServer(opts: { port: number; password: string })
     void isUnclean("test payload");
   }
 
-  // TODO Phase 1: HTTP + SSE, Basic auth, SQLite (better-sqlite3 WAL),
-  // worktree manager (git worktree add/remove), tool registry, MCP client,
-  // ACP-compatible endpoints:
-  //   initialize, session/new, session/prompt, session/update,
-  //   session/request_permission, fs/read_text_file
+  // Phase 1 is done: HTTP + SSE, Basic auth, SQLite (better-sqlite3 WAL),
+  // worktree manager, tool registry, MCP client, and the ACP subset
+  // (initialize, session/new, session/prompt, session/update,
+  // session/request_permission, fs/read_text_file). See docs/BACKEND.md
+  // for what is still open beyond that.
   //   GET /api/toolchain -> runToolchainDoctor(packs)
   //   POST /api/symbols -> indexSymbols fallback when LSP unavailable
   // Engram glue: import afterimage_* via Python subprocess (stdlib only),
