@@ -1,0 +1,44 @@
+{
+  "name": "bug-fix",
+  "description": "Clarify, implement, test, human review, summarize. Adapted from LoopForge's built-in bug-fix SOP (Tencent, MIT) for local in-process agents.",
+  "mode": "gated",
+  "nodes": [
+    {
+      "id": "clarify",
+      "type": "agent",
+      "label": "Clarify",
+      "role": "default",
+      "think": "medium",
+      "prompt": "Investigate the reported problem in this workspace: read the relevant code with your tools, then state in 5 bullets or fewer what is wrong, where (files and lines), and the smallest safe fix. Do not change any files in this step."
+    },
+    {
+      "id": "implement",
+      "type": "agent",
+      "label": "Implement",
+      "role": "coder",
+      "think": "high",
+      "prompt": "Apply the smallest fix described by the Clarify step. Match the repo's existing style, change only what the fix needs, then run the project's checks yourself before finishing."
+    },
+    {
+      "id": "test",
+      "type": "script",
+      "label": "Test",
+      "cmd": "npm test",
+      "onFail": "implement"
+    },
+    {
+      "id": "review",
+      "type": "gate",
+      "label": "Human review",
+      "note": "Read the Implement and Test outputs. Approve to continue, or send the work back to 'implement' with corrections."
+    },
+    {
+      "id": "summarize",
+      "type": "agent",
+      "label": "Summarize",
+      "role": "default",
+      "think": "low",
+      "prompt": "Summarize this delivery in 5 bullets or fewer: what changed, what the checks proved, and anything left unverified."
+    }
+  ]
+}

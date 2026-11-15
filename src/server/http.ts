@@ -15,26 +15,22 @@ import { audit } from "./audit";
 import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture, runProbe, scoreProbe, startOtelReceiver, stopOtelReceiver, acknowledgeFindings, plantCanaries, checkCanaries, detectLoops } from "./agentwatch";
 import { subscribe, broadcast } from "./sse";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
-import { listModels, chat, chatOpenAI } from "./router";
-import type { ChatResult } from "./router";
+import { listModels } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
 import {
-  createSession, listTodos, addTodo, saveMessages, loadMessages,
-  listSessionsWithMeta, renameSession, deleteSession, touchSession,
+  createSession, listTodos, addTodo, loadMessages,
+  listSessionsWithMeta, renameSession, deleteSession,
   listInstructions, putInstruction, removeInstruction,
-  usageSummary, recordUsage, listProfiles, upsertProfile, getProfile,
+  usageSummary, listProfiles, upsertProfile,
 } from "./store";
 import os from "node:os";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
-import { TOOL_SPECS, AGENT_SYSTEM, AGENT_CODER_SYSTEM } from "./agentTools";
-import type { ToolDef } from "./agentTools";
-import { splitToolset, searchTools } from "./toolSearch";
-import { ensureMcpServers, mcpTools, isMcpTool, callMcpTool, hasMcpServers } from "./mcp";
-import type { ChatMessage } from "./router";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable, openCommandTerminal, terminalBuffer, waitForTerminalExit } from "./terminal";
-import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir, engineInfill } from "./engine";
+import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, sensoryDetect, addGgufDir, engineInfill } from "./engine";
 import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTemplateFiles } from "./chatTemplates";
+import { runAgentTurn } from "./agentLoop";
+import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
 export type ServerOpts = { port: number; password: string; host?: string };
@@ -85,46 +81,11 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
   return false;
 }
 
-const clampBudget = (n: number) => Math.min(8192, Math.max(64, Math.round(n)));
-
 // Session worktrees may be labels ("default"), not paths - resolve safely so
 // tools and language servers never run against a directory that does not exist.
 function resolveWorktree(w: string | undefined): string {
   const s = (w ?? "").trim();
   try { return s && fs.existsSync(s) ? s : process.cwd(); } catch { return process.cwd(); }
-}
-
-// Workspace memory: AGENTS.md (the open convention, also used by Claude Code and
-// OpenCode) plus .harness/memory.md (agent-written project memory). Read fresh so
-// edits apply immediately; capped so a runaway file cannot flood the context.
-function readWorkspaceMemory(workdir: string): string {
-  const parts: string[] = [];
-  for (const rel of ["AGENTS.md", path.join(".harness", "memory.md")]) {
-    const p = path.join(workdir, rel);
-    try {
-      const st = fs.statSync(p);
-      if (st.isFile() && st.size > 0 && st.size <= 200_000) {
-        parts.push(`# ${rel}\n${fs.readFileSync(p, "utf8").slice(0, 20_000)}`);
-      }
-    } catch { /* absent is fine */ }
-  }
-  return parts.length ? "\n\nWorkspace memory (persistent project instructions):\n" + parts.join("\n\n") : "";
-}
-
-function readConfigDefaultModel(): string | null {
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { modelRouter?: { defaultModel?: string | null } };
-    return cfg.modelRouter?.defaultModel ?? null;
-  } catch { return null; }
-}
-
-// BYOK secrets — .harness/secrets.json (gitignored). Shape:
-// { "openai": { "baseUrl": "https://opencode.ai/inference/openai/v1", "apiKey": "oc_..." } }
-function readSecret(provider: string): { baseUrl?: string; apiKey?: string } | null {
-  try {
-    const s = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "secrets.json"), "utf8")) as Record<string, { baseUrl?: string; apiKey?: string }>;
-    return s[provider] ?? null;
-  } catch { return null; }
 }
 
 export function startHttpServer(opts: ServerOpts): http.Server {
@@ -455,218 +416,35 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           } else if (method === "session/prompt") {
             const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string; agent?: string };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img${params.autoApprove ? ":auto" : ""}` });
-            // Request param > active profile > project config > empty.
-            const profile = getProfile(params.profileId ?? process.env.EH_PROFILE ?? "default");
-            const prof = profile?.settings ?? {};
-            const profStr = (k: string): string | undefined => (typeof prof[k] === "string" ? (prof[k] as string) : undefined);
-            const profNum = (k: string): number | undefined => (typeof prof[k] === "number" ? (prof[k] as number) : undefined);
-            // Ladder: explicit provider wins -> running bundled engine -> Ollama -> echo.
-            const usedModel = params.model ?? profStr("model") ?? readConfigDefaultModel() ?? "";
-            const engineUp = engineEndpoint();
-            const userMsg: ChatMessage = { role: "user", content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
+            // Profile/lane resolution and the bounded tool loop now live in
+            // runAgentTurn (src/server/agentLoop.ts) - the same loop that SOP
+            // agent nodes and future multi-window agents call.
             const workdir = resolveWorktree(params.worktree);
-            const autoApprove = params.autoApprove === true || sessionModes.get(params.sessionId ?? "default") === "auto" || prof["autoApprove"] === true;
-            const effThink = params.think ?? profStr("think") ?? "medium";
-            const effTokens = params.numPredict ?? profNum("tokens") ?? 1024;
-
-            // Conversation accumulates across agent steps AND across turns:
-            // history from previous prompts in this session is seeded first, so
-            // follow-ups ("sure", "make it blue") have context. Compaction keeps
-            // long sessions bounded. Content-only persistence (tool_calls dropped).
-            const HISTORY_CAP = 60_000; // ~15k tokens of prior conversation
-            const histRaw = loadMessages(params.sessionId ?? "default");
-            let hist: ChatMessage[] = histRaw.map((m) => ({ role: m.role as ChatMessage["role"], content: m.content }));
-            if (JSON.stringify(hist).length > HISTORY_CAP && hist.length > 8) {
-              // Compact: keep the most recent turns verbatim, summarize the rest
-              // with the same model (cheap call, no tools) or a deterministic digest.
-              const keep = hist.slice(-6);
-              const older = hist.slice(0, -6);
-              let summary: ChatMessage | null = null;
-              try {
-                const digest = older.map((m) => `[${m.role}] ${m.content}`).join("\n").slice(0, 20_000);
-                const sumRes = await chat(usedModel || "engine", [
-                  { role: "system", content: "You are a conversation compressor. Summarize the earlier part of this coding session: what the user asked, what was done, key file paths and decisions. Be terse and factual; no preamble." },
-                  { role: "user", content: digest },
-                ], { think: "low", numPredict: 512, timeoutMs: 60000 });
-                if (sumRes.ok && (sumRes.content ?? "").trim()) {
-                  summary = { role: "system", content: `[earlier conversation summary]\n${sumRes.content}` };
-                }
-              } catch { /* fall through to deterministic digest */ }
-              if (!summary) {
-                const files = older.flatMap((m) => (m.content.match(/[\w./-]+\.(ts|tsx|js|py|rs|go|md|json)/g) ?? [])).slice(0, 20);
-                summary = { role: "system", content: `[earlier conversation truncated — key files mentioned: ${[...new Set(files)].join(", ") || "none"}]` };
-              }
-              hist = [summary, ...keep];
-            }
-            // Durable session instructions replay in the system prompt and are
-            // re-injected after any compaction — they never fall out of context.
-            const instr = listInstructions(params.sessionId ?? "default");
-            const instructionBlock = instr.length
-              ? "\n\nSession instructions (durable — remembered via the remember tool, they persist across compaction):\n" +
-                instr.map((i) => `- [${i.key}] ${i.text}`).join("\n")
-              : "";
-            const memoryBlock = readWorkspaceMemory(workdir);
-            // Agent persona: "coder" borrows DeepSeek-coder discipline (read-first,
-            // minimal diff, verify); anything else uses the standard agent prompt.
-            const persona = params.agent === "coder" ? AGENT_CODER_SYSTEM : AGENT_SYSTEM;
-            const convo: ChatMessage[] = [{ role: "system", content: persona + memoryBlock + instructionBlock }, ...hist, userMsg];
-            // Tools = built-ins + any MCP servers configured (namespaced mcp_*).
-            // Beyond a threshold, advertise a core set + tool_search and load the
-            // rest on demand - a 60-tool MCP server would otherwise flood context.
-            if (hasMcpServers()) { try { await ensureMcpServers(); } catch { /* audited in mcp.ts */ } }
-            const allTools: ToolDef[] = [...TOOL_SPECS, ...mcpTools()];
-            const { advertised, search: toolSearchEnabled } = splitToolset(allTools);
-
-            // One model call on whichever lane applies, with the agent tool set.
-            const callModel = async (budget: number, nudge: boolean): Promise<ChatResult> => {
-              const msgs = nudge
-                ? [...convo, { role: "system" as const, content: "Stop deliberating. Use your final answer or a tool call now." }]
-                : convo;
-              if (params.provider === "openai") {
-                const secret = readSecret("openai");
-                if (!secret?.apiKey || !secret.baseUrl) {
-                  return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
-                }
-                return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: advertised });
-              }
-              if (engineUp) {
-                // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
-                return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: advertised });
-              }
-              if (usedModel) {
-                // Keep the model warm during a conversation: agent loops make
-                // several calls per prompt and a cold reload costs minutes.
-                return chat(usedModel, msgs, { think: effThink, numPredict: budget, timeoutMs: params.timeoutMs, tools: advertised, keepAlive: "5m" });
-              }
-              return { ok: false, content: "", model: "none", error: "no model selected" };
-            };
-
-            const busy = Boolean(usedModel || params.provider === "openai" || engineUp);
             const sessionId = params.sessionId ?? "default";
             sessionWorktrees.set(sessionId, workdir);
-            // A cancel that arrived before this prompt (or while an earlier turn
-            // ran) should not swallow this one.
-            cancelledSessions.delete(sessionId);
-            let result: ChatResult | null = null;
-            let budget = clampBudget(effTokens);
-            let attempts = 0;
-            let loadRetried = false;
-            const steps: string[] = [];
-            if (busy) {
-              // Agent loop: model may call tools; we execute (respecting the
-              // permission gate) and hand results back, then let it answer.
-              // Bounded: 4 steps, and each step escalates at most 3x if thinking
-              // eats the budget. Never loops forever.
-              for (let step = 0; step < 4; step++) {
-                // Cooperative cancel (ACP session/cancel): honoured between steps.
-                if (cancelledSessions.has(sessionId)) {
-                  result = { ok: true, content: "(cancelled by request - run stopped between agent steps)", model: usedModel || "none" };
-                  break;
-                }
-                let r: ChatResult;
-                let innerAttempts = 0;
-                budget = clampBudget(effTokens);
-                while (true) {
-                  innerAttempts++; attempts++;
-                  r = await callModel(budget, innerAttempts > 1);
-                  const empty = (r.content ?? "").trim().length === 0;
-                  const thought = (r.thinking ?? "").trim().length > 0;
-                  if (r.ok && empty && thought && !(r.toolCalls?.length) && innerAttempts < 3 && budget < 8192) {
-                    budget = Math.min(budget * 2, 8192);
-                    audit({ tool: "model.escalate", note: `${r.model} thinking exhausted -> retry at ${budget}` });
-                    continue;
-                  }
-                  break;
-                }
-                // Model-load failure (usually transient RAM pressure while other
-                // work owns memory): retry once, then report the cause plainly.
-                if (!r.ok && /out-of-memory|startup failed|failed to initialize|oom/i.test(r.error ?? "") && !loadRetried) {
-                  loadRetried = true;
-                  audit({ tool: "model.load-retry", note: `oom on ${r.model}` });
-                  await new Promise((res) => setTimeout(res, 3000));
-                  continue;
-                }
-                if (!r.ok && /out-of-memory|startup failed|failed to initialize|oom/i.test(r.error ?? "")) {
-                  result = { ...r, error: `local model could not load — the system is low on RAM (another process may be holding it). Free memory, pick a smaller model, or lower engine context. Underlying: ${(r.error ?? "").slice(0, 160)}` };
-                  break;
-                }
-                // Context-overflow recovery: shed the oldest turns and retry once
-                // (Claude Code / OpenCode both compact-and-retry on "too long").
-                if (!r.ok && /context|too long|exceed|overflow/i.test(r.error ?? "") && step === 0 && convo.length > 10) {
-                  const keep = convo.slice(-8);
-                  convo.splice(0, convo.length, convo[0], ...keep);
-                  audit({ tool: "model.context-recover", note: `shed to ${convo.length} messages` });
-                  continue;
-                }
-                if (!r.ok) { result = r; break; }
-                if (r.toolCalls?.length) {
-                  convo.push({ role: "assistant", content: r.content ?? "", tool_calls: r.toolCalls });
-                  for (const tc of r.toolCalls) {
-                    if (tc.name === "tool_search") {
-                      // Deferred loading: return matching full schemas AND load
-                      // them into the advertised set for the next step, so the
-                      // model can call what it just found.
-                      const query = String(tc.args.query ?? "");
-                      const matches = searchTools(query, allTools, Number(tc.args.limit ?? 6) || 6);
-                      const have = new Set(advertised.map((t) => t.function.name));
-                      for (const m of matches) {
-                        const def = allTools.find((t) => t.function.name === m.name);
-                        if (def && !have.has(m.name)) advertised.push(def);
-                      }
-                      const out = matches.length
-                        ? matches.map((m) => JSON.stringify({ name: m.name, description: m.description, parameters: m.parameters })).join("\n")
-                        : `NO MATCHING TOOLS for "${query.slice(0, 80)}". Say so instead of improvising a tool call.`;
-                      steps.push(`OK tool_search(${JSON.stringify(query).slice(0, 80)})\n${out.slice(0, 400)}`);
-                      audit({ tool: "agent.tool_search", note: `${query.slice(0, 50)} -> ${matches.length}` });
-                      broadcast(workdir, "tool-step", { name: "tool_search", ok: true, step });
-                      convo.push({ role: "tool", content: out, name: "tool_search", tool_call_id: tc.id });
-                      continue;
-                    }
-                    const res = await runTool(tc.name as ToolName, { ...tc.args, ...(autoApprove ? { approved: true } : {}) }, workdir);
-                    const out = (res.ok ? res.out : (res.error ?? "failed")).slice(0, 1500);
-                    const shortArgs = JSON.stringify(tc.args).slice(0, 100);
-                    steps.push(`${res.ok ? "OK" : "X "} ${tc.name}(${shortArgs})${res.needsApproval ? " — needs approval" : ""}\n${out.slice(0, 400)}`);
-                    audit({ tool: `agent.${tc.name}`, note: `ok=${res.ok}${res.needsApproval ? " needsApproval" : ""}` });
-                    broadcast(workdir, "tool-step", { name: tc.name, ok: res.ok, needsApproval: Boolean(res.needsApproval), step });
-                    convo.push({ role: "tool", content: out, name: tc.name, tool_call_id: tc.id });
-                  }
-                  continue; // let the model react to tool results
-                }
-                result = r;
-                break;
-              }
-              cancelledSessions.delete(sessionId);
-            }
-            if (result) {
-              const emptyContent = (result.content ?? "").trim().length === 0;
-              const thought = (result.thinking ?? "").trim().length > 0;
-              let replyText = result.ok ? result.content : `model error: ${result.error}`;
-              if (result.ok && emptyContent && thought) {
-                const tail = (result.thinking ?? "").slice(-400);
-                replyText = `(no final answer after ${attempts} attempts, ${budget} tokens — the model spent every budget thinking. Raise "tokens" in the composer, or lower "think".)\n\n[thinking tail]\n${tail}`;
-              }
-              if (steps.length) {
-                replyText = `— tool steps (${steps.length}) —\n${steps.join("\n\n")}\n\n— answer —\n${replyText}`;
-              }
-              if (!autoApprove && steps.some((s) => s.includes("needs approval"))) {
-                replyText += `\n\n(tool calls needing approval were not executed — enable auto-approve in the composer, or approve via the paletted permission flow.)`;
-              }
-              audit({ tool: "model.chat", note: `${result.model} tokens=${result.tokens ?? "?"} ok=${result.ok} attempts=${attempts} budget=${budget} tools=${steps.length}` });
-              // Persist conversation (excluding the volatile system prompt) so the
-              // next turn has context. Tool-result messages keep their content.
-              try {
-                saveMessages(params.sessionId ?? "default", convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
-                touchSession(params.sessionId ?? "default");
-                if (result.tokens) recordUsage(params.sessionId ?? "default", result.model, result.tokens);
-              } catch { /* persistence is best-effort; audit never blocks */ }
-              const reply = { reply: replyText, thinking: result.thinking, model: result.model, tokens: result.tokens, attempts, budget, toolSteps: steps.length, think: effThink };
+            const turn = await runAgentTurn({
+              sessionId,
+              text: params.text ?? "",
+              workdir,
+              think: params.think,
+              numPredict: params.numPredict,
+              timeoutMs: params.timeoutMs,
+              model: params.model,
+              provider: params.provider,
+              images: params.images,
+              autoApprove: params.autoApprove === true || sessionModes.get(sessionId) === "auto",
+              agent: params.agent,
+              profileId: params.profileId ?? process.env.EH_PROFILE,
+              isCancelled: () => cancelledSessions.has(sessionId),
+            });
+            if (turn.model === "none" && !turn.ok) {
+              // No model selected - echo + honest hint (never a fake answer).
+              const reply = { reply: `echo: ${params.text ?? ""}`, think: params.think ?? "default", hint: turn.error ?? "no model selected - pass params.model (see GET /api/models) or set modelRouter.defaultModel" };
               broadcast(workdir, "session/update", reply);
               sendJson(res, 200, reply);
             } else {
-              // No model selected — echo + honest hint (never a fake answer).
-              const reply = { reply: `echo: ${params.text ?? ""}`, think: params.think ?? "default", hint: "no model selected - pass params.model (see GET /api/models) or set modelRouter.defaultModel" };
-              broadcast(workdir, "session/update", reply);
-              sendJson(res, 200, reply);
+              broadcast(workdir, "session/update", turn);
+              sendJson(res, 200, turn);
             }
           } else if (method === "fs/read_text_file") {
             const params = (body.params ?? {}) as { path?: string };
@@ -1025,6 +803,64 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         sendJson(res, 200, { ok: true });
       });
       return;
+    }
+
+    // ---- SOPs: repeatable workflows of agent / script / human-gate nodes ----
+    // Adapted from Tencent LoopForge (MIT). Mode preference: "gated" (human
+    // gates pause for approval) or "automated" (unattended: gates auto-approve,
+    // agent tool calls auto-approve). Precedence: run > SOP file > config.
+    if (req.method === "GET" && url.pathname === "/api/sops") {
+      return sendJson(res, 200, {
+        defaultMode: ((): string => { try { const c = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { sop?: { defaultMode?: string } }; return c.sop?.defaultMode ?? "gated"; } catch { return "gated"; } })(),
+        sops: listSops().map((s) => ({
+          name: s.name, description: s.description, mode: s.mode ?? "gated",
+          nodes: s.nodes.map((n) => ({ id: n.id, type: n.type, label: n.label, role: n.role, onFail: n.onFail, note: n.note })),
+        })),
+      });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/sops/") && url.pathname.endsWith("/run")) {
+      const name = decodeURIComponent(url.pathname.slice("/api/sops/".length, -"/run".length));
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { worktree?: string; sessionId?: string; mode?: string };
+          const worktree = resolveWorktree(b.worktree);
+          const r = startRun(name, { worktree, sessionId: b.sessionId, mode: b.mode });
+          if (!r.ok) return sendJson(res, 400, r);
+          sendJson(res, 200, { runId: r.run!.id, mode: r.run!.mode, status: r.run!.status });
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e).slice(0, 200);
+          audit({ tool: "sop.run.error", note: msg });
+          sendJson(res, 400, { error: "bad request", cause: msg });
+        }
+      });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/sops/runs") {
+      return sendJson(res, 200, listRuns().map((r) => ({ id: r.id, sop: r.sop, mode: r.mode, status: r.status, currentNode: r.currentNode, started: r.started, error: r.error })));
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/api/sops/runs/")) {
+      const run = getRun(decodeURIComponent(url.pathname.slice("/api/sops/runs/".length)));
+      return run ? sendJson(res, 200, run) : sendJson(res, 404, { error: "no such run" });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/sops/runs/") && url.pathname.endsWith("/approve")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sops/runs/".length, -"/approve".length));
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { approved?: boolean; sendBackTo?: string };
+          const r = approveRun(id, b);
+          sendJson(res, r.ok ? 200 : 400, r.run ? { ok: true, status: r.run.status, currentNode: r.run.currentNode, error: r.run.error } : r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/sops/runs/") && url.pathname.endsWith("/cancel")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sops/runs/".length, -"/cancel".length));
+      const r = cancelRun(id);
+      return sendJson(res, r.ok ? 200 : 400, r.run ? { ok: true, status: r.run.status } : r);
     }
 
     if (req.method === "GET" && url.pathname === "/api/engine/templates") {

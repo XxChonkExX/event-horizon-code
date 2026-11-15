@@ -57,6 +57,14 @@
     "maxConcurrent": 8,
     "worktreePerSession": true
   },
+  "sop": {
+    "defaultMode": "gated",
+    "notes": [
+      "SOP workflows live in .harness/sops/*.json: agent nodes run the real agent loop, script nodes run shell commands, gate nodes pause for human approval (or send work back to a chosen step).",
+      "defaultMode is the run-mode preference: \"gated\" (human gates pause; default) or \"automated\" (unattended: gates auto-approve and agent tool calls auto-approve). Each run can override via POST /api/sops/:name/run {mode}, and each SOP file can pin its own mode.",
+      "Adapted from Tencent LoopForge (MIT) - see docs/SOPS.md and NOTICE.md."
+    ]
+  },
   "engine": {
     "kind": "bundled",
     "binaryPath": "C:/Users/mikeh/Documents/New OpenCode Project/chonkllama.cpp/build-vk/bin/Release/llama-server.exe",
