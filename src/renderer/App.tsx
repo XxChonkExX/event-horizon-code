@@ -155,6 +155,29 @@ export default function App() {
     } catch { setMessages((m) => [...m, "worktree failed — server unreachable"]); }
   };
 
+  // Fork this session and open the branch in a second window: two agents, two
+  // approaches, one original (multi-window parallel work).
+  const forkSession = async () => {
+    try {
+      const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const d = (await r.json()) as { sessionId?: string; error?: string };
+      if (d.sessionId) {
+        setMessages((m) => [...m, `session forked -> ${d.sessionId} (opening in a new window)`]);
+        void popoutWindow("chat", d.sessionId);
+      } else {
+        setMessages((m) => [...m, `fork failed: ${d.error ?? "?"}`]);
+      }
+    } catch { setMessages((m) => [...m, "fork failed — server unreachable"]); }
+  };
+
+  const checkpointSession = async () => {
+    try {
+      const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/checkpoints`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "manual checkpoint" }) });
+      const d = (await r.json()) as { seq?: number; error?: string };
+      setMessages((m) => [...m, d.seq !== undefined ? `checkpoint saved at message ${d.seq}` : `checkpoint failed: ${d.error ?? "?"}`]);
+    } catch { setMessages((m) => [...m, "checkpoint failed — server unreachable"]); }
+  };
+
   const actions = (): Action[] => [
     { label: "Toggle sidebar (worktrees)", run: () => toggle("sidebar") },
     { label: "Toggle chat", run: () => toggle("chat") },
@@ -163,6 +186,8 @@ export default function App() {
     { label: "Pop out chat to window", hint: "new window", run: () => void popoutWindow("chat", session) },
     { label: "Pop out terminal to window", hint: "new window", run: () => void popoutWindow("terminal", session) },
     { label: "New worktree", hint: "git worktree add", run: () => void newWorktree() },
+    { label: "Fork session to a new window", hint: "branch the conversation", run: () => void forkSession() },
+    { label: "Checkpoint this session", hint: "fork/revert point", run: () => void checkpointSession() },
     { label: "Cycle shader background", hint: SHADER_STEPS[shaderIdx()].label, run: cycleShader },
     { label: "Focus composer", run: () => document.querySelector<HTMLInputElement>(".composer input")?.focus() },
   ];

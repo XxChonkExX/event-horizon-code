@@ -22,6 +22,7 @@ import {
   listSessionsWithMeta, renameSession, deleteSession,
   listInstructions, putInstruction, removeInstruction,
   usageSummary, listProfiles, upsertProfile, getProfile, deleteProfile,
+  forkSession, addCheckpoint, listCheckpoints, messageCount, newSessionId,
 } from "./store";
 import os from "node:os";
 import { runTool } from "./tools";
@@ -236,6 +237,52 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       return sendJson(res, 200, { ok: true });
     }
 
+    // ---- fork + checkpoints (parallel windows: branch a session, try the
+    // other approach, original untouched) ----
+    if (req.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/fork")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/fork".length));
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { title?: string; atSeq?: number; checkpointId?: string };
+          let atSeq = b.atSeq;
+          if (b.checkpointId) {
+            const cp = listCheckpoints(id).find((c) => c.ts === b.checkpointId);
+            if (!cp) return sendJson(res, 400, { error: "no such checkpoint for this session" });
+            atSeq = cp.seq;
+          }
+          const forked = forkSession(id, { title: b.title, atSeq });
+          if (!forked) return sendJson(res, 404, { error: `no such session: ${id}` });
+          audit({ tool: "session.fork", note: `${id} -> ${forked.id} atSeq=${atSeq ?? "all"}` });
+          sendJson(res, 200, { sessionId: forked.id, title: forked.title, forkedFrom: id });
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e).slice(0, 200);
+          audit({ tool: "session.fork.error", note: msg });
+          sendJson(res, 400, { error: "bad request", cause: msg });
+        }
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/checkpoints")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/checkpoints".length));
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { label?: string };
+          const cp = addCheckpoint(id, messageCount(id), b.label ?? "manual checkpoint");
+          audit({ tool: "session.checkpoint", note: `${id} seq=${cp.seq}` });
+          sendJson(res, 200, cp);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/checkpoints")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sessions/".length, -"/checkpoints".length));
+      return sendJson(res, 200, listCheckpoints(id));
+    }
+
     if (req.method === "GET" && url.pathname === "/api/instructions") {
       const sid = url.searchParams.get("sessionId") ?? "default";
       return sendJson(res, 200, listInstructions(sid));
@@ -342,7 +389,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       req.on("end", () => {
         try {
           const body = JSON.parse(raw || "{}") as { title?: string; worktree?: string };
-          const s = createSession({ id: `ses_${Date.now().toString(36)}`, title: body.title ?? "session", worktree: body.worktree ?? process.cwd(), created: new Date().toISOString() });
+          const s = createSession({ id: newSessionId(), title: body.title ?? "session", worktree: body.worktree ?? process.cwd(), created: new Date().toISOString() });
           audit({ tool: "session.create", note: s.id });
           sendJson(res, 200, s);
         } catch { sendJson(res, 400, { error: "bad request" }); }
@@ -456,7 +503,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             });
           } else if (method === "session/new") {
             const params = (body.params ?? {}) as { title?: string; worktree?: string };
-            const s = createSession({ id: `ses_${Date.now().toString(36)}`, title: params.title ?? "session", worktree: params.worktree ?? process.cwd(), created: new Date().toISOString() });
+            const s = createSession({ id: newSessionId(), title: params.title ?? "session", worktree: params.worktree ?? process.cwd(), created: new Date().toISOString() });
             sessionWorktrees.set(s.id, resolveWorktree(params.worktree));
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });

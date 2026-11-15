@@ -32,7 +32,8 @@ export function initStore(): { mode: "sqlite" | "memory" } {
       "CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sessionId TEXT, seq INTEGER, role TEXT, content TEXT, ts TEXT);" +
       "CREATE TABLE IF NOT EXISTS instructions (sessionId TEXT, key TEXT, text TEXT, ts TEXT, PRIMARY KEY (sessionId, key));" +
       "CREATE TABLE IF NOT EXISTS usage (sessionId TEXT, model TEXT, tokens INTEGER, ts TEXT);" +
-      "CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, name TEXT, settings TEXT, created TEXT);"
+      "CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, name TEXT, settings TEXT, created TEXT);" +
+      "CREATE TABLE IF NOT EXISTS checkpoints (sessionId TEXT, seq INTEGER, label TEXT, ts TEXT);"
     );
     // Migration: older DBs predate the lastActivity column.
     try { db.exec("ALTER TABLE sessions ADD COLUMN lastActivity TEXT"); } catch { /* already present */ }
@@ -176,10 +177,12 @@ export function deleteSession(id: string): void {
     db.prepare("DELETE FROM messages WHERE sessionId=?").run(id);
     db.prepare("DELETE FROM instructions WHERE sessionId=?").run(id);
     db.prepare("DELETE FROM todos WHERE sessionId=?").run(id);
+    db.prepare("DELETE FROM checkpoints WHERE sessionId=?").run(id);
     db.prepare("DELETE FROM sessions WHERE id=?").run(id);
   } else {
     memMessages.delete(id);
     memInstructions.delete(id);
+    memCheckpoints.delete(id);
     memSessions = memSessions.filter((s) => s.id !== id);
   }
 }
@@ -216,4 +219,64 @@ export function saveMessages(sessionId: string, msgs: StoredMessage[]): void {
 export function loadMessages(sessionId: string): StoredMessage[] {
   if (db) return db.prepare("SELECT role, content FROM messages WHERE sessionId=? ORDER BY seq").all(sessionId) as StoredMessage[];
   return memMessages.get(sessionId) ?? [];
+}
+
+export function messageCount(sessionId: string): number {
+  if (db) return (db.prepare("SELECT COUNT(*) AS n FROM messages WHERE sessionId=?").get(sessionId) as { n: number }).n;
+  return (memMessages.get(sessionId) ?? []).length;
+}
+
+// ---- checkpoints (per-turn snapshots for fork/revert) ----
+
+export type Checkpoint = { sessionId: string; seq: number; label: string; ts: string };
+const memCheckpoints = new Map<string, Checkpoint[]>();
+
+export function addCheckpoint(sessionId: string, seq: number, label: string): Checkpoint {
+  const cp: Checkpoint = { sessionId, seq, label: label.slice(0, 80), ts: new Date().toISOString() };
+  if (db) db.prepare("INSERT INTO checkpoints (sessionId,seq,label,ts) VALUES (?,?,?,?)").run(cp.sessionId, cp.seq, cp.label, cp.ts);
+  else {
+    if (!memCheckpoints.has(sessionId)) memCheckpoints.set(sessionId, []);
+    memCheckpoints.get(sessionId)!.push(cp);
+  }
+  return cp;
+}
+
+export function listCheckpoints(sessionId: string): Checkpoint[] {
+  if (db) return db.prepare("SELECT sessionId, seq, label, ts FROM checkpoints WHERE sessionId=? ORDER BY ts").all(sessionId) as Checkpoint[];
+  return memCheckpoints.get(sessionId) ?? [];
+}
+
+// ---- fork (branch a session, optionally truncated at a checkpoint) ----
+
+// Millisecond timestamps alone collide (two forks in the same ms = UNIQUE
+// violation), so ids carry a random suffix.
+export function newSessionId(): string {
+  return `ses_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+// Powers parallel windows: fork the session, pop a second chat window, try the
+// other approach - the original is untouched.
+
+export function forkSession(fromId: string, opts?: { title?: string; atSeq?: number }): Session | null {
+  const src = listSessionsWithMeta().find((s) => s.id === fromId);
+  if (!src) return null;
+  const id = newSessionId();
+  const session: Session = { id, title: opts?.title ?? `${src.title} (fork)`, worktree: src.worktree, created: new Date().toISOString() };
+  const at = opts?.atSeq;
+  if (db) {
+    db.prepare("INSERT INTO sessions (id,title,worktree,created) VALUES (?,?,?,?)").run(id, session.title, session.worktree, session.created);
+    const now = new Date().toISOString();
+    if (at === undefined) {
+      db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? ORDER BY seq").run(id, now, fromId);
+    } else {
+      db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? AND seq < ? ORDER BY seq").run(id, now, fromId, at);
+    }
+    db.prepare("INSERT INTO instructions (sessionId,key,text,ts) SELECT ?, key, text, ? FROM instructions WHERE sessionId=?").run(id, now, fromId);
+  } else {
+    memSessions = [...memSessions, session];
+    const srcMsgs = memMessages.get(fromId) ?? [];
+    memMessages.set(id, (at === undefined ? srcMsgs : srcMsgs.slice(0, at)).map((m) => ({ ...m })));
+    const srcInstr = memInstructions.get(fromId);
+    if (srcInstr) memInstructions.set(id, new Map(srcInstr));
+  }
+  return session;
 }

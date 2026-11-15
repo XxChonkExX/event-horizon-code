@@ -14,7 +14,7 @@ import path from "node:path";
 import { audit } from "./audit";
 import { chat, chatOpenAI } from "./router";
 import type { ChatMessage, ChatResult } from "./router";
-import { loadMessages, saveMessages, touchSession, recordUsage, listInstructions } from "./store";
+import { loadMessages, saveMessages, touchSession, recordUsage, listInstructions, addCheckpoint, messageCount } from "./store";
 import { TOOL_SPECS, AGENT_SYSTEM, AGENT_CODER_SYSTEM } from "./agentTools";
 import type { ToolDef } from "./agentTools";
 import { splitToolset, searchTools } from "./toolSearch";
@@ -319,6 +319,8 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
   try {
     saveMessages(p.sessionId, convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
     touchSession(p.sessionId);
+    // Per-turn checkpoint (OpenCode-style): every prompt is a fork/revert point.
+    if ((p.text ?? "").trim()) addCheckpoint(p.sessionId, messageCount(p.sessionId), p.text.slice(0, 80));
     if (res.tokens) recordUsage(p.sessionId, res.model, res.tokens);
   } catch { /* persistence is best-effort; audit never blocks */ }
   return {
@@ -334,7 +336,6 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
     ...(cancelled ? { cancelled: true } : {}),
   };
 }
-
 function safeProfile(id: string): { settings: Record<string, unknown> } | null {
   try {
     // Lazy import avoided: store is cheap and side-effect free.

@@ -26,7 +26,7 @@
     "pack": "electron-builder",
     "pack:dir": "electron-builder --dir",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run lsp:test && npm run detonate:test && npm run toolsearch:test && npm run sop:test && npm run engram:test",
+    "test": "npm run typecheck && npm run lsp:test && npm run detonate:test && npm run toolsearch:test && npm run sop:test && npm run sessions:test && npm run engram:test",
     "test:integration": "tsx scripts/smoke-test.ts",
     "engram:test": "node scripts/check-engram.mjs",
     "languages:generate": "node scripts/generate-languages.mjs",
@@ -39,7 +39,8 @@
     "lsp:test": "tsx scripts/test-lsp.ts",
     "detonate:test": "tsx scripts/test-detonate.ts",
     "toolsearch:test": "tsx scripts/test-toolsearch.ts",
-    "sop:test": "tsx scripts/test-sop.ts"
+    "sop:test": "tsx scripts/test-sop.ts",
+    "sessions:test": "tsx scripts/test-sessions.ts"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.18",
