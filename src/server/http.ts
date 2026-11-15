@@ -5,7 +5,7 @@ import http from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { loadLanguagePacks } from "./lsp";
+import { loadLanguagePacks, lspManager } from "./lsp";
 import { runToolchainDoctor } from "./toolchain";
 import { detectPackageManager } from "./packageManager";
 import { indexSymbols } from "./fallbackIndex";
@@ -74,6 +74,13 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
 }
 
 const clampBudget = (n: number) => Math.min(8192, Math.max(64, Math.round(n)));
+
+// Session worktrees may be labels ("default"), not paths - resolve safely so
+// tools and language servers never run against a directory that does not exist.
+function resolveWorktree(w: string | undefined): string {
+  const s = (w ?? "").trim();
+  try { return s && fs.existsSync(s) ? s : process.cwd(); } catch { return process.cwd(); }
+}
 
 // Workspace memory: AGENTS.md (the open convention, also used by Claude Code and
 // OpenCode) plus .harness/memory.md (agent-written project memory). Read fresh so
@@ -424,12 +431,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             const usedModel = params.model ?? profStr("model") ?? readConfigDefaultModel() ?? "";
             const engineUp = engineEndpoint();
             const userMsg: ChatMessage = { role: "user", content: params.text ?? "", ...(params.images?.length ? { images: params.images } : {}) };
-            // Session worktree may be a label ("default"), not a path — resolve safely
-            // so tools never run against a directory that does not exist.
-            const workdir = (() => {
-              const w = (params.worktree ?? "").trim();
-              try { return w && fs.existsSync(w) ? w : process.cwd(); } catch { return process.cwd(); }
-            })();
+            const workdir = resolveWorktree(params.worktree);
             const autoApprove = params.autoApprove === true || prof["autoApprove"] === true;
             const effThink = params.think ?? profStr("think") ?? "medium";
             const effTokens = params.numPredict ?? profNum("tokens") ?? 1024;
@@ -813,6 +815,71 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "GET" && url.pathname === "/api/engine/status") {
       return sendJson(res, 200, { config: readEngineConfig(), ...(await engineHealth()) });
     }
+    // ---- LSP: real language servers per worktree (diagnostics, hover, definition) ----
+    // Server lifecycle is manager-owned: lazily spawned, idle-reaped, killed with the harness.
+    const lspBody = (cb: (b: { worktree?: string; path?: string; text?: string; version?: number; line?: number; character?: number }) => void) => {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try { cb(JSON.parse(raw || "{}")); } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+    };
+    if (req.method === "POST" && url.pathname === "/api/lsp/open") {
+      lspBody(async (b) => {
+        const r = await lspManager.openDocument(resolveWorktree(b.worktree), b.path ?? "", b.text ?? "", b.version ?? 1);
+        audit({ tool: "lsp.open", note: `${b.path ?? ""} ok=${r.ok}${r.error ? ` ${r.error.slice(0, 80)}` : ""}` });
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/lsp/change") {
+      lspBody(async (b) => {
+        const r = await lspManager.changeDocument(resolveWorktree(b.worktree), b.path ?? "", b.text ?? "", b.version);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/lsp/close") {
+      lspBody(async (b) => {
+        const r = await lspManager.closeDocument(resolveWorktree(b.worktree), b.path ?? "");
+        sendJson(res, 200, r);
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/lsp/diagnostics") {
+      lspBody(async (b) => {
+        const r = await lspManager.diagnosticsFor(resolveWorktree(b.worktree), b.path ?? "");
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/lsp/hover") {
+      lspBody(async (b) => {
+        const r = await lspManager.hover(resolveWorktree(b.worktree), b.path ?? "", b.line ?? 0, b.character ?? 0);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/lsp/definition") {
+      lspBody(async (b) => {
+        const r = await lspManager.definition(resolveWorktree(b.worktree), b.path ?? "", b.line ?? 0, b.character ?? 0);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/lsp/status") {
+      return sendJson(res, 200, { servers: lspManager.status(), packs: loadLanguagePacks().map((p) => ({ id: p.id, tier: p.tier, lsp: p.lsp.command[0], extensions: p.fileExtensions.slice(0, 6) })) });
+    }
+    if (req.method === "POST" && url.pathname === "/api/lsp/kill") {
+      lspBody((b) => {
+        const wt = resolveWorktree(b.worktree);
+        if (b.path) lspManager.kill(wt, b.path); else lspManager.killWorktree(wt);
+        audit({ tool: "lsp.kill", note: `${b.path ?? wt}` });
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/engine/templates") {
       // The vendored canonical template set (from llama.cpp, MIT) plus the
       // family detection for a given model. Powers the engine picker UI.

@@ -2,7 +2,7 @@
 // Sessions, worktrees, tools, permissions, model router, engram service, SSE.
 
 import crypto from "node:crypto";
-import { loadLanguagePacks, LspManager } from "./lsp";
+import { loadLanguagePacks, lspManager } from "./lsp";
 import { runToolchainDoctor } from "./toolchain";
 import { detectPackageManager } from "./packageManager";
 import { indexSymbols } from "./fallbackIndex";
@@ -19,9 +19,8 @@ export async function startLocalServer(opts: { port: number; password: string })
   const httpServer = startHttpServer(opts);
   audit({ tool: "server.start", note: `port ${opts.port} store=${storeMode.mode}` });
   const packs = loadLanguagePacks();
-  const lsp = new LspManager();
   // Wire diagnostics to SSE broadcast
-  lsp.onDiagnostics = (worktree, lang, payload) => {
+  lspManager.onDiagnostics = (worktree, lang, payload) => {
     broadcast(worktree, "diagnostics", { lang, payload });
   };
 
@@ -49,5 +48,5 @@ export async function startLocalServer(opts: { port: number; password: string })
   // Engram glue: import afterimage_* via Python subprocess (stdlib only),
   // never reimplement. See docs/ENGRAM_INTEGRATION.md
   void crypto.randomBytes(1);
-  void lsp;
+  void lspManager;
 }
