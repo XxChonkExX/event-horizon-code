@@ -1,7 +1,8 @@
-// Event Horizon Code — Status bar (VS Code structure): session/worktree left, model/think/shader right
+// Event Horizon Code — Status bar (VS Code structure): session/worktree/file left, model/think/shader right
 
 export default function StatusBar(props: {
   session: string;
+  file: () => string;
   model: () => string;
   think: () => string;
   shader: () => string;
@@ -12,6 +13,8 @@ export default function StatusBar(props: {
       <span>session {props.session}</span>
       <span class="status-dim">·</span>
       <span>worktree .eventhorizon/worktrees</span>
+      <span class="status-dim">·</span>
+      <span class="status-file" title={props.file()}>{props.file()}</span>
       <div class="status-spacer" />
       <span class="status-badge">{props.model() || "no model"}</span>
       <span class="status-badge">think: {props.think()}</span>

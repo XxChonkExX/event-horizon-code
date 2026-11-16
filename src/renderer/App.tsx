@@ -10,7 +10,6 @@ import AgentWatchPanel from "./AgentWatchPanel";
 import ModelManager from "./ModelManager";
 import ProfilesPanel from "./ProfilesPanel";
 import SessionsPanel from "./SessionsPanel";
-import SessionManager from "./SessionManager";
 import MemoryPanel from "./MemoryPanel";
 import SensoryPanel from "./SensoryPanel";
 import FileTree from "./FileTree";
@@ -69,7 +68,6 @@ export default function App() {
   const [model, setModel] = createSignal<string>("");
   const [think, setThink] = createSignal<string>("medium");
   const [open, setOpen] = createSignal<Record<Panel, boolean>>({ sidebar: true, chat: true, terminal: true, panels: true });
-  const [sessionManagerOpen, setSessionManagerOpen] = createSignal(false);
   const [shaderIdx, setShaderIdx] = createSignal(0); // default OFF - WebGL is opt-in
   // Resizable panel sizes (persisted; adaptive defaults for small displays)
   const [sidebarW, setSidebarW] = createSignal(loadNum("ehc.sidebarW", DEF_SIDEBAR, 160, 520));
@@ -260,21 +258,14 @@ export default function App() {
   };
 
   // ---- multi-session tab bar (top strip) ----
+  // Shows every session in a horizontally scrollable row - no grouping, no
+  // overlay (a fixed fullscreen "manager" reliably wedged the compositor).
   type SessionTab = { id: string; title: string; messageCount: number };
   const [sessionTabs, setSessionTabs] = createSignal<SessionTab[]>([{ id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 }]);
-  // "+" menu: fork + the full session list regardless of the strip limit.
+  // "x" only hides a tab; sessions are deleted from the Sessions panel.
   const [hiddenTabs, setHiddenTabs] = createSignal<Set<string>>(new Set());
-  // Sessions not shown because the strip is capped (includes manager-hidden ones).
-  const [overflowHidden, setOverflowHidden] = createSignal(0);
-  const toggleHiddenTab = (id: string): void => {
-    setHiddenTabs((s) => {
-      const n = new Set(s);
-      if (n.has(id)) n.delete(id); else n.add(id);
-      return n;
-    });
-    setSessionTabs((ts) => ts.filter((t) => t.id !== id));
-  };
-  
+  const unhideAllTabs = (): void => { setHiddenTabs(new Set<string>()); void refreshSessionTabs(); };
+
   const refreshSessionTabs = async (): Promise<void> => {
     try {
       const list = await apiJson<Array<{ id: string; title: string; messageCount: number; lastActivity?: string | null }>>("/api/sessions");
@@ -282,8 +273,7 @@ export default function App() {
       setSessionTabs(() => {
         const mine = ordered.find((s) => s.id === session);
         const cur = mine ?? { id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 };
-        const rest = ordered.filter((s) => s.id !== session).slice(0, 3);
-        setOverflowHidden(Math.max(0, ordered.length - rest.length - 1));
+        const rest = ordered.filter((s) => s.id !== session);
         return [cur, ...rest]
           .filter((s) => !hiddenTabs().has(s.id))
           .map((s) => ({ id: s.id, title: s.title, messageCount: s.messageCount ?? 0 }));
@@ -347,11 +337,6 @@ export default function App() {
     } catch { toast("checkpoint failed — server unreachable", "error"); }
   };
 
-  // Close the session manager with Escape.
-  const tabMenuKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSessionManagerOpen(false); };
-  window.addEventListener("keydown", tabMenuKey);
-  onCleanup(() => window.removeEventListener("keydown", tabMenuKey));
-
   // ---- Pop-out routes: render only the popped-out panel ----
   if (popoutKind === "terminal") {
     return (
@@ -397,17 +382,16 @@ export default function App() {
               )}
             </For>
           </div>
+          <Show when={hiddenTabs().size > 0}>
+            <button class="chat-tabs-unhide" title="Show tabs hidden with x" onClick={unhideAllTabs}>{hiddenTabs().size} hidden · show</button>
+          </Show>
           <button
             class="chat-tab-new"
-            classList={{ "has-hidden": hiddenTabs().size > 0 }}
-            title="Session manager"
-            aria-label="Session manager"
-            onClick={() => setSessionManagerOpen(true)}
-          >
-            {hiddenTabs().size + overflowHidden() > 0 ? `+${hiddenTabs().size + overflowHidden()}` : "+"}
-          </button>
+            title="Fork current session into a new window"
+            aria-label="Fork current session into a new window"
+            onClick={() => void forkSession()}
+          >+</button>
         </div>
-        <span class="header-file">{activeFile()}</span>
       </header>
 
       <ActivityBar open={open} toggle={toggle} />
@@ -465,19 +449,8 @@ export default function App() {
         </footer>
       </Show>
 
-      <StatusBar session={session} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
+      <StatusBar session={session} file={activeFile} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
-      <SessionManager
-        open={sessionManagerOpen}
-        close={() => setSessionManagerOpen(false)}
-        hidden={hiddenTabs}
-        toggleHidden={toggleHiddenTab}
-        fork={(id) => { void (async () => {
-          const r = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-          const d = (await r.json()) as { sessionId?: string };
-          if (d.sessionId) { toast(`forked -> ${d.sessionId.slice(0, 10)}`, "ok"); void popoutWindow("chat", d.sessionId); }
-        })(); }}
-      />
     </div>
   );
 }
