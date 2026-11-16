@@ -133,6 +133,27 @@ app.whenReady().then(async () => {
     }
     win.once("ready-to-show", () => win.show());
   }
-  openWindow("default");
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) openWindow("default"); });
+  // The renderer boots against the session id in the ?session= query. Never hand
+  // it a made-up id: a window pinned to a non-existent session fails every
+  // fork/checkpoint/memory call with "no such session". Ask the local server
+  // for the real newest session; create one if the store is empty.
+  async function resolveBootSessionId(): Promise<string> {
+    const auth = "Basic " + Buffer.from(`eventhorizon:${password}`).toString("base64");
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/sessions`, { headers: { authorization: auth } });
+      const list = (await r.json()) as Array<{ id: string; lastActivity?: string | null; created?: string }>;
+      if (Array.isArray(list) && list.length > 0) {
+        return [...list].sort((a, b) => (b.lastActivity ?? b.created ?? "").localeCompare(a.lastActivity ?? a.created ?? ""))[0].id;
+      }
+      const c = await fetch(`http://127.0.0.1:${port}/api/sessions`, { method: "POST", headers: { authorization: auth, "content-type": "application/json" }, body: "{}" });
+      const s = (await c.json()) as { id?: string };
+      if (s.id) return s.id;
+    } catch (e) {
+      console.error("[ehc] could not resolve the boot session; falling back to \"default\"", e);
+    }
+    return "default";
+  }
+  const bootSession = await resolveBootSessionId();
+  openWindow(bootSession);
+  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) void resolveBootSessionId().then(openWindow); });
 });

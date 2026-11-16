@@ -321,12 +321,20 @@ export default function App() {
       const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       const d = (await r.json()) as { sessionId?: string; error?: string };
       if (d.sessionId) {
-        toast(`session forked -> ${d.sessionId} (opens in a new window)`, "ok");
-        void popoutWindow("chat", d.sessionId);
+        toast(`session forked -> ${d.sessionId.slice(0, 14)} (switched this window)`, "ok");
+        openSession(d.sessionId);
       } else {
-        toast(`fork failed: ${d.error ?? "?"}`, "error");
+        const why = `fork failed: ${d.error ?? "?"}`;
+        toast(why, "error");
+        // Fixed-position toasts can be displaced by the compositor splay; the
+        // transcript is in-flow layout, so echo failures there too - readable
+        // whenever the conversation pane paints.
+        setMessages((m) => [...m, { role: "tool", text: why }]);
       }
-    } catch { toast("fork failed — server unreachable", "error"); }
+    } catch {
+      toast("fork failed - server unreachable", "error");
+      setMessages((m) => [...m, { role: "tool", text: "fork failed - server unreachable" }]);
+    }
   };
 
   const checkpointSession = async () => {
@@ -334,6 +342,7 @@ export default function App() {
       const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/checkpoints`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "manual checkpoint" }) });
       const d = (await r.json()) as { seq?: number; error?: string };
       toast(d.seq !== undefined ? `checkpoint saved at message ${d.seq}` : `checkpoint failed: ${d.error ?? "?"}`, d.seq !== undefined ? "ok" : "error");
+      if (d.seq === undefined) setMessages((m) => [...m, { role: "tool", text: `checkpoint failed: ${d.error ?? "?"}` }]);
     } catch { toast("checkpoint failed — server unreachable", "error"); }
   };
 

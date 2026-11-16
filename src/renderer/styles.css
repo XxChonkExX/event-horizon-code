@@ -37,7 +37,7 @@ body {
 .workbench {
   position: relative;
   display: grid;
-  height: 100vh;
+  height: 100%;
   /* columns/rows are set inline from App (resizable splitters persist via localStorage) */
   background: transparent;
 }
