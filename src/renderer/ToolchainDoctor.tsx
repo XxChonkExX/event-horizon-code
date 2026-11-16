@@ -95,7 +95,7 @@ export default function ToolchainDoctor() {
                   </summary>
                   <ul>
                     <For each={items}>
-                      {(i) => <li class={i.ok ? "" : "doctor-warn"}>{i.ok ? "+ " : "x "} {i.cmd} - {i.version || i.error}</li>}
+                      {(i) => <li class={i.ok ? "doctor-ok" : "doctor-warn"}>{i.ok ? "OK " : "MISS"} {i.cmd} - {i.version || i.error}</li>}
                     </For>
                   </ul>
                 </details>

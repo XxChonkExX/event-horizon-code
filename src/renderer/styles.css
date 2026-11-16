@@ -136,17 +136,22 @@ section.main-area > .panels {
   padding: 6px 14px 10px;
   background: rgba(27, 27, 34, 0.97);
   border-top: 1px solid var(--border);
-  max-height: clamp(190px, 32vh, 360px); overflow-y: auto;
+  max-height: clamp(200px, 38vh, 400px); overflow-y: auto;
+  scrollbar-color: var(--border) transparent; scrollbar-width: thin;
 }
+section.main-area > .panels::-webkit-scrollbar { width: 8px; }
+section.main-area > .panels::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 /* Tabbed panels: one tool at a time, the rest one click away. */
 .panel-tabs {
   display: flex; gap: 2px; overflow-x: auto; scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
   padding: 2px 4px 4px; margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   border-radius: 8px;
 }
 .panel-tabs::-webkit-scrollbar { height: 4px; }
+.panel-tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .panel-tab {
   background: transparent; color: var(--dim);
   border: none; border-radius: 6px;
