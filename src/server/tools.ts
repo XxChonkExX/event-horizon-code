@@ -374,6 +374,11 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
         const p = path.join(worktree, ".harness", "memory.md");
         fs.mkdirSync(path.dirname(p), { recursive: true });
         if (!fs.existsSync(p)) fs.writeFileSync(p, "# Project memory (written by the agent)\n\n");
+        const existing = fs.readFileSync(p, "utf8").split("\n").map((l) => l.trim());
+        if (existing.some((l) => l === `- ${text}`)) {
+          audit({ tool, note: "remember project duplicate" });
+          return { ok: true, out: `Already in project memory (no duplicate written): ${text}` };
+        }
         fs.appendFileSync(p, `- ${text}\n`);
         audit({ tool, note: "remember project" });
         return { ok: true, out: `Added to project memory (.harness/memory.md): ${text}` };
