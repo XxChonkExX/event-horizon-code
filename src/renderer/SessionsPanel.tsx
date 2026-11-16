@@ -30,7 +30,9 @@ export default function SessionsPanel() {
   // Native confirm()/prompt() are banned in this app: a modal anchored to a
   // splayed window opens off-screen and blocks the renderer's JS thread, so
   // the delete would never even fire. Inline UI instead.
-  const [confirmDel, setConfirmDel] = createSignal<{ ids: string[]; label: string } | null>(null);
+  // Two-step confirm IN PLACE on the button that was pressed (a separate
+  // confirm bar elsewhere went unnoticed - no DELETE ever reached the server).
+  const [confirmDel, setConfirmDel] = createSignal<{ ids: string[] } | null>(null);
   const [renaming, setRenaming] = createSignal<{ id: string; value: string } | null>(null);
 
   const selectable = (): string[] => sessions().filter((s) => s.id !== currentSession).map((s) => s.id);
@@ -48,7 +50,7 @@ export default function SessionsPanel() {
   const removeSelected = (): void => {
     const ids = [...selected()].filter((id) => id !== currentSession);
     if (ids.length === 0) return;
-    setConfirmDel({ ids, label: `Delete ${ids.length} session(s) and their messages, instructions and checkpoints?` });
+    setConfirmDel({ ids });
   };
 
   const doDelete = async (): Promise<void> => {
@@ -125,14 +127,18 @@ export default function SessionsPanel() {
     } finally { setBusy(false); }
   };
 
-  const remove = (id: string): void => {
-    const s = sessions().find((x) => x.id === id);
-    setConfirmDel({ ids: [id], label: `Delete session "${s?.title ?? id}" and its history?` });
+  const remove = (id: string): void => { setConfirmDel({ ids: [id] }); };
+  const isConfirming = (id: string): boolean => {
+    const c = confirmDel();
+    return !!c && c.ids.length === 1 && c.ids[0] === id;
   };
 
   return (
     <div class="sessions-panel">
       <h3>Session log</h3>
+      {/* Feedback lives next to the controls - at the bottom of a scrolled list
+          it was effectively invisible. */}
+      <p class="session-note">{note()}</p>
       <div class="checks">
         <button disabled={busy()} onClick={() => void refresh()}>Refresh</button>
         <button disabled={busy()} onClick={() => { void fork(currentSession); }}>Fork current</button>
@@ -140,17 +146,18 @@ export default function SessionsPanel() {
           <input type="checkbox" id="s-select-all" checked={allSelected()} onChange={toggleAll} title="Select every session except the current one" />
           <label for="s-select-all">Select all</label>
         </span>
-        <button class="danger" disabled={busy() || selected().size === 0} title="Delete every checked session (current one is never deleted)" onClick={removeSelected}>Delete selected ({selected().size})</button>
+        <button
+          class="danger"
+          disabled={busy() || selected().size === 0}
+          title="Deletes every checked session (the current one is never deleted). Press twice: the button asks 'Confirm delete N?'."
+          onClick={() => { if (confirmDel()) void doDelete(); else removeSelected(); }}
+        >
+          {confirmDel() ? `Confirm delete ${confirmDel()?.ids.length}?` : `Delete selected (${selected().size})`}
+        </button>
+        <Show when={confirmDel()}>
+          <button onClick={() => setConfirmDel(null)}>Cancel</button>
+        </Show>
       </div>
-      <Show when={confirmDel()}>
-        <div class="confirm-delete" role="alert">
-          <span>{confirmDel()?.label}</span>
-          <div class="checks">
-            <button class="danger" disabled={busy()} onClick={() => void doDelete()}>Delete</button>
-            <button onClick={() => setConfirmDel(null)}>Cancel</button>
-          </div>
-        </div>
-      </Show>
       <ul class="session-list">
         {sessions().map((s) => (
           <li classList={{ current: s.id === currentSession }}>
@@ -184,7 +191,14 @@ export default function SessionsPanel() {
               <button disabled={busy()} onClick={() => void fork(s.id)}>Fork</button>
               <button disabled={busy()} onClick={() => void openCheckpoints(s.id)}>{expanded() === s.id ? "Hide turns" : "Turns"}</button>
               <button disabled={busy()} onClick={() => rename(s.id, s.title)}>Rename</button>
-              <button disabled={busy() || s.id === currentSession} title="The current session cannot be deleted from its own window" onClick={() => remove(s.id)}>Delete</button>
+              <button
+                classList={{ danger: isConfirming(s.id) }}
+                disabled={busy() || s.id === currentSession}
+                title="Press twice — the button asks to confirm. The current session cannot be deleted from its own window."
+                onClick={() => { if (isConfirming(s.id)) void doDelete(); else remove(s.id); }}
+              >
+                {isConfirming(s.id) ? "Confirm delete?" : "Delete"}
+              </button>
             </div>
             {expanded() === s.id && (
               <div class="checkpoint-list">
@@ -199,7 +213,6 @@ export default function SessionsPanel() {
           </li>
         ))}
       </ul>
-      <p>{note()}</p>
     </div>
   );
 }

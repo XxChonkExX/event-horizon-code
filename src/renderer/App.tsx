@@ -288,8 +288,24 @@ export default function App() {
   type SessionTab = { id: string; title: string; messageCount: number };
   const [sessionTabs, setSessionTabs] = createSignal<SessionTab[]>([{ id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 }]);
   // "x" only hides a tab; sessions are deleted from the Sessions panel.
-  const [hiddenTabs, setHiddenTabs] = createSignal<Set<string>>(new Set());
-  const unhideAllTabs = (): void => { setHiddenTabs(new Set<string>()); void refreshSessionTabs(); };
+  // Persisted: a session switch reloads the window, and in-memory-only hiding
+  // meant every hidden tab came straight back.
+  const loadHiddenTabs = (): Set<string> => {
+    try {
+      const raw = localStorage.getItem("ehc.hiddenTabs");
+      return new Set<string>(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch { return new Set<string>(); }
+  };
+  const persistHiddenTabs = (s: Set<string>): void => {
+    try { localStorage.setItem("ehc.hiddenTabs", JSON.stringify([...s])); } catch { /* private mode */ }
+  };
+  const [hiddenTabs, setHiddenTabs] = createSignal<Set<string>>(loadHiddenTabs());
+  const hideTab = (id: string): void => {
+    const next = new Set(hiddenTabs()).add(id);
+    persistHiddenTabs(next);
+    setHiddenTabs(next);
+  };
+  const unhideAllTabs = (): void => { persistHiddenTabs(new Set<string>()); setHiddenTabs(new Set<string>()); void refreshSessionTabs(); };
 
   const refreshSessionTabs = async (): Promise<void> => {
     try {
@@ -300,7 +316,8 @@ export default function App() {
         const cur = mine ?? { id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 };
         const rest = ordered.filter((s) => s.id !== session);
         return [cur, ...rest]
-          .filter((s) => !hiddenTabs().has(s.id))
+          // the window's own session always keeps its tab, whatever was hidden elsewhere
+          .filter((s) => s.id === session || !hiddenTabs().has(s.id))
           .map((s) => ({ id: s.id, title: s.title, messageCount: s.messageCount ?? 0 }));
       });
     } catch { /* strip falls back to just the current tab */ }
@@ -308,7 +325,7 @@ export default function App() {
 
   const closeSessionTab = (id: string): void => {
     if (id === session) { toast("the current session cannot be hidden - switch to another first", "warn"); return; }
-    setHiddenTabs((s) => new Set(s).add(id));
+    hideTab(id);
     setSessionTabs((ts) => ts.filter((t) => t.id !== id));
   };
 
