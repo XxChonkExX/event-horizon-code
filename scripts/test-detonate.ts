@@ -51,27 +51,27 @@ async function main(): Promise<void> {
   check("grep for 'process' is not flagged", scanUncleanScript(`await grep({pattern: 'process'})`).length === 0);
 
   // 3. clean path runs benign scripts
-  const ok = await runTool("run_js", { approved: true, code: `const a = await ls({}); return 'entries:' + a.length;` }, worktree);
+  const ok = await runTool("run_js", { code: `const a = await ls({}); return 'entries:' + a.length;` }, worktree, { userApproved: true });
   check("benign script executes", ok.ok === true, ok.error ?? "");
 
   // 4. a gate-violating script is refused with guidance, never executed
-  const bad = await runTool("run_js", { approved: true, code: `const p = process.env; return p;` }, worktree);
+  const bad = await runTool("run_js", { code: `const p = process.env; return p;` }, worktree, { userApproved: true });
   check("violation refused", bad.ok === false && /clean-path gate/.test(bad.error ?? ""), bad.error ?? "");
   check("refusal names the construct", /process access/.test(bad.error ?? ""));
 
   // 5. this-escape stays contained inside the sandbox
-  const escape = await runTool("run_js", { approved: true, code: `return this.process ? 'escaped' : 'contained';` }, worktree);
+  const escape = await runTool("run_js", { code: `return this.process ? 'escaped' : 'contained';` }, worktree, { userApproved: true });
   check("this-escape contained", escape.ok === false || !/escaped/.test(escape.out ?? ""), escape.out ?? "");
 
   // 6. detonation tiers state their refusal plainly. Here the lane is enabled in
   // config but sbx is not installed: the required property is that we NEVER
   // silently fall back to running on the host.
   const detEnabled = detonateEnabledIn(worktree);
-  const exec = await runTool("run_js", { approved: true, code: `return 1;`, tier: "execute" }, worktree);
+  const exec = await runTool("run_js", { code: `return 1;`, tier: "execute" }, worktree, { userApproved: true });
   const execMsg = (exec.error ?? "") + (exec.out ?? "");
   const execRefused = exec.ok === false && (detEnabled ? /sbx/i.test(execMsg) : /disabled/i.test(execMsg));
   check("execute tier refuses plainly (no host fallback)", execRefused, execMsg.slice(0, 120));
-  const rt = await runTool("run_js", { approved: true, code: `return 1;`, tier: "redteam" }, worktree);
+  const rt = await runTool("run_js", { code: `return 1;`, tier: "redteam" }, worktree, { userApproved: true });
   const rtMsg = (rt.error ?? "") + (rt.out ?? "");
   const rtRefused = rt.ok === false && (detEnabled ? /sbx/i.test(rtMsg) : /disabled/i.test(rtMsg));
   check("redteam tier refuses plainly (no host fallback)", rtRefused, rtMsg.slice(0, 120));
@@ -81,13 +81,13 @@ async function main(): Promise<void> {
   check("isUnclean passes normal text", isUnclean("refactor the parser module") === false);
 
   // 8. credential files are never agent-readable or agent-writable
-  const readSecrets = await runTool("read", { approved: true, path: ".harness/secrets.json" }, worktree);
+  const readSecrets = await runTool("read", { path: ".harness/secrets.json" }, worktree, { userApproved: true });
   check("read of secrets.json refused", readSecrets.ok === false && /credential/i.test(readSecrets.error ?? ""), readSecrets.error ?? "");
-  const writeEnv = await runTool("write", { approved: true, path: ".env", content: "KEY=x" }, worktree);
+  const writeEnv = await runTool("write", { path: ".env", content: "KEY=x" }, worktree, { userApproved: true });
   check("write of .env refused", writeEnv.ok === false && /credential/i.test(writeEnv.error ?? ""), writeEnv.error ?? "");
-  const catEnv = await runTool("bash", { approved: true, cmd: "cat .env" }, worktree);
+  const catEnv = await runTool("bash", { cmd: "cat .env" }, worktree, { userApproved: true });
   check("bash cat .env refused", catEnv.ok === false && /credential/i.test(catEnv.error ?? ""), catEnv.error ?? "");
-  const envExample = await runTool("read", { approved: true, path: ".env.example" }, worktree);
+  const envExample = await runTool("read", { path: ".env.example" }, worktree, { userApproved: true });
   check(".env.example stays readable (template, not secret)", envExample.ok === true || !/credential/i.test(envExample.error ?? ""), envExample.error ?? "(missing file is fine)");
 
   console.log(failures === 0 ? "[ehc] detonate gate tests: ALL PASS" : `[ehc] detonate gate tests: ${failures} FAILURE(S)`);

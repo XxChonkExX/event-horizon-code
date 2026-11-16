@@ -282,7 +282,8 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
             convo.push({ role: "tool", content: out, name: "tool_search", tool_call_id: tc.id });
             continue;
           }
-          const res = await runTool(tc.name as ToolName, { ...tc.args, ...(autoApprove ? { approved: true } : {}) }, p.workdir);
+          // Approval authority is an explicit option, never a model-supplied argument.
+const res = await runTool(tc.name as ToolName, tc.args ?? {}, p.workdir, { userApproved: autoApprove });
           const out = (res.ok ? res.out : (res.error ?? "failed")).slice(0, 1500);
           const shortArgs = JSON.stringify(tc.args).slice(0, 100);
           steps.push(`${res.ok ? "OK" : "X "} ${tc.name}(${shortArgs})${res.needsApproval ? " - needs approval" : ""}\n${out.slice(0, 400)}`);

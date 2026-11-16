@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
 import { startLocalServer } from "../server/index";
+import { contained } from "../server/wsguard";
 
 type Runtime = { baseUrl: string; password: string; port: number };
 let runtime: Runtime | null = null;
@@ -19,14 +20,16 @@ let runtime: Runtime | null = null;
 async function resolveRuntime(): Promise<Runtime> {
   const descriptorPath = path.join(os.homedir(), ".eventhorizon", "runtime.json");
   try {
-    const d = JSON.parse(fs.readFileSync(descriptorPath, "utf8")) as { port?: number; password?: string };
-    if (typeof d.port === "number" && typeof d.password === "string") {
+    const d = JSON.parse(fs.readFileSync(descriptorPath, "utf8")) as { port?: number; password?: string; pid?: number };
+    // EH-005: a descriptor whose owning process is dead is stale - never attach.
+    const pidAlive = typeof d.pid === "number" && (() => { try { process.kill(d.pid as number, 0); return true; } catch { return false; } })();
+    if (pidAlive && typeof d.port === "number" && typeof d.password === "string") {
       const r = await fetch(`http://127.0.0.1:${d.port}/global/health`, {
         headers: { authorization: "Basic " + Buffer.from(`eventhorizon:${d.password}`).toString("base64") },
         signal: AbortSignal.timeout(1500),
       });
       if (r.ok) {
-        console.log(`[ehc] attaching to existing runtime on port ${d.port}`);
+        console.log(`[ehc] attaching to existing runtime on port ${d.port} (pid ${d.pid})`);
         return { baseUrl: `http://127.0.0.1:${d.port}`, password: d.password, port: d.port };
       }
     }
@@ -152,6 +155,7 @@ app.whenReady().then(async () => {
   // In-page right-click menu actions (ContextMenu.tsx) run here - paste cannot
   // be done from the renderer sandbox without the clipboard-read permission.
   ipcMain.handle("edit:action", (e, action: string) => {
+    if (!["copy", "cut", "paste", "selectAll"].includes(action)) return false; // allowlist (EH-002)
     const wc = BrowserWindow.fromWebContents(e.sender)?.webContents;
     if (!wc) return false;
     if (action === "copy") wc.copy();
@@ -162,10 +166,23 @@ app.whenReady().then(async () => {
     return true;
   });
   // File-system operations for the FileTree context menu (user-initiated).
-  ipcMain.handle("fs:op", (_e, op: { kind: string; path: string; to?: string; type?: string }) => {
-    const p = path.resolve(op.path);
-    const cwd = process.cwd();
-    if (!p.startsWith(cwd) || p === cwd) return { ok: false, error: "path escapes the workspace" };
+  // EH-001/002: canonical containment via the shared guard (sibling-prefix and
+  // symlink proof), sender confined to app windows, ops allowlisted, payload
+  // shapes and lengths validated at runtime.
+  const FS_OPS = new Set(["newFile", "newDir", "rename", "delete"]);
+  ipcMain.handle("fs:op", (e, op: { kind?: unknown; path?: unknown; to?: unknown; type?: unknown }) => {
+    const frame = e.senderFrame?.url ?? "";
+    let origin: URL;
+    try { origin = new URL(frame); } catch { return { ok: false, error: "rejected sender" }; }
+    if (origin.protocol !== "file:" && origin.hostname !== "localhost" && origin.hostname !== "127.0.0.1") {
+      return { ok: false, error: "rejected sender" };
+    }
+    if (typeof op?.kind !== "string" || !FS_OPS.has(op.kind)) return { ok: false, error: "unknown op" };
+    if (typeof op.path !== "string" || op.path.length === 0 || op.path.length > 1024) return { ok: false, error: "invalid path" };
+    if (op.to !== undefined && (typeof op.to !== "string" || op.to.length > 1024)) return { ok: false, error: "invalid destination" };
+    const guard = contained(process.cwd(), op.path);
+    if (!guard.ok || !guard.abs) return { ok: false, error: guard.error ?? "path escapes the workspace" };
+    const p = guard.abs;
     try {
       if (op.kind === "newFile") {
         if (fs.existsSync(p)) return { ok: false, error: "already exists" };
@@ -176,13 +193,14 @@ app.whenReady().then(async () => {
         fs.mkdirSync(p, { recursive: true });
       } else if (op.kind === "rename") {
         if (!fs.existsSync(p)) return { ok: false, error: "not found" };
-        const to = path.resolve(op.to ?? "");
-        if (!to.startsWith(cwd) || to === cwd || fs.existsSync(to)) return { ok: false, error: "bad destination" };
-        fs.renameSync(p, to);
-      } else if (op.kind === "delete") {
+        const toGuard = contained(process.cwd(), op.to ?? "");
+        if (!toGuard.ok || !toGuard.abs) return { ok: false, error: "bad destination" };
+        if (fs.existsSync(toGuard.abs)) return { ok: false, error: "destination already exists" };
+        fs.renameSync(p, toGuard.abs);
+      } else {
         if (!fs.existsSync(p)) return { ok: false, error: "not found" };
         fs.rmSync(p, { recursive: true });
-      } else return { ok: false, error: "unknown op" };
+      }
       return { ok: true };
     } catch (err) {
       return { ok: false, error: String((err as Error).message ?? err).slice(0, 160) };

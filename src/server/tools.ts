@@ -9,6 +9,23 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, exec } from "node:child_process";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
+import { contained } from "./wsguard";
+
+// AfterImage machines/src resolution - portable order, no machine-specific
+// absolute paths: explicit env, sibling checkout, in-workspace copy.
+function resolveEngramSrc(): string | null {
+  const candidates = [
+    process.env.EH_ENGRAM_SRC ?? "",
+    path.join(process.cwd(), "..", "AfterImage-Engram", "src"),
+    path.join(process.cwd(), "AfterImage-Engram", "src"),
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    const abs = path.resolve(c);
+    if (fs.existsSync(path.join(abs, "machines.py"))) return abs;
+  }
+  return null;
+}
 import { searchEngram, verifyArithmetic, registerEngram } from "./engram";
 import { listTodos, addTodo, toggleTodo, putInstruction } from "./store";
 import vm from "node:vm";
@@ -114,18 +131,11 @@ function isCredentialPath(rel: string): boolean {
 }
 
 function safePath(worktree: string, p: string): { ok: boolean; abs?: string; error?: string } {
-  if (path.isAbsolute(p)) {
-    return { ok: false, error: "absolute paths are not allowed — use a path relative to the workspace, or ask the user to move the file into the workspace" };
-  }
   if (isCredentialPath(p)) {
     return { ok: false, error: "refused: credential files (.harness/secrets.json, .env) are never agent-readable or agent-writable. Ask the user to edit them by hand." };
   }
-  const abs = path.resolve(worktree, p);
-  const root = path.resolve(worktree);
-  if (abs !== root && !abs.startsWith(root + path.sep)) {
-    return { ok: false, error: "path escapes the workspace" };
-  }
-  return { ok: true, abs };
+  // Shared containment policy (sibling-prefix proof + symlink canonicalisation).
+  return contained(worktree, p);
 }
 
 async function agentWatchGate(tool: ToolName, worktree: string) {
@@ -169,20 +179,29 @@ function runVerify(cmd: string, worktree: string, timeoutMs = 180_000): Promise<
   });
 }
 
-export async function runTool(tool: ToolName, args: Record<string, unknown>, worktree = process.cwd()): Promise<ToolResult> {
+export async function runTool(
+  tool: ToolName,
+  args: Record<string, unknown>,
+  worktree = process.cwd(),
+  opts?: { userApproved?: boolean }
+): Promise<ToolResult> {
   const perm = permissionFor(tool);
   if (perm === "deny") {
     audit({ tool, note: "deny" });
     return { ok: false, error: `permission deny for ${tool}`, out: "" };
   }
   if (perm === "ask") {
-    // In headless/test mode we require explicit approval flag. Frontend approval UI sets approved=true.
-    const approved = (args as { approved?: boolean }).approved === true;
+    // Authorization NEVER comes from tool arguments: the model could emit
+    // approved:true itself. Only the user channel (renderer HTTP call, editor
+    // Save) or the session-level auto-approve opt-in may set it, via opts.
+    const approved = opts?.userApproved === true;
     if (!approved) {
       audit({ tool, note: "ask-no-approval" });
-      return { ok: false, needsApproval: true, out: `approval required for ${tool}. Pass approved=true after user Review.`, error: "needs approval" };
+      return { ok: false, needsApproval: true, out: `approval required for ${tool}. Approve from the Review pane and retry.`, error: "needs approval" };
     }
   }
+  // The model cannot authorize its own tool calls - strip the flag entirely.
+  delete (args as { approved?: boolean }).approved;
 
   const gate = await agentWatchGate(tool, worktree);
   if (!gate.allow) {
@@ -234,7 +253,9 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       const parsed = cmd.trim().split(/\s+/);
       return new Promise<ToolResult>((resolve) => {
         execFile(parsed[0], parsed.slice(1), { cwd: worktree, timeout: 15000, maxBuffer: 200000, windowsHide: true }, (err, stdout, stderr) => {
-          audit({ tool, note: cmd.slice(0, 80) });
+          // Audit notes are privacy-sensitive: keep a short shape fingerprint,
+          // never raw command text (commands can carry tokens/credentials).
+          audit({ tool, note: `bash ${cmd.length}ch argv=${parsed.length - 1}` });
           resolve({ ok: !err, out: ((stdout as string) || "") + ((stderr as string) || ""), error: err ? String(err).slice(0, 200) : undefined });
         });
       });
@@ -243,9 +264,13 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       const pattern = String(args.pattern ?? "");
       const where = String(args.path ?? ".");
       const rg = resolveBin(["rg"]);
+      // The search root obeys the same containment policy as read/write.
+      const whereGuard = safePath(worktree, where);
+      if (!whereGuard.ok) return { ok: false, error: whereGuard.error, out: "" };
+      const whereAbs = whereGuard.abs ?? path.resolve(worktree, where);
       if (rg) {
         return new Promise<ToolResult>((resolve) => {
-          execFile(rg, ["-n", pattern, where], { cwd: worktree, timeout: 8000, windowsHide: true }, (err, stdout) => {
+          execFile(rg, ["-n", pattern, whereAbs], { cwd: worktree, timeout: 8000, windowsHide: true }, (err, stdout) => {
             resolve({ ok: !err, out: String(stdout).slice(0, 50000) });
           });
         });
@@ -253,7 +278,7 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       // JS fallback: walk + regex line scan (no ripgrep required).
       try {
         const re = new RegExp(pattern, "i");
-        const target = path.resolve(worktree, where);
+        const target = whereAbs;
         const files = fs.existsSync(target) && fs.statSync(target).isFile() ? [target] : walkFiles(fs.existsSync(target) ? target : worktree);
         const hits: string[] = [];
         for (const f of files) {
@@ -299,9 +324,11 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       }
     }
     if (tool === "ls") {
-      const dir = path.resolve(worktree, String(args.path ?? "."));
-      // Jail: listing stays inside the workspace (read-only, no traversal).
-      if (!dir.startsWith(path.resolve(worktree))) return { ok: false, error: "path outside workspace", out: "" };
+      // Jail: listing stays inside the workspace via the shared containment
+      // guard (the old startsWith check accepted sibling-prefix directories).
+      const dirGuard = safePath(worktree, String(args.path ?? "."));
+      if (!dirGuard.ok) return { ok: false, error: dirGuard.error, out: "" };
+      const dir = dirGuard.abs ?? path.resolve(worktree, String(args.path ?? "."));
       try {
         const entries = fs.readdirSync(dir, { withFileTypes: true })
           .filter((e) => !e.name.startsWith(".git"))
@@ -371,15 +398,20 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       if (!text) return { ok: false, error: "text required", out: "" };
       const scope = String(args.scope ?? "session");
       if (scope === "project") {
-        const p = path.join(worktree, ".harness", "memory.md");
+        // Memory writes obey the same containment policy as every other write,
+        // and are size-capped (a model can be verbose; the file is shared).
+        const memGuard = safePath(worktree, path.join(".harness", "memory.md"));
+        if (!memGuard.ok) return { ok: false, error: memGuard.error, out: "" };
+        const p = memGuard.abs ?? path.join(worktree, ".harness", "memory.md");
+        const entry = text.slice(0, 2000);
         fs.mkdirSync(path.dirname(p), { recursive: true });
         if (!fs.existsSync(p)) fs.writeFileSync(p, "# Project memory (written by the agent)\n\n");
         const existing = fs.readFileSync(p, "utf8").split("\n").map((l) => l.trim());
-        if (existing.some((l) => l === `- ${text}`)) {
+        if (existing.some((l) => l === `- ${entry}`)) {
           audit({ tool, note: "remember project duplicate" });
-          return { ok: true, out: `Already in project memory (no duplicate written): ${text}` };
+          return { ok: true, out: `Already in project memory (no duplicate written): ${entry}` };
         }
-        fs.appendFileSync(p, `- ${text}\n`);
+        fs.appendFileSync(p, `- ${entry}\n`);
         audit({ tool, note: "remember project" });
         return { ok: true, out: `Added to project memory (.harness/memory.md): ${text}` };
       }
@@ -403,8 +435,8 @@ export async function runTool(tool: ToolName, args: Record<string, unknown>, wor
       const code = String(args.code ?? "");
       if (!MACHINES.includes(machine)) return { ok: false, error: `unknown machine (one of ${MACHINES.join(", ")})`, out: "" };
       if (!code.trim()) return { ok: false, error: "code required", out: "" };
-      const src = process.env.EH_ENGRAM_SRC ?? "C:/Users/mikeh/Documents/New OpenCode Project/AfterImage-Engram/src";
-      if (!fs.existsSync(path.join(src, "machines.py"))) {
+      const src = resolveEngramSrc();
+      if (!src) {
         return { ok: false, error: "engram machines not found — set EH_ENGRAM_SRC to AfterImage-Engram/src", out: "" };
       }
       const driver = `import sys,json; sys.path.insert(0,r"${src}"); import machines; print(json.dumps(machines.run(sys.argv[1], sys.argv[2])))`;

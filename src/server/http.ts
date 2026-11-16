@@ -14,6 +14,8 @@ import { isUnclean } from "./detonate";
 import { audit } from "./audit";
 import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture, runProbe, scoreProbe, startOtelReceiver, stopOtelReceiver, acknowledgeFindings, plantCanaries, checkCanaries, detectLoops } from "./agentwatch";
 import { subscribe, broadcast } from "./sse";
+import { contained } from "./wsguard";
+import { getAuditPath, auditHealth } from "./audit";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels, modelCapabilities } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
@@ -79,6 +81,9 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
     } catch { return false; }
   }
   if (url) {
+    // EH-010: single-use event tickets issued to authenticated callers.
+    const ticket = url.searchParams.get("ticket") ?? "";
+    if (ticket) return consumeEventTicket(ticket);
     const q = url.searchParams.get("auth") ?? "";
     try { return q.length > 0 && crypto.timingSafeEqual(Buffer.from(q), Buffer.from(password)); } catch { return false; }
   }
@@ -111,6 +116,21 @@ function writeActiveProfile(id: string): void {
   fs.writeFileSync(cfgPath, JSON.stringify(raw, null, 2));
 }
 
+// EH-010: single-use event-stream tickets. Issued only to authenticated
+// callers, consumed on first use, expired after 60 seconds. The master Basic
+// Auth password never appears in an EventSource URL.
+const eventTickets = new Map<string, number>();
+function issueEventTicket(): string {
+  const t = crypto.randomBytes(24).toString("hex");
+  eventTickets.set(t, Date.now() + 60_000);
+  return t;
+}
+function consumeEventTicket(t: string): boolean {
+  const exp = eventTickets.get(t) ?? 0;
+  eventTickets.delete(t);
+  return exp > Date.now();
+}
+
 export function startHttpServer(opts: ServerOpts): http.Server {
   const host = opts.host ?? "127.0.0.1";
   const packs = loadLanguagePacks();
@@ -124,6 +144,23 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       return;
     }
 
+    // EH-003/016: every request body is bounded at ONE entry point. A single
+    // byte-count guard covers all per-site "data" listeners; on breach we send
+    // 413 and destroy the socket, so no handler ever buffers an oversized body.
+    // Slow-loris style requests are cut by the 60s socket timeout.
+    let bodyBytes = 0;
+    req.on("data", (c: Buffer) => {
+      bodyBytes += c.length;
+      if (bodyBytes > 4 * 1024 * 1024) {
+        try { sendJson(res, 413, { error: "payload too large (4 MiB limit)" }); } catch { /* socket gone */ }
+        req.destroy();
+      }
+    });
+    req.setTimeout(60_000, () => {
+      try { if (!res.writableEnded) sendJson(res, 408, { error: "request timeout" }); } catch { /* ignore */ }
+      req.destroy();
+    });
+
     if (url.pathname === "/global/health") {
       if (!checkAuth(req, opts.password, url)) {
         return sendJson(res, 401, { healthy: false, reason: "unauthorized — Basic auth required (user: eventhorizon, password printed at boot or EH_PASS)" });
@@ -132,6 +169,14 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     }
 
     if (!checkAuth(req, opts.password, url)) return sendJson(res, 401, { error: "unauthorized" });
+
+    // EH-010: EventSource cannot send headers, so instead of putting the master
+    // password in URLs, authenticated callers exchange it for a single-use,
+    // 60-second ticket bound to this runtime.
+    if (req.method === "POST" && url.pathname === "/api/events/ticket") {
+      const ticket = issueEventTicket();
+      return sendJson(res, 200, { ticket });
+    }
 
     if (req.method === "GET" && url.pathname === "/api/toolchain") {
       const checks = await runToolchainDoctor(packs);
@@ -214,10 +259,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "GET" && url.pathname === "/api/files") {
       const base = resolveWorktree(url.searchParams.get("worktree") ?? undefined);
       const rel = (url.searchParams.get("path") ?? ".").replace(/^[/\\]+/, "");
-      const dir = path.resolve(base, rel);
-      if (dir !== path.resolve(base) && !dir.startsWith(path.resolve(base) + path.sep)) {
-        return sendJson(res, 400, { error: "path escapes the workspace" });
-      }
+      // EH-009: the file browser uses the same shared containment guard as the
+      // agent tools (sibling-prefix proof + symlink canonicalisation).
+      const guard = contained(base, rel);
+      if (!guard.ok) return sendJson(res, 400, { error: guard.error ?? "path escapes the workspace" });
+      const dir = guard.abs ?? path.resolve(base, rel);
       const SKIP = new Set([".git", "node_modules", "out", "dist", "build", ".eventhorizon", ".harness"]);
       try {
         const entries = fs.readdirSync(dir, { withFileTypes: true })
@@ -401,12 +447,25 @@ export function startHttpServer(opts: ServerOpts): http.Server {
 
     if (req.method === "GET" && url.pathname === "/api/logs/audit") {
       // Local, redacted-by-construction tail (tool names + notes only).
-      const n = Math.min(Number(url.searchParams.get("n") ?? 100), 500);
+      // EH-017/019: bounded tail read through the single audit path + health.
+      const rawN = Number(url.searchParams.get("n") ?? 100);
+      const n = Number.isFinite(rawN) && rawN > 0 ? Math.min(Math.floor(rawN), 500) : 100;
       try {
-        const p = path.join(os.homedir(), ".eventhorizon", "audit.jsonl");
-        const lines = fs.readFileSync(p, "utf8").trim().split("\n");
-        return sendJson(res, 200, lines.slice(-n).map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } }));
-      } catch { return sendJson(res, 200, []); }
+        const p = getAuditPath();
+        const health = auditHealth();
+        const st = fs.existsSync(p) ? fs.statSync(p) : null;
+        let lines: string[] = [];
+        if (st) {
+          const span = Math.min(st.size, 512 * 1024); // bounded read, never the whole file
+          const fh = fs.openSync(p, "r");
+          const buf = Buffer.alloc(span);
+          fs.readSync(fh, buf, 0, span, st.size - span);
+          fs.closeSync(fh);
+          lines = buf.toString("utf8").split("\n").filter(Boolean);
+          if (st.size > span) lines.shift(); // drop the possibly-partial first line
+        }
+        return sendJson(res, 200, { health, entries: lines.slice(-n).map((l) => { try { return JSON.parse(l); } catch { return { raw: l }; } }) });
+      } catch { return sendJson(res, 200, { health: auditHealth(), entries: [] }); }
     }
 
     if (req.method === "GET" && url.pathname === "/api/logs/engine") {
@@ -628,7 +687,8 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               return;
             }
             const worktree = sessionWorktrees.get(params.sessionId ?? "default") ?? process.cwd();
-            const r = await runTool("write", { path: params.path ?? "", content: params.content ?? "", approved: false }, worktree);
+            // ACP fs/write is user-initiated through the session - never auto-approved.
+            const r = await runTool("write", { path: params.path ?? "", content: params.content ?? "" }, worktree);
             audit({ tool: "acp.fs.write", note: `${params.path ?? ""} ok=${r.ok}` });
             sendJson(res, 200, r.needsApproval ? { needsApproval: true, error: r.error } : { ok: r.ok, error: r.error });
           } else if (method === "terminal/create") {
@@ -694,7 +754,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       req.on("end", async () => {
         try {
           const body = JSON.parse(raw || "{}") as { tool?: ToolName; args?: Record<string, unknown>; worktree?: string };
-          const result = await runTool(body.tool ?? "read", body.args ?? {}, body.worktree ?? process.cwd());
+          // The HTTP caller is the user's renderer: an approved flag HERE is the
+          // user's Review-pane decision. The model's own arguments never reach
+          // this endpoint with authority (runTool strips args.approved anyway).
+          const userApproved = (body.args as { approved?: boolean } | undefined)?.approved === true;
+          const result = await runTool(body.tool ?? "read", body.args ?? {}, body.worktree ?? process.cwd(), { userApproved });
           sendJson(res, 200, result);
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });

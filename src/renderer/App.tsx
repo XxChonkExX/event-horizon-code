@@ -146,7 +146,11 @@ export default function App() {
     try {
       const rt = await runtimeInfo();
       if (!rt) return;
-      const q = `auth=${encodeURIComponent(rt.password)}&worktree=${encodeURIComponent(wt())}`;
+      // EH-010: exchange the master password (sent once, in a header) for a
+      // single-use 60s event ticket - the URL never carries the password.
+      const tk = await fetch(`${rt.baseUrl}/api/events/ticket`, { headers: { authorization: "Basic " + btoa(`eventhorizon:${rt.password}`) } });
+      const tkt = (await tk.json()) as { ticket?: string };
+      const q = `ticket=${encodeURIComponent(tkt.ticket ?? "")}&worktree=${encodeURIComponent(wt())}`;
       es?.close();
       es = new EventSource(`${rt.baseUrl}/api/events?${q}`);
       es.addEventListener("token", (ev) => {

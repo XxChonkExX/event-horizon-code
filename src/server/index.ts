@@ -31,10 +31,17 @@ export async function startLocalServer(opts: { port: number; password: string; f
   // Runtime descriptor: lets the Electron shell attach to THIS server instead
   // of forking a second one on a random port. Two servers on one SQLite file
   // made "works via curl, not in the app" a recurring mystery.
+  // EH-005: atomic replacement + owner-only permissions - the descriptor is a
+  // local credential.
   try {
-    const descriptor = path.join(os.homedir(), ".eventhorizon", "runtime.json");
-    fs.mkdirSync(path.dirname(descriptor), { recursive: true });
-    fs.writeFileSync(descriptor, JSON.stringify({ port: opts.port, password: opts.password, pid: process.pid, startedAt: new Date().toISOString() }, null, 2));
+    const dir = path.join(os.homedir(), ".eventhorizon");
+    fs.mkdirSync(dir, { recursive: true });
+    const descriptor = path.join(dir, "runtime.json");
+    const tmp = path.join(dir, `runtime.json.${process.pid}.tmp`);
+    fs.writeFileSync(tmp, JSON.stringify({ port: opts.port, password: opts.password, pid: process.pid, startedAt: new Date().toISOString() }, null, 2));
+    try { fs.chmodSync(tmp, 0o600); } catch { /* POSIX-only; Windows ACLs apply by default */ }
+    fs.renameSync(tmp, descriptor);
+    try { fs.chmodSync(descriptor, 0o600); } catch { /* POSIX-only */ }
   } catch { /* best-effort */ }
   const packs = loadLanguagePacks();
   // Wire diagnostics to SSE broadcast
