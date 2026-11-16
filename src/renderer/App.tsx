@@ -319,16 +319,6 @@ export default function App() {
     window.location.assign(`/?session=${encodeURIComponent(id)}`);
   };
 
-  const deleteSessionTab = async (id: string): Promise<void> => {
-    if (id === session) { toast("cannot close the session you are in", "warn"); return; }
-    if (!window.confirm(`Delete session "${id}" and its history?`)) return;
-    try {
-      await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
-      await refreshSessionTabs();
-      toast(`session ${id.slice(0, 8)} deleted`, "ok");
-    } catch { toast("could not delete session", "error"); }
-  };
-
   onMount(() => { void refreshSessionTabs(); });
 
   const newWorktree = async () => {
@@ -371,6 +361,7 @@ export default function App() {
     } catch { toast("checkpoint failed — server unreachable", "error"); }
   };
 
+  const devPreview = typeof window !== "undefined" && !window.eventhorizon;
   // ---- Pop-out routes: render only the popped-out panel ----
   if (popoutKind === "terminal") {
     return (
@@ -491,6 +482,12 @@ export default function App() {
 
       <StatusBar session={session} file={activeFile} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
+      <Show when={devPreview}>
+        <div class="dev-preview-banner" role="alert">
+          <strong>Dev preview (browser)</strong>
+          <span>This page cannot reach the local server — its buttons are inert by design. The working app is the <em>Event Horizon Code</em> window (Alt+Tab to it, or relaunch <code>npm run dev</code>).</span>
+        </div>
+      </Show>
     </div>
   );
 }

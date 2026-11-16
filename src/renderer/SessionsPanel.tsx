@@ -3,7 +3,7 @@
 // workflow becomes visible: fork a session (full or from a checkpoint) and pop
 // it into a second chat window; rename; delete. The current session is marked.
 
-import { createSignal, onMount } from "solid-js";
+import { createSignal, onMount, Show } from "solid-js";
 import { apiFetch, apiJson, popoutWindow } from "./api";
 
 type SessionMeta = { id: string; title: string; worktree: string; created: string; lastActivity?: string | null; messageCount: number };
@@ -27,6 +27,11 @@ export default function SessionsPanel() {
   const [note, setNote] = createSignal("Fork to try a second approach in a parallel window; the original is untouched.");
   const [busy, setBusy] = createSignal(false);
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
+  // Native confirm()/prompt() are banned in this app: a modal anchored to a
+  // splayed window opens off-screen and blocks the renderer's JS thread, so
+  // the delete would never even fire. Inline UI instead.
+  const [confirmDel, setConfirmDel] = createSignal<{ ids: string[]; label: string } | null>(null);
+  const [renaming, setRenaming] = createSignal<{ id: string; value: string } | null>(null);
 
   const selectable = (): string[] => sessions().filter((s) => s.id !== currentSession).map((s) => s.id);
   const allSelected = (): boolean => selectable().length > 0 && selectable().every((id) => selected().has(id));
@@ -40,16 +45,30 @@ export default function SessionsPanel() {
       return n;
     });
   };
-  const removeSelected = async (): Promise<void> => {
+  const removeSelected = (): void => {
     const ids = [...selected()].filter((id) => id !== currentSession);
     if (ids.length === 0) return;
-    if (!window.confirm(`Delete ${ids.length} session(s) and their messages, instructions and checkpoints?`)) return;
+    setConfirmDel({ ids, label: `Delete ${ids.length} session(s) and their messages, instructions and checkpoints?` });
+  };
+
+  const doDelete = async (): Promise<void> => {
+    const c = confirmDel();
+    if (!c) return;
     setBusy(true);
     try {
-      for (const id of ids) await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
-      setSelected(new Set<string>());
+      for (const id of c.ids) {
+        const r = await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!r.ok) throw new Error(`HTTP ${r.status} on session ${id.slice(0, 10)}`);
+      }
+      const gone = new Set(c.ids);
+      setSelected((s) => new Set([...s].filter((id) => !gone.has(id))));
+      if (gone.has(expanded())) setExpanded("");
+      setConfirmDel(null);
+      setNote(`${c.ids.length} session(s) deleted`);
       await refresh();
-      setNote(`${ids.length} session(s) deleted`);
+    } catch (e) {
+      setConfirmDel(null);
+      setNote(`delete failed: ${(e as Error).message ?? e}`);
     } finally { setBusy(false); }
   };
 
@@ -90,24 +109,25 @@ export default function SessionsPanel() {
     } finally { setBusy(false); }
   };
 
-  const rename = async (id: string, current: string): Promise<void> => {
-    const title = window.prompt("Rename session", current);
-    if (title === null || !title.trim()) return;
+  const rename = (id: string, current: string): void => { setRenaming({ id, value: current }); };
+
+  const commitRename = async (): Promise<void> => {
+    const r = renaming();
+    if (!r) return;
+    const title = r.value.trim();
+    if (!title) { setRenaming(null); return; }
     setBusy(true);
     try {
-      await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ title: title.trim() }) });
+      const res = await apiFetch(`/api/sessions/${encodeURIComponent(r.id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title }) });
+      if (!res.ok) { const d = (await res.json().catch(() => ({}))) as { error?: string }; setNote(`rename failed: ${d.error ?? `HTTP ${res.status}`}`); }
+      setRenaming(null);
       await refresh();
     } finally { setBusy(false); }
   };
 
-  const remove = async (id: string): Promise<void> => {
-    if (!window.confirm(`Delete session "${id}" and its messages, instructions and checkpoints?`)) return;
-    setBusy(true);
-    try {
-      await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
-      if (expanded() === id) setExpanded("");
-      await refresh();
-    } finally { setBusy(false); }
+  const remove = (id: string): void => {
+    const s = sessions().find((x) => x.id === id);
+    setConfirmDel({ ids: [id], label: `Delete session "${s?.title ?? id}" and its history?` });
   };
 
   return (
@@ -120,8 +140,17 @@ export default function SessionsPanel() {
           <input type="checkbox" id="s-select-all" checked={allSelected()} onChange={toggleAll} title="Select every session except the current one" />
           <label for="s-select-all">Select all</label>
         </span>
-        <button class="danger" disabled={busy() || selected().size === 0} title="Delete every checked session (current one is never deleted)" onClick={() => void removeSelected()}>Delete selected ({selected().size})</button>
+        <button class="danger" disabled={busy() || selected().size === 0} title="Delete every checked session (current one is never deleted)" onClick={removeSelected}>Delete selected ({selected().size})</button>
       </div>
+      <Show when={confirmDel()}>
+        <div class="confirm-delete" role="alert">
+          <span>{confirmDel()?.label}</span>
+          <div class="checks">
+            <button class="danger" disabled={busy()} onClick={() => void doDelete()}>Delete</button>
+            <button onClick={() => setConfirmDel(null)}>Cancel</button>
+          </div>
+        </div>
+      </Show>
       <ul class="session-list">
         {sessions().map((s) => (
           <li classList={{ current: s.id === currentSession }}>
@@ -133,15 +162,29 @@ export default function SessionsPanel() {
                 title={s.id === currentSession ? "The current session cannot be deleted" : "Check to delete in bulk"}
                 onChange={() => toggleSel(s.id)}
               />
-              <span class="session-title" title={s.id}>{s.id === currentSession ? "* " : ""}{s.title}</span>
+              {renaming()?.id === s.id ? (
+                <span class="session-rename">
+                  <input
+                    class="rename-input"
+                    value={renaming()?.value ?? ""}
+                    ref={(el) => queueMicrotask(() => el.focus())}
+                    onInput={(e) => setRenaming((r) => (r ? { ...r, value: e.currentTarget.value } : r))}
+                    onKeyDown={(e) => { if (e.key === "Enter") void commitRename(); else if (e.key === "Escape") setRenaming(null); }}
+                  />
+                  <button disabled={busy()} onClick={() => void commitRename()}>Save</button>
+                  <button onClick={() => setRenaming(null)}>Cancel</button>
+                </span>
+              ) : (
+                <span class="session-title" title={s.id}>{s.id === currentSession ? "* " : ""}{s.title}</span>
+              )}
               <span class="session-meta">{s.messageCount} msg - {ago(s.lastActivity ?? s.created)}</span>
             </div>
             <div class="checks">
               <button disabled={busy()} onClick={() => openWindow(s.id)}>Open window</button>
               <button disabled={busy()} onClick={() => void fork(s.id)}>Fork</button>
               <button disabled={busy()} onClick={() => void openCheckpoints(s.id)}>{expanded() === s.id ? "Hide turns" : "Turns"}</button>
-              <button disabled={busy()} onClick={() => void rename(s.id, s.title)}>Rename</button>
-              <button disabled={busy() || s.id === currentSession} title="The current session cannot be deleted from its own window" onClick={() => void remove(s.id)}>Delete</button>
+              <button disabled={busy()} onClick={() => rename(s.id, s.title)}>Rename</button>
+              <button disabled={busy() || s.id === currentSession} title="The current session cannot be deleted from its own window" onClick={() => remove(s.id)}>Delete</button>
             </div>
             {expanded() === s.id && (
               <div class="checkpoint-list">

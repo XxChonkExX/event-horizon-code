@@ -638,7 +638,27 @@ pre {
 .checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .checks .danger { border-color: rgba(248,113,113,0.5); color: var(--bad); }
 .checks .danger:hover { background: rgba(248,113,113,0.12); }
+/* ---- session log manager ---- */
 .session-check { display: flex; gap: 6px; align-items: center; }
+.confirm-delete {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: rgba(248,113,113,0.10); border: 1px solid rgba(248,113,113,0.45);
+  border-radius: 8px; padding: 7px 10px; margin: 4px 0 8px; font-size: 12.5px;
+}
+.confirm-delete .checks { margin: 0; flex-wrap: nowrap; }
+.session-rename { display: flex; gap: 6px; align-items: center; flex: 1; min-width: 0; }
+.rename-input {
+  background: var(--panel2); border: 1px solid var(--accent2); border-radius: 6px;
+  color: var(--text); padding: 3px 8px; font-size: 12.5px; flex: 1; min-width: 0;
+}
+.dev-preview-banner {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 80;
+  display: flex; flex-direction: column; gap: 2px;
+  background: rgba(24, 20, 12, 0.97); border-top: 1px solid rgba(251,191,36,0.5);
+  padding: 8px 14px; font-size: 12.5px; color: var(--warn);
+}
+.dev-preview-banner strong { color: var(--text); }
+.dev-preview-banner code { background: var(--panel2); border-radius: 4px; padding: 0 4px; }
 .session-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; }
 .session-list li { padding: 6px 0; border-bottom: 1px solid var(--border); }
 .session-list li.current .session-title { color: var(--ok); }
