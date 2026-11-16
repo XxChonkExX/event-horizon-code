@@ -262,12 +262,14 @@ export default function App() {
   // ---- multi-session tab bar (top strip) ----
   type SessionTab = { id: string; title: string; messageCount: number };
   const [sessionTabs, setSessionTabs] = createSignal<SessionTab[]>([{ id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 }]);
+  // "+" menu: fork + the full session list regardless of the strip limit.
+  const [tabMenuOpen, setTabMenuOpen] = createSignal(false);
+  const [sessionMenu, setSessionMenu] = createSignal<SessionTab[]>([]);
+  const closeTabMenu = () => setTabMenuOpen(false);
 
   const refreshSessionTabs = async (): Promise<void> => {
     try {
       const list = await apiJson<Array<{ id: string; title: string; messageCount: number; lastActivity?: string | null }>>("/api/sessions");
-      // Always include the current session even if not yet persisted, and never
-      // show more than 7; the strip is scrollable.
       const ordered = [...list].sort((a, b) => (b.lastActivity ?? b.id).localeCompare(a.lastActivity ?? a.id));
       setSessionTabs(() => {
         const mine = ordered.find((s) => s.id === session);
@@ -275,6 +277,7 @@ export default function App() {
         const rest = ordered.filter((s) => s.id !== session).slice(0, 6);
         return [cur, ...rest].map((s) => ({ id: s.id, title: s.title, messageCount: s.messageCount ?? 0 }));
       });
+      setSessionMenu(ordered.map((s) => ({ id: s.id, title: s.title, messageCount: s.messageCount ?? 0 })));
     } catch { /* strip falls back to just the current tab */ }
   };
 
@@ -355,6 +358,12 @@ export default function App() {
   window.addEventListener("keydown", keyHandler);
   onCleanup(() => window.removeEventListener("keydown", keyHandler));
 
+  // Close the "+" menu on Escape and on any click outside it.
+  const tabMenuKey = (e: KeyboardEvent) => { if (e.key === "Escape") setTabMenuOpen(false); };
+  window.addEventListener("keydown", tabMenuKey);
+  window.addEventListener("mousedown", (ev) => { if (!(ev.target as HTMLElement | null)?.closest(".chat-tab-new-wrap")) setTabMenuOpen(false); });
+  onCleanup(() => window.removeEventListener("keydown", tabMenuKey));
+
   // ---- Pop-out routes: render only the popped-out panel ----
   if (popoutKind === "terminal") {
     return (
@@ -398,7 +407,25 @@ export default function App() {
               </div>
             )}
           </For>
-          <button class="chat-tab-new" title="New agent session (fork current)" onClick={() => void forkSession()}>+</button>
+          <div class="chat-tab-new-wrap">
+            <button class="chat-tab-new" title="Open recent session / fork current" onClick={() => setTabMenuOpen(!tabMenuOpen())}>+</button>
+            <Show when={tabMenuOpen()}>
+              <div class="chat-tab-menu" role="menu">
+                <button class="chat-tab-menu-item chat-tab-menu-primary" onClick={() => { closeTabMenu(); void forkSession(); }}>
+                  <span>New session (fork current)</span>
+                </button>
+                <div class="chat-tab-menu-sep">open recent</div>
+                <For each={sessionMenu()}>
+                  {(s) => (
+                    <button class="chat-tab-menu-item" classList={{ "chat-tab-menu-cur": s.id === session }} onClick={() => { closeTabMenu(); openSession(s.id); }}>
+                      <span class="chat-tab-menu-title">{s.title || s.id.slice(0, 10)}</span>
+                      <span class="chat-tab-menu-meta">{s.messageCount} msg</span>
+                    </button>
+                  )}
+                </For>
+              </div>
+            </Show>
+          </div>
         </div>
         <span class="header-file">{activeFile()}</span>
       </header>
