@@ -335,6 +335,12 @@ export async function chat(
   opts?: { baseUrl?: string; think?: string; numPredict?: number; numCtx?: number; timeoutMs?: number; keepAlive?: number | string; tools?: unknown[]; onDelta?: (delta: string, kind?: "content" | "reasoning") => void }
 ): Promise<ChatResult> {
   const baseUrl = opts?.baseUrl ?? process.env.EH_OLLAMA_URL ?? "http://127.0.0.1:11434";
+  // Zero-download policy: Ollama implicitly PULLS a missing tag over the
+  // network. EHC never downloads - verify the model exists locally first.
+  const installed = await listModels(baseUrl);
+  if (installed.length > 0 && !installed.some((m) => m.id === model)) {
+    return { ok: false, content: "", model, error: `model "${model}" is not installed in Ollama - install it yourself first (ollama pull ${model}); EHC never downloads models` };
+  }
   const think = opts?.think ?? "medium";
   const system = THINK_HINTS[think] ?? THINK_HINTS.medium;
   const thinkKey = `${baseUrl}|${model}`;

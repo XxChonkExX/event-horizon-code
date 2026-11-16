@@ -22,9 +22,23 @@ Ships as an Electron app (Windows, Linux, macOS) with a workbench UI modelled on
 ## Requirements
 
 - **Node.js 20+** (Electron 42, npm packages)
-- **Windows 10/11, Linux, or macOS** (prebuilt `node-pty` and engine templates included; the inference engine binary is machine-specific — see [Engine](#engine-setup) below).
+- **Windows 10/11, Linux, or macOS** (prebuilt `node-pty` and engine templates included; the inference engine binary is machine-specific - see [Engine](#engine-setup) below).
 - A model: either a **GGUF** for the bundled engine *(e.g. `huihui-qwen3-4b-abliterated-v2-q8_0.gguf`, `Qwen3-4B`, `DeepSeek-Coder`, `Llama-3-8B-Instruct`, `Gemma-3-12b`)* or **Ollama** or a **BYOK** OpenAI-compatible endpoint.
 - Optional: **Python 3.8+** (AfterImage engram, TI-85 verification), **Ollama**, **ripgrep / fd** (JS fallbacks are built in if absent).
+
+## Zero copy · zero download · zero dependency
+
+The inference stack is yours. EHC **never downloads a model, never copies weights, never installs a dependency on your behalf** - if a model tag is missing, EHC tells you and stops (Ollama's implicit auto-pull is explicitly blocked in the model router).
+
+No Ollama? You don't need it. The model ladder works without it on every platform:
+
+1. **Bundled engine** - llama.cpp's `llama-server` (the chonkllama fork, Vulkan/Chonk pool on Windows) speaking the OpenAI dialect on a local port. The binary is staged per machine (`scripts/prepare-engine.mjs`); on Linux/macOS a platform `llama-server` build takes its place.
+2. **Your own llama.cpp** - point `engine.binaryPath` in `.harness/config.json` at any `llama-server` you built (Linux, macOS, Windows - same OpenAI dialect).
+3. **BYOK** - any OpenAI-compatible endpoint: a self-hosted `llama-server`, LM Studio, vLLM, llamafile. One API key field, nothing else.
+
+Ollama is a *convenience*, not a requirement (native Linux/macOS/Windows builds exist if you want it).
+
+Roadmap (post-alpha): Linux/macOS engine staging in the packer, an [Omarchy](https://omarchy.org) shell plugin (bar widget + session menu driven by the local runtime API), speech-to-text sidecar.
 
 ## Quick start
 
