@@ -26,6 +26,9 @@ import Toasts, { type Toast } from "./Toasts";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
 const popoutKind = new URLSearchParams(location.search).get("popout");
+// The directory this session's tools/terminal/LSP operate in - from the session
+// row (its `worktree` column), never the session id itself.
+const bootWorktree = new URLSearchParams(location.search).get("wt") ?? ".";
 const SHADER_STEPS = [
   { label: "off", v: 0.0 },
   { label: "subtle", v: 0.35 },
@@ -69,6 +72,9 @@ export default function App() {
   const [think, setThink] = createSignal<string>("medium");
   const [open, setOpen] = createSignal<Record<Panel, boolean>>({ sidebar: true, chat: true, terminal: true, panels: true });
   const [shaderIdx, setShaderIdx] = createSignal(0); // default OFF - WebGL is opt-in
+  // Directory tools/terminal/LSP operate in: from the session row's worktree
+  // column (popouts receive it in the ?wt= query).
+  const [wt, setWt] = createSignal<string>(bootWorktree);
   // Resizable panel sizes (persisted; adaptive defaults for small displays)
   const [sidebarW, setSidebarW] = createSignal(loadNum("ehc.sidebarW", DEF_SIDEBAR, 160, 520));
   const [chatW, setChatW] = createSignal(loadNum("ehc.chatW", DEF_CHAT, 280, 800));
@@ -115,7 +121,7 @@ export default function App() {
         return;
       }
       toast("fresh session opened in a new window", "ok");
-      await popoutWindow("chat", d.id);
+      await popoutWindow("chat", d.id, wt());
     } catch { toast("could not create session - server unreachable", "error"); }
   };
 
@@ -154,7 +160,7 @@ export default function App() {
     try {
       const rt = await runtimeInfo();
       if (!rt) return;
-      const q = `auth=${encodeURIComponent(rt.password)}&worktree=${encodeURIComponent(session)}`;
+      const q = `auth=${encodeURIComponent(rt.password)}&worktree=${encodeURIComponent(wt())}`;
       es?.close();
       es = new EventSource(`${rt.baseUrl}/api/events?${q}`);
       es.addEventListener("token", (ev) => {
@@ -266,7 +272,7 @@ export default function App() {
       const res = await apiFetch("/api/acp/session/prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ params: { sessionId: session, text, think: lvl, model: model() || undefined, numPredict: tokens(), autoApprove: autoApprove(), worktree: session } })
+        body: JSON.stringify({ params: { sessionId: session, text, think: lvl, model: model() || undefined, numPredict: tokens(), autoApprove: autoApprove(), worktree: wt() } })
       });
       const data = (await res.json()) as { reply?: string; thinking?: string; model?: string; tokens?: number; attempts?: number; budget?: number };
       const esc = data.attempts && data.attempts > 1 ? ` · escalated x${data.attempts} to ${data.budget} tok` : "";
@@ -309,8 +315,11 @@ export default function App() {
 
   const refreshSessionTabs = async (): Promise<void> => {
     try {
-      const list = await apiJson<Array<{ id: string; title: string; messageCount: number; lastActivity?: string | null }>>("/api/sessions");
+      const list = await apiJson<Array<{ id: string; title: string; messageCount: number; lastActivity?: string | null; worktree?: string }>>("/api/sessions");
       const ordered = [...list].sort((a, b) => (b.lastActivity ?? b.id).localeCompare(a.lastActivity ?? a.id));
+      // Adopt the session row's real worktree directory (never the session id).
+      const mineRow = list.find((s) => s.id === session);
+      if (mineRow?.worktree) setWt(mineRow.worktree);
       setSessionTabs(() => {
         const mine = ordered.find((s) => s.id === session);
         const cur = mine ?? { id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 };
@@ -348,25 +357,21 @@ export default function App() {
 
   // Fork this session and open the branch in a second window: two agents, two
   // approaches, one original (multi-window parallel work).
-  const forkSession = async () => {
+  // "+" opens a brand-new empty session in THIS window. Forks live in the
+  // Sessions panel where they are labeled - a fork-per-click chain produced a
+  // pile of "session (fork) (fork)" junk nobody asked for.
+  const newSessionHere = async (): Promise<void> => {
     try {
-      const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-      const d = (await r.json()) as { sessionId?: string; error?: string };
-      if (d.sessionId) {
-        toast(`session forked -> ${d.sessionId.slice(0, 14)} (switched this window)`, "ok");
-        openSession(d.sessionId);
-      } else {
-        const why = `fork failed: ${d.error ?? "?"}`;
+      const r = await apiFetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const d = (await r.json()) as { id?: string; error?: string };
+      if (!d.id) {
+        const why = `could not create session: ${d.error ?? "?"}`;
         toast(why, "error");
-        // Fixed-position toasts can be displaced by the compositor splay; the
-        // transcript is in-flow layout, so echo failures there too - readable
-        // whenever the conversation pane paints.
         setMessages((m) => [...m, { role: "tool", text: why }]);
+        return;
       }
-    } catch {
-      toast("fork failed - server unreachable", "error");
-      setMessages((m) => [...m, { role: "tool", text: "fork failed - server unreachable" }]);
-    }
+      openSession(d.id);
+    } catch { toast("could not create session - server unreachable", "error"); }
   };
 
   const checkpointSession = async () => {
@@ -383,7 +388,7 @@ export default function App() {
   if (popoutKind === "terminal") {
     return (
       <div class="popout-root">
-        <Terminal worktree={session} />
+        <Terminal worktree={wt()} />
       </div>
     );
   }
@@ -429,9 +434,9 @@ export default function App() {
           </Show>
           <button
             class="chat-tab-new"
-            title="Fork current session (switches this window to the fork)"
-            aria-label="Fork current session"
-            onClick={() => void forkSession()}
+            title="New empty session (switches this window)"
+            aria-label="New empty session"
+            onClick={() => void newSessionHere()}
           >+</button>
           <button
             class="chat-tab-new"
@@ -455,7 +460,7 @@ export default function App() {
 
       <section class="main-area">
         <Tabs files={openFiles} active={activeFile} onSelect={setActiveFile} onClose={closeFile} />
-        <MonacoMount file={activeFile()} />
+        <MonacoMount file={activeFile()} worktree={wt()} />
         <Show when={open().panels}>
           <div class="panels">
             <div class="panel-tabs" role="tablist">
@@ -490,9 +495,9 @@ export default function App() {
           <div class="term-wrap">
             <div class="ehc-toolbar">
               <span>Terminal</span>
-              <button title="Pop out to window" onClick={() => void popoutWindow("terminal", session)}>⧉</button>
+              <button title="Pop out to window" onClick={() => void popoutWindow("terminal", session, wt())}>⧉</button>
             </div>
-            <Terminal worktree={session} />
+            <Terminal worktree={wt()} />
           </div>
         </footer>
       </Show>

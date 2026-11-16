@@ -10,7 +10,7 @@ declare global {
       version: string;
       getRuntime: () => Promise<RuntimeInfo>;
       pickFolder: () => Promise<string | null>;
-      popoutWindow: (kind: string, sessionId: string) => Promise<number>;
+      popoutWindow: (kind: string, sessionId: string, worktree?: string) => Promise<number>;
       growWindow: (targetWidth: number) => Promise<boolean>;
       nudgeWindow: () => Promise<boolean>;
     };
@@ -57,9 +57,9 @@ export async function pickFolder(): Promise<string | null> {
   return null;
 }
 
-export async function popoutWindow(kind: string, sessionId: string): Promise<void> {
+export async function popoutWindow(kind: string, sessionId: string, worktree?: string): Promise<void> {
   if (typeof window !== "undefined" && window.eventhorizon?.popoutWindow) {
-    await window.eventhorizon.popoutWindow(kind, sessionId);
+    await window.eventhorizon.popoutWindow(kind, sessionId, worktree);
   }
 }
 

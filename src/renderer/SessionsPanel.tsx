@@ -92,7 +92,7 @@ export default function SessionsPanel() {
     } catch { setCheckpoints([]); }
   };
 
-  const openWindow = (id: string): void => { void popoutWindow("chat", id); };
+  const openWindow = (id: string, worktree?: string): void => { void popoutWindow("chat", id, worktree); };
 
   const fork = async (id: string, atSeq?: number, label?: string): Promise<void> => {
     setBusy(true);
@@ -105,7 +105,7 @@ export default function SessionsPanel() {
       const d = (await r.json()) as { sessionId?: string; error?: string };
       if (d.sessionId) {
         setNote(`Forked -> ${d.sessionId}`);
-        openWindow(d.sessionId);
+        openWindow(d.sessionId, sessions().find((x) => x.id === id)?.worktree);
         await refresh();
       } else setNote(d.error ?? "fork failed");
     } finally { setBusy(false); }
@@ -187,7 +187,7 @@ export default function SessionsPanel() {
               <span class="session-meta">{s.messageCount} msg - {ago(s.lastActivity ?? s.created)}</span>
             </div>
             <div class="checks">
-              <button disabled={busy()} onClick={() => openWindow(s.id)}>Open window</button>
+              <button disabled={busy()} onClick={() => openWindow(s.id, s.worktree)}>Open window</button>
               <button disabled={busy()} onClick={() => void fork(s.id)}>Fork</button>
               <button disabled={busy()} onClick={() => void openCheckpoints(s.id)}>{expanded() === s.id ? "Hide turns" : "Turns"}</button>
               <button disabled={busy()} onClick={() => rename(s.id, s.title)}>Rename</button>

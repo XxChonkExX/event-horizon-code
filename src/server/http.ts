@@ -37,7 +37,7 @@ import { listVoices, speak, ttsDoctor } from "./tts";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
-export type ServerOpts = { port: number; password: string; host?: string };
+export type ServerOpts = { port: number; password: string; host?: string; fatalOnPortConflict?: boolean };
 
 // ACP session state that outlives a single request:
 //  - sessionWorktrees: the directory a session operates in (for terminal/create
@@ -1156,8 +1156,14 @@ export function startHttpServer(opts: ServerOpts): http.Server {
 
   server.listen(opts.port, host, () => {
     if (process.env.EH_DEBUG === "1") console.log(`[ehc] http listening on http://${host}:${opts.port}`);
+    server.emit("ehc-listening");
   });
   server.on("error", (err: NodeJS.ErrnoException) => {
+    if (opts.fatalOnPortConflict === false) {
+      // Embedded runtime: the shell retries on another port - never exit the app.
+      server.emit("ehc-listen-error", err);
+      return;
+    }
     if (err.code === "EADDRINUSE") {
       console.error(`[ehc] FATAL: port ${opts.port} already in use — a stale instance is likely holding it.`);
       console.error(`[ehc] Find it:  Get-NetTCPConnection -LocalPort ${opts.port} -State Listen | Select-Object OwningProcess`);

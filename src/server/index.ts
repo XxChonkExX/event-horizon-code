@@ -2,6 +2,9 @@
 // Sessions, worktrees, tools, permissions, model router, engram service, SSE.
 
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { loadLanguagePacks, lspManager } from "./lsp";
 import { runToolchainDoctor } from "./toolchain";
 import { detectPackageManager } from "./packageManager";
@@ -13,11 +16,26 @@ import { audit } from "./audit";
 import { initStore } from "./store";
 import { broadcast } from "./sse";
 
-export async function startLocalServer(opts: { port: number; password: string }) {
+export async function startLocalServer(opts: { port: number; password: string; fatalOnPortConflict?: boolean }) {
   // Start minimal HTTP (127.0.0.1, Basic auth). Light, training-friendly.
   const storeMode = initStore();
   const httpServer = startHttpServer(opts);
+  // Wait for the socket so callers (and the descriptor below) can trust it.
+  await new Promise<void>((resolve, reject) => {
+    if (httpServer.listening) { resolve(); return; }
+    httpServer.once("ehc-listening", () => resolve());
+    httpServer.once("ehc-listen-error", (err: Error) => reject(err));
+    setTimeout(() => reject(new Error(`listen timeout on port ${opts.port}`)), 4000);
+  });
   audit({ tool: "server.start", note: `port ${opts.port} store=${storeMode.mode}` });
+  // Runtime descriptor: lets the Electron shell attach to THIS server instead
+  // of forking a second one on a random port. Two servers on one SQLite file
+  // made "works via curl, not in the app" a recurring mystery.
+  try {
+    const descriptor = path.join(os.homedir(), ".eventhorizon", "runtime.json");
+    fs.mkdirSync(path.dirname(descriptor), { recursive: true });
+    fs.writeFileSync(descriptor, JSON.stringify({ port: opts.port, password: opts.password, pid: process.pid, startedAt: new Date().toISOString() }, null, 2));
+  } catch { /* best-effort */ }
   const packs = loadLanguagePacks();
   // Wire diagnostics to SSE broadcast
   lspManager.onDiagnostics = (worktree, lang, payload) => {

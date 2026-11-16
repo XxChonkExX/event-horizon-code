@@ -11,6 +11,24 @@ import path from "node:path";
 import { spawn, ChildProcess } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
+// Local JS language servers (e.g. typescript-language-server) are devDependencies:
+// resolve the package's JS entry and run it with node — under Electron the main
+// process's node is electron itself, so set ELECTRON_RUN_AS_NODE. Falls back to
+// PATH (with node_modules/.bin prepended) for globally installed tools.
+function resolveLspCommand(cmd: string, args: string[]): { file: string; args: string[]; env: NodeJS.ProcessEnv } {
+  const localJs = ["lib/cli.mjs", "lib/cli.js", "dist/cli.mjs", "dist/cli.js", "bin/cli.js"]
+    .map((p) => path.join(process.cwd(), "node_modules", cmd, p))
+    .find((p) => fs.existsSync(p));
+  if (localJs) {
+    const isElectron = !!process.versions.electron;
+    const env = { ...process.env };
+    if (isElectron) env.ELECTRON_RUN_AS_NODE = "1";
+    return { file: process.execPath, args: [localJs, ...args], env };
+  }
+  const binDir = path.join(process.cwd(), "node_modules", ".bin");
+  return { file: cmd, args, env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` } };
+}
+
 export type LanguagePack = {
   id: string;
   displayName: string;
@@ -318,11 +336,12 @@ export class LspManager {
     }
     const rootUri = pathToFileURL(worktree).toString();
     const [cmd, ...args] = pack.lsp.command;
-    const proc = spawn(cmd, args, {
+    const resolved = resolveLspCommand(cmd, args);
+    const proc = spawn(resolved.file, resolved.args, {
       cwd: worktree,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: { ...process.env, PATH: process.env.PATH ?? "" },
+      env: resolved.env,
     });
     const entry: ServerEntry = {
       proc, conn: undefined as never, lang: pack.id, worktree, lastUsed: Date.now(),

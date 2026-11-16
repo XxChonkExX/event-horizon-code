@@ -4,12 +4,47 @@
 
 import { app, BrowserWindow, Menu, ipcMain, dialog, screen } from "electron";
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import crypto from "node:crypto";
 import { startLocalServer } from "../server/index";
 
-const port = 8800 + Math.floor(Math.random() * 800);
-const password = crypto.randomBytes(24).toString("hex");
-let runtime: { baseUrl: string; password: string; port: number } | null = null;
+type Runtime = { baseUrl: string; password: string; port: number };
+let runtime: Runtime | null = null;
+
+// Attach-first: if a runtime is already serving (headless `npm run serve`, or
+// a descriptor left by a previous window), reuse it instead of forking a
+// second server on a random port. Two servers on one SQLite file made "works
+// via curl, not in the app" a recurring mystery.
+async function resolveRuntime(): Promise<Runtime> {
+  const descriptorPath = path.join(os.homedir(), ".eventhorizon", "runtime.json");
+  try {
+    const d = JSON.parse(fs.readFileSync(descriptorPath, "utf8")) as { port?: number; password?: string };
+    if (typeof d.port === "number" && typeof d.password === "string") {
+      const r = await fetch(`http://127.0.0.1:${d.port}/global/health`, {
+        headers: { authorization: "Basic " + Buffer.from(`eventhorizon:${d.password}`).toString("base64") },
+        signal: AbortSignal.timeout(1500),
+      });
+      if (r.ok) {
+        console.log(`[ehc] attaching to existing runtime on port ${d.port}`);
+        return { baseUrl: `http://127.0.0.1:${d.port}`, password: d.password, port: d.port };
+      }
+    }
+  } catch { /* stale or missing descriptor: spawn our own */ }
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const port = 8800 + Math.floor(Math.random() * 800);
+    const password = crypto.randomBytes(24).toString("hex");
+    try {
+      await startLocalServer({ port, password });
+      console.log(`[ehc] spawned embedded runtime on port ${port}`);
+      return { baseUrl: `http://127.0.0.1:${port}`, password, port };
+    } catch (e) {
+      console.error(`[ehc] runtime spawn failed on port ${port} (attempt ${attempt + 1})`, e);
+    }
+  }
+  throw new Error("[ehc] could not start or attach to a local runtime");
+}
 
 // GPU compositing evicts frames from Chromium's compositor while the training
 // workload depletes the primary GPU's VRAM. When it evicts EHC's frames, the
@@ -50,8 +85,7 @@ function hardenWindow(win: BrowserWindow, label: string): void {
 if (!app.requestSingleInstanceLock()) app.quit();
 
 app.whenReady().then(async () => {
-  await startLocalServer({ port, password });
-  runtime = { baseUrl: `http://127.0.0.1:${port}`, password, port };
+  runtime = await resolveRuntime();
   ipcMain.handle("runtime:info", () => runtime);
   // Folder picker for the Model Manager (renderer has no fs access by design).
   ipcMain.handle("dialog:pickFolder", async () => {
@@ -60,7 +94,7 @@ app.whenReady().then(async () => {
     return r.canceled ? null : r.filePaths[0];
   });
   // Pop-out windows: terminal / chat in their own OS window, same session.
-  ipcMain.handle("window:popout", (_e, kind: string, sessionId: string) => {    const win = new BrowserWindow({
+  ipcMain.handle("window:popout", (_e, kind: string, sessionId: string, worktree?: string) => {    const win = new BrowserWindow({
       width: 980, height: 720,
       title: `Event Horizon — ${kind}`,
       backgroundColor: WINDOW_BACKGROUND,
@@ -71,7 +105,7 @@ app.whenReady().then(async () => {
         preload: path.join(__dirname, "../preload/index.js"),
       }
     });
-    const query = `popout=${encodeURIComponent(kind)}&session=${encodeURIComponent(sessionId ?? "default")}`;
+    const query = `popout=${encodeURIComponent(kind)}&session=${encodeURIComponent(sessionId ?? "default")}${worktree ? `&wt=${encodeURIComponent(worktree)}` : ""}`;
     const devUrl = process.env.ELECTRON_RENDERER_URL;
     if (devUrl) void win.loadURL(`${devUrl}/?${query}`);
     else void win.loadFile(path.join(__dirname, "../renderer/index.html"), { search: query });
@@ -137,15 +171,15 @@ app.whenReady().then(async () => {
   // it a made-up id: a window pinned to a non-existent session fails every
   // fork/checkpoint/memory call with "no such session". Ask the local server
   // for the real newest session; create one if the store is empty.
-  async function resolveBootSessionId(): Promise<string> {
-    const auth = "Basic " + Buffer.from(`eventhorizon:${password}`).toString("base64");
+  async function resolveBootSessionId(rt: Runtime): Promise<string> {
+    const auth = "Basic " + Buffer.from(`eventhorizon:${rt.password}`).toString("base64");
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/sessions`, { headers: { authorization: auth } });
+      const r = await fetch(`http://127.0.0.1:${rt.port}/api/sessions`, { headers: { authorization: auth } });
       const list = (await r.json()) as Array<{ id: string; lastActivity?: string | null; created?: string }>;
       if (Array.isArray(list) && list.length > 0) {
         return [...list].sort((a, b) => (b.lastActivity ?? b.created ?? "").localeCompare(a.lastActivity ?? a.created ?? ""))[0].id;
       }
-      const c = await fetch(`http://127.0.0.1:${port}/api/sessions`, { method: "POST", headers: { authorization: auth, "content-type": "application/json" }, body: "{}" });
+      const c = await fetch(`http://127.0.0.1:${rt.port}/api/sessions`, { method: "POST", headers: { authorization: auth, "content-type": "application/json" }, body: "{}" });
       const s = (await c.json()) as { id?: string };
       if (s.id) return s.id;
     } catch (e) {
@@ -153,7 +187,7 @@ app.whenReady().then(async () => {
     }
     return "default";
   }
-  const bootSession = await resolveBootSessionId();
+  const bootSession = await resolveBootSessionId(runtime);
   openWindow(bootSession);
-  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) void resolveBootSessionId().then(openWindow); });
+  app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0 && runtime) void resolveBootSessionId(runtime).then(openWindow); });
 });
