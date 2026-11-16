@@ -28,6 +28,71 @@ export async function listModels(ollamaUrl = "http://127.0.0.1:11434"): Promise<
   });
 }
 
+// ---- capabilities: what a model can actually do (tools / vision / thinking) ----
+//
+// Ollama reports this via POST /api/show {model} -> capabilities[]. The bundled
+// engine reports it via GET /props (modalities + chat_template_caps). Results are
+// cached: the UI asks on every model switch and this must stay cheap.
+
+export type ModelCaps = { model: string; capabilities: string[]; source: "engine" | "ollama" | "unknown"; note?: string };
+const capsCache = new Map<string, { at: number; caps: ModelCaps }>();
+
+export async function modelCapabilities(model: string, opts?: { engineBase?: string | null; refresh?: boolean }): Promise<ModelCaps> {
+  const key = `${opts?.engineBase ? "engine" : "ollama"}:${model}`;
+  const hit = capsCache.get(key);
+  if (hit && !opts?.refresh && Date.now() - hit.at < 60_000) return hit.caps;
+
+  // Bundled engine lane: everything is served by the running sidecar, so the
+  // engine's own /props is the truth regardless of the requested model name.
+  if (opts?.engineBase) {
+    try {
+      const base = opts.engineBase.replace(/\/v1$/, "");
+      const res = await fetch(`${base}/props`, { signal: AbortSignal.timeout(4000) });
+      const j = (await res.json()) as {
+        // llama.cpp builds differ: modalities is either an array of names or an
+        // object of { vision: bool, audio: bool, ... } flags.
+        modalities?: string[] | Record<string, boolean>;
+        chat_template_caps?: { supports_tools?: boolean };
+        default_generation_settings?: { n_ctx?: number };
+      };
+      const capabilities: string[] = ["completion"];
+      const mods = j.modalities;
+      const has = (name: string): boolean =>
+        Array.isArray(mods) ? mods.includes(name) : Boolean(mods && typeof mods === "object" && (mods as Record<string, boolean>)[name]);
+      if (has("vision")) capabilities.push("vision");
+      if (has("audio")) capabilities.push("audio");
+      if (j.chat_template_caps?.supports_tools) capabilities.push("tools");
+      const caps: ModelCaps = { model, capabilities, source: "engine", note: `context ${j.default_generation_settings?.n_ctx ?? "?"}` };
+      capsCache.set(key, { at: Date.now(), caps });
+      return caps;
+    } catch {
+      const caps: ModelCaps = { model, capabilities: [], source: "unknown", note: "engine not reachable" };
+      return caps;
+    }
+  }
+
+  // Ollama lane.
+  try {
+    const res = await fetch(`${OLLAMA_DEFAULT}/api/show`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    const j = (await res.json()) as { capabilities?: string[]; details?: { parameter_size?: string } };
+    const caps: ModelCaps = { model, capabilities: j.capabilities ?? [], source: "ollama", note: j.details?.parameter_size };
+    capsCache.set(key, { at: Date.now(), caps });
+    return caps;
+  } catch (e) {
+    const caps: ModelCaps = { model, capabilities: [], source: "unknown", note: `probe failed: ${String((e as Error).message ?? e).slice(0, 60)}` };
+    capsCache.set(key, { at: Date.now(), caps });
+    return caps;
+  }
+}
+
+const OLLAMA_DEFAULT = process.env.EH_OLLAMA_URL ?? "http://127.0.0.1:11434";
+
 // Normalize whatever shape we stored (our ToolCall {id,name,args}, or an OpenAI
 // {id,type,function:{name,arguments}}) into the wire format every backend wants.
 // llama-server rejects a tool_calls item with a missing `type`, which is exactly
@@ -70,14 +135,37 @@ function toOpenAIMessages(messages: ChatMessage[], system: string) {
   return out;
 }
 
+// Incremental tool-call assembly for streaming responses: OpenAI-compatible
+// servers send name/arguments in fragments keyed by index.
+type ToolAcc = { id?: string; name?: string; args?: string };
+
+function accumulateToolCalls(acc: Map<number, ToolAcc>, deltas: unknown): void {
+  if (!Array.isArray(deltas)) return;
+  for (const tc of deltas as Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>) {
+    const i = tc.index ?? 0;
+    const cur = acc.get(i) ?? {};
+    if (tc.id) cur.id = tc.id;
+    if (tc.function?.name) cur.name = (cur.name ?? "") + tc.function.name;
+    if (tc.function?.arguments) cur.args = (cur.args ?? "") + tc.function.arguments;
+    acc.set(i, cur);
+  }
+}
+
+function toolCallsFrom(acc: Map<number, ToolAcc>): ToolCall[] {
+  return Array.from(acc.values())
+    .filter((t) => t.name)
+    .map((t) => ({ id: t.id, name: t.name ?? "", args: parseArgs(t.args) }));
+}
+
 export async function chatOpenAI(
   model: string,
   messages: ChatMessage[],
-  opts: { baseUrl: string; apiKey: string; think?: string; numPredict?: number; timeoutMs?: number; tools?: unknown[] }
+  opts: { baseUrl: string; apiKey: string; think?: string; numPredict?: number; timeoutMs?: number; tools?: unknown[]; onDelta?: (delta: string, kind?: "content" | "reasoning") => void }
 ): Promise<ChatResult> {
   const url = `${opts.baseUrl.replace(/\/+$/, "")}/chat/completions`;
   const system = THINK_HINTS[opts.think ?? "medium"] ?? THINK_HINTS.medium;
   try {
+    const streaming = Boolean(opts.onDelta);
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
@@ -85,13 +173,51 @@ export async function chatOpenAI(
         model,
         messages: toOpenAIMessages(messages, system),
         max_tokens: opts.numPredict ?? 400,
-        stream: false,
+        stream: streaming,
         ...(opts.tools?.length ? { tools: opts.tools } : {}),
       }),
       signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
     });
     if (!res.ok) {
       return { ok: false, content: "", model, error: `openai-compat ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    }
+    // ---- streaming path: emit deltas as they arrive, assemble the same result ----
+    if (streaming && res.body) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let text = "";
+      let thinking = "";
+      let tokens: number | undefined;
+      const acc = new Map<number, ToolAcc>();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          try {
+            const j = JSON.parse(payload) as {
+              choices?: Array<{ delta?: { content?: string; reasoning_content?: string; tool_calls?: unknown } }>;
+              usage?: { completion_tokens?: number };
+            };
+            const delta = j.choices?.[0]?.delta;
+            if (delta?.content) { text += delta.content; opts.onDelta?.(delta.content, "content"); }
+            // Reasoning streams first on thinking models - surface it separately
+            // so the UI can show a muted "thinking" line instead of silence.
+            if (delta?.reasoning_content) { thinking += delta.reasoning_content; opts.onDelta?.(delta.reasoning_content, "reasoning"); }
+            if (delta?.tool_calls) accumulateToolCalls(acc, delta.tool_calls);
+            if (j.usage?.completion_tokens) tokens = j.usage.completion_tokens;
+          } catch { /* partial or non-JSON keepalive line */ }
+        }
+      }
+      const toolCalls = toolCallsFrom(acc);
+      return { ok: true, content: text, thinking: thinking || undefined, model, tokens, toolCalls: toolCalls.length ? toolCalls : undefined };
     }
     const j = (await res.json()) as {
       choices?: Array<{ message?: { content?: string; reasoning_content?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: unknown } }> } }>;
@@ -179,7 +305,8 @@ export async function chat(
   // keepAlive: seconds (0 = unload immediately) or a duration string like "5m".
   // numCtx: context window. Ollama's default for vision-capable models can be
   // 131k, which allocates large CPU buffers — cap it (8k is ample for coding).
-  opts?: { baseUrl?: string; think?: string; numPredict?: number; numCtx?: number; timeoutMs?: number; keepAlive?: number | string; tools?: unknown[] }
+  // onDelta: stream tokens as they arrive (NDJSON lines from /api/chat).
+  opts?: { baseUrl?: string; think?: string; numPredict?: number; numCtx?: number; timeoutMs?: number; keepAlive?: number | string; tools?: unknown[]; onDelta?: (delta: string, kind?: "content" | "reasoning") => void }
 ): Promise<ChatResult> {
   const baseUrl = opts?.baseUrl ?? process.env.EH_OLLAMA_URL ?? "http://127.0.0.1:11434";
   const think = opts?.think ?? "medium";
@@ -194,7 +321,7 @@ export async function chat(
     const body: Record<string, unknown> = {
       model,
       messages: [{ role: "system", content: system }, ...mapped],
-      stream: false,
+      stream: Boolean(opts?.onDelta),
       keep_alive: opts?.keepAlive ?? 0,
       options: { num_predict: opts?.numPredict ?? 256, num_ctx: opts?.numCtx ?? 8192 },
     };
@@ -221,6 +348,42 @@ export async function chat(
     }
     if (!res.ok) {
       return { ok: false, content: "", model, error: `ollama ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    }
+    // ---- streaming path: NDJSON lines, one partial message each ----
+    if (opts?.onDelta && res.body) {
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let content = "";
+      let thinking = "";
+      let evalCount: number | undefined;
+      const toolCalls: ToolCall[] = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line) continue;
+          try {
+            const j = JSON.parse(line) as {
+              message?: { content?: string; thinking?: string; tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: unknown } }> };
+              done?: boolean;
+              eval_count?: number;
+            };
+            const d = j.message;
+            if (d?.content) { content += d.content; opts.onDelta(d.content, "content"); }
+            if (d?.thinking) { thinking += d.thinking; opts.onDelta(d.thinking, "reasoning"); }
+            for (const tc of d?.tool_calls ?? []) {
+              if (tc.function?.name) toolCalls.push({ id: tc.id, name: tc.function.name, args: parseArgs(tc.function.arguments) });
+            }
+            if (j.eval_count) evalCount = j.eval_count;
+          } catch { /* partial line */ }
+        }
+      }
+      return { ok: true, content, thinking: thinking || undefined, model, tokens: evalCount, toolCalls: toolCalls.length ? toolCalls : undefined };
     }
     // Reasoning models (gemma4, qwen3…) put chain-of-thought in message.thinking, answer in message.content.
     const j = (await res.json()) as {

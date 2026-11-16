@@ -42,6 +42,9 @@ export type AgentTurnParams = {
   isCancelled?: () => boolean;
   // Progress callback for live UI (SSE already broadcast by the ACP layer).
   onStep?: (step: { name: string; ok: boolean; needsApproval: boolean; step: number }) => void;
+  // Token stream: called with each delta as the model generates (both lanes).
+  // kind="reasoning" is the chain-of-thought channel on thinking models.
+  onDelta?: (delta: string, kind?: "content" | "reasoning") => void;
 };
 
 export type AgentTurnResult = {
@@ -171,16 +174,16 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
       if (!secret?.apiKey || !secret.baseUrl) {
         return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
       }
-      return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised });
+      return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, onDelta: p.onDelta });
     }
     if (engineUp) {
       // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
-      return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised });
+      return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, onDelta: p.onDelta });
     }
     if (usedModel) {
       // Keep the model warm during a conversation: agent loops make
       // several calls per prompt and a cold reload costs minutes.
-      return chat(usedModel, msgs, { think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, keepAlive: "5m" });
+      return chat(usedModel, msgs, { think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, keepAlive: "5m", onDelta: p.onDelta });
     }
     return { ok: false, content: "", model: "none", error: "no model selected" };
   };

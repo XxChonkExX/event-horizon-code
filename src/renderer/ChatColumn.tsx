@@ -6,7 +6,9 @@
 // which this component parses into structured blocks: a collapsible tool-step
 // ledger, the markdown answer, and a collapsible thinking section.
 
-import { createSignal, For, Show, onMount, onCleanup, createMemo } from "solid-js";
+import { createSignal, For, Show, onMount, onCleanup, createMemo, createEffect } from "solid-js";
+import { apiJson } from "./api";
+import { whenVoicesReady, refreshSystemVoices, pickDefaultVoice, speakSystem, speakViaServer, stopSpeaking, stopAudio, speechSupported, type SpeechVoice } from "./speech";
 
 export type ChatMsg = { role: "user" | "assistant" | "tool"; text: string };
 
@@ -150,10 +152,38 @@ export default function ChatColumn(props: {
   autoApprove: () => boolean;
   setAutoApprove: (v: boolean) => void;
   sending?: () => boolean;
+  liveText?: () => string;
+  liveThink?: () => string;
+  liveTool?: () => string;
   compact?: boolean; // pop-out variant: hide detonation footer
 }) {
   let listRef: HTMLDivElement | undefined;
   let taRef: HTMLTextAreaElement | undefined;
+  const [slashOpen, setSlashOpen] = createSignal(false);
+  const [slashIdx, setSlashIdx] = createSignal(0);
+
+  // Slash commands: shown when the composer's current token starts with "/".
+  const SLASH_COMMANDS = [
+    { cmd: "/think:low", hint: "fastest - minimal reasoning" },
+    { cmd: "/think:medium", hint: "balanced (default)" },
+    { cmd: "/think:high", hint: "step by step, verify details" },
+    { cmd: "/think:max", hint: "thorough, checks its work" },
+  ];
+  const slashMatches = createMemo(() => {
+    const v = props.input();
+    const m = v.match(/(^|\s)(\/[a-z:]*)$/i);
+    if (!m) return [];
+    const frag = m[2].toLowerCase();
+    return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(frag));
+  });
+
+  const applySlash = (cmd: string): void => {
+    const v = props.input();
+    const m = v.match(/(^|\s)(\/[a-z:]*)$/i);
+    props.setInput(m ? v.slice(0, m.index) + m[1] + cmd + " " : `${cmd} ${v}`);
+    setSlashOpen(false);
+    taRef?.focus();
+  };
 
   // Keep the newest message in view; auto-grow the composer.
   onMount(() => {
@@ -170,15 +200,104 @@ export default function ChatColumn(props: {
   onMount(() => grow());
 
   const keydown = (e: KeyboardEvent): void => {
+    const matches = slashMatches();
+    if (matches.length && e.key === "ArrowDown") { e.preventDefault(); setSlashIdx((i) => (i + 1) % matches.length); return; }
+    if (matches.length && e.key === "ArrowUp") { e.preventDefault(); setSlashIdx((i) => (i - 1 + matches.length) % matches.length); return; }
+    if (matches.length && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+      e.preventDefault();
+      applySlash(matches[Math.min(slashIdx(), matches.length - 1)].cmd);
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       props.onSend();
       requestAnimationFrame(grow);
     }
+    if (e.key === "Escape") setSlashOpen(false);
   };
+
+  // Capability badges for the selected model (multimodal readiness at a glance).
+  const [caps, setCaps] = createSignal<string[]>([]);
+  const [capsNote, setCapsNote] = createSignal("");
+  createEffect(() => {
+    const m = props.model();
+    if (!m) { setCaps([]); setCapsNote(""); return; }
+    void (async () => {
+      try {
+        const d = await apiJson<{ capabilities: string[]; source: string; note?: string }>(`/api/models/capabilities?model=${encodeURIComponent(m)}`);
+        setCaps(d.capabilities ?? []);
+        setCapsNote(d.note ?? "");
+      } catch { setCaps([]); }
+    })();
+  });
+  const CAP_LABEL: Record<string, string> = { vision: "eyes", audio: "ears", tools: "tools", thinking: "thinking", completion: "", embedding: "embed", insert: "fim" };
+
+  // ---- speech: platform default adapter, with a swappable voice ----
+  const [voices, setVoices] = createSignal<SpeechVoice[]>([]);
+  const [voiceURI, setVoiceURI] = createSignal<string>(localStorage.getItem("ehc.ttsVoice") ?? "");
+  const [ttsAdapter, setTtsAdapter] = createSignal<string>("");
+  const [ttsNote, setTtsNote] = createSignal("");
+  const [speaking, setSpeaking] = createSignal(false);
+
+  onMount(() => {
+    void (async () => {
+      const [vs, plan] = await Promise.all([
+        whenVoicesReady(),
+        apiJson<{ preferred: string; platform: string; defaultMode: string }>("/api/tts/voices").catch(() => null),
+      ]);
+      setVoices(vs);
+      if (!voiceURI()) {
+        const def = pickDefaultVoice(vs);
+        if (def) setVoiceURI(def.id);
+      }
+      if (plan) {
+        setTtsAdapter(plan.preferred);
+        setTtsNote(plan.preferred === "system"
+          ? `system voices (${vs.length} available)`
+          : plan.defaultMode);
+      }
+    })();
+  });
+
+  const speak = async (text: string): Promise<void> => {
+    const clean = text.replace(/```[\s\S]*?```/g, " code block ").replace(/[#*`>]/g, " ").replace(/\s+/g, " ").trim();
+    if (!clean) return;
+    setSpeaking(true);
+    try {
+      // Windows default: OS voices (instant, no model). Otherwise the engine
+      // adapter (Pocket TTS) via the server.
+      if (ttsAdapter() === "system" || (ttsAdapter() === "" && speechSupported())) {
+        const r = speakSystem(clean, { voiceURI: voiceURI() });
+        if (!r.ok && ttsAdapter() !== "system") {
+          const s = await speakViaServer(clean, { voice: voiceURI() });
+          toastTts(s.ok ? "" : (s.error ?? "speech failed"));
+        } else if (!r.ok) {
+          toastTts(r.error ?? "speech failed");
+        }
+      } else {
+        const s = await speakViaServer(clean, { voice: voiceURI() });
+        if (!s.ok) toastTts(s.error ?? "speech failed");
+      }
+    } finally {
+      // Give the utterance a moment before clearing the speaking flag.
+      setTimeout(() => setSpeaking(false), 1200);
+    }
+  };
+  const toastTts = (msg: string): void => {
+    if (msg) window.dispatchEvent(new CustomEvent("ehc-toast", { detail: { text: msg, kind: "error" } }));
+  };
+  onCleanup(() => { stopSpeaking(); stopAudio(); });
 
   return (
     <aside class="chat">
+      <Show when={caps().filter((c) => CAP_LABEL[c]).length > 0}>
+        <div class="cap-row" title={`capabilities reported by the runtime${capsNote() ? ` (${capsNote()})` : ""}`}>
+          <span class="session-meta">{props.model()}</span>
+          <For each={caps().filter((c) => CAP_LABEL[c])}>
+            {(c) => <span class={`cap-badge cap-${c}`}>{CAP_LABEL[c]}</span>}
+          </For>
+        </div>
+      </Show>
       <div class="chat-scroll" ref={listRef}>
         <Show
           when={props.messages().length > 0}
@@ -208,7 +327,10 @@ export default function ChatColumn(props: {
                       <Show when={p.steps.length > 0}><ToolSteps steps={p.steps} /></Show>
                       <div class="msg-answer"><Markdown text={p.answer} /></div>
                       <Show when={p.thinking}><Thinking text={p.thinking} /></Show>
-                      <button class="copy-btn" title="Copy answer" onClick={() => void navigator.clipboard.writeText(p.answer)}>copy</button>
+                      <div class="msg-actions">
+                        <button class="copy-btn" title="Copy answer" onClick={() => void navigator.clipboard.writeText(p.answer)}>copy</button>
+                        <button class="copy-btn" title="Read aloud" onClick={() => void speak(p.answer)}>{speaking() ? "stop" : "speak"}</button>
+                      </div>
                     </div>
                   );
                 })()}
@@ -217,19 +339,49 @@ export default function ChatColumn(props: {
           </For>
         </Show>
         <Show when={props.sending?.()}>
-          <div class="msg msg-working">
-            <span class="working-dot" />
-            <span>working<span class="working-ellipsis" /></span>
-          </div>
+          <Show
+            when={props.liveText?.()}
+            fallback={
+              <div class="msg msg-working">
+                <span class="working-dot" />
+                <span>{props.liveTool?.() ? `running ${props.liveTool?.()}...` : <>working<span class="working-ellipsis" /></>}</span>
+              </div>
+            }
+          >
+            <div class="msg msg-assistant msg-live">
+              <Show when={props.liveThink?.()}>
+                <div class="live-think" title="model reasoning (live)">{props.liveThink?.()?.slice(-400)}</div>
+              </Show>
+              <div class="msg-answer"><Markdown text={props.liveText?.() ?? ""} /></div>
+              <span class="live-caret" />
+            </div>
+          </Show>
         </Show>
       </div>
+
+      <Show when={slashMatches().length > 0}>
+        <div class="slash-menu">
+          <For each={slashMatches()}>
+            {(c, i) => (
+              <button
+                class="slash-item"
+                classList={{ "slash-item-on": i() === Math.min(slashIdx(), slashMatches().length - 1) }}
+                onMouseDown={(e) => { e.preventDefault(); applySlash(c.cmd); }}
+              >
+                <span class="slash-cmd">{c.cmd}</span>
+                <span class="slash-hint">{c.hint}</span>
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
 
       <div class="composer">
         <textarea
           ref={taRef}
           rows={1}
           value={props.input()}
-          onInput={(e) => { props.setInput(e.target.value); grow(); }}
+          onInput={(e) => { props.setInput(e.target.value); setSlashOpen(true); setSlashIdx(0); grow(); }}
           onKeyDown={keydown}
           placeholder="Describe the task...  (/think:high to raise reasoning)"
           class="composer-input"
@@ -263,6 +415,25 @@ export default function ChatColumn(props: {
           auto-approve tools
         </label>
       </div>
+      {/* Voice picker: shown once we know the plan. The OS voice list can be
+          empty (Chromium populates it late), so the row stays usable with a
+          default entry and a refresh. */}
+      <Show when={ttsAdapter() !== "" || voices().length > 0}>
+        <div class="voice-row" title={`speech: ${ttsAdapter() || "auto"} - ${ttsNote()}`}>
+          <span class="session-meta">voice</span>
+          <select
+            value={voiceURI()}
+            onChange={(e) => { setVoiceURI(e.target.value); localStorage.setItem("ehc.ttsVoice", e.target.value); }}
+          >
+            <Show when={voices().length === 0}>
+              <option value="">{ttsAdapter() === "system" ? "(system default)" : "(adapter default voice)"}</option>
+            </Show>
+            <For each={voices()}>{(v) => <option value={v.id}>{v.name} ({v.lang})</option>}</For>
+          </select>
+          <button class="voice-test" title="Re-read the OS voice list" onClick={() => { const vs = refreshSystemVoices(); if (vs.length) setVoices(vs); }}>reload</button>
+          <button class="voice-test" onClick={() => void speak("Event Horizon online. Speech adapter ready.")}>test</button>
+        </div>
+      </Show>
     </aside>
   );
 }

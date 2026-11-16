@@ -22,7 +22,8 @@ import CommandPalette, { type Action } from "./CommandPalette";
 import ShaderBackground from "./ShaderBackground";
 import Splitter from "./Splitter";
 import ChatColumn, { type ChatMsg } from "./ChatColumn";
-import { apiFetch, apiJson, popoutWindow, growWindow } from "./api";
+import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo } from "./api";
+import Toasts, { type Toast } from "./Toasts";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
 const popoutKind = new URLSearchParams(location.search).get("popout");
@@ -48,8 +49,19 @@ const DEF_TERM = VH < 820 ? 170 : 240;
 
 export default function App() {
   const [messages, setMessages] = createSignal<ChatMsg[]>([]);
-  // Status notes (worktree/fork/checkpoint) surface in the chat as notices.
-  const notice = (text: string) => setMessages((m) => [...m, { role: "assistant" as const, text }]);
+  // Live token stream from the server (SSE "token"); cleared when the turn ends.
+  const [liveText, setLiveText] = createSignal("");
+  const [liveThink, setLiveThink] = createSignal("");
+  const [liveTool, setLiveTool] = createSignal("");
+  // Toasts: transient status the conversation does not need to remember.
+  const [toasts, setToasts] = createSignal<Toast[]>([]);
+  let toastId = 0;
+  const toast = (text: string, kind: Toast["kind"] = "info") => {
+    const id = ++toastId;
+    setToasts((t) => [...t, { id, text, kind }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5000);
+  };
+  const dismissToast = (id: number) => setToasts((t) => t.filter((x) => x.id !== id));
   const [input, setInput] = createSignal("");
   const [activeFile, setActiveFile] = createSignal<string>("src/server/index.ts");
   const [openFiles, setOpenFiles] = createSignal<string[]>(["src/server/index.ts"]);
@@ -99,7 +111,51 @@ export default function App() {
         .map((m) => ({ role: (m.role === "user" || m.role === "tool" ? m.role : "assistant") as ChatMsg["role"], text: m.content }));
       if (msgs.length) setMessages(msgs);
     } catch { /* fresh session */ }
+    void openEventStream();
+
+    // Child components (chat, panels) raise toasts through this event so they
+    // do not need the toast state threaded through every prop list.
+    const onToast = (ev: Event) => {
+      const d = (ev as CustomEvent<{ text?: string; kind?: Toast["kind"] }>).detail;
+      if (d?.text) toast(d.text, d.kind ?? "info");
+    };
+    window.addEventListener("ehc-toast", onToast);
+    onCleanup(() => window.removeEventListener("ehc-toast", onToast));
   });
+
+  // SSE: live tokens and tool progress for this worktree. Reconnects a few
+  // times if the runtime restarts; gives up quietly after that.
+  let es: EventSource | null = null;
+  let esRetries = 0;
+  const openEventStream = async (): Promise<void> => {
+    try {
+      const rt = await runtimeInfo();
+      if (!rt) return;
+      const q = `auth=${encodeURIComponent(rt.password)}&worktree=${encodeURIComponent(session)}`;
+      es?.close();
+      es = new EventSource(`${rt.baseUrl}/api/events?${q}`);
+      es.addEventListener("token", (ev) => {
+        try {
+          const d = JSON.parse((ev as MessageEvent).data) as { sessionId?: string; delta?: string; kind?: string };
+          if (d.sessionId !== session || !d.delta) return;
+          if (d.kind === "reasoning") setLiveThink((t) => (t + d.delta!).slice(-2000));
+          else setLiveText((t) => t + d.delta!);
+        } catch { /* ignore */ }
+      });
+      es.addEventListener("tool-step", (ev) => {
+        try {
+          const d = JSON.parse((ev as MessageEvent).data) as { name?: string };
+          if (d.name) setLiveTool(d.name);
+        } catch { /* ignore */ }
+      });
+      es.onopen = () => { esRetries = 0; };
+      es.onerror = () => {
+        es?.close();
+        if (esRetries++ < 5) setTimeout(() => void openEventStream(), 2500);
+      };
+    } catch { /* SSE unavailable - streaming simply stays off */ }
+  };
+  onCleanup(() => es?.close());
 
   const persistLayout = () => {
     localStorage.setItem("ehc.sidebarW", String(sidebarW()));
@@ -163,6 +219,9 @@ export default function App() {
     const lvl = thinkMatch ? thinkMatch[1].toLowerCase() : think();
     setMessages((m) => [...m, { role: "user", text }]);
     setInput("");
+    setLiveText("");
+    setLiveThink("");
+    setLiveTool("");
     setSending(true);
     try {
       const res = await apiFetch("/api/acp/session/prompt", {
@@ -178,6 +237,9 @@ export default function App() {
       setMessages((m) => [...m, { role: "assistant", text: `— error —\nserver unreachable - is the runtime running?` }]);
     } finally {
       setSending(false);
+      setLiveText("");
+      setLiveThink("");
+      setLiveTool("");
     }
   };
 
@@ -185,8 +247,8 @@ export default function App() {
     try {
       const r = await apiFetch("/api/worktrees", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       const d = (await r.json()) as { ok: boolean; path?: string };
-      notice(`worktree ${d.ok ? "created" : "failed"}: ${d.path ?? "?"}`);
-    } catch { notice("worktree failed — server unreachable"); }
+      toast(`worktree ${d.ok ? "created" : "failed"}: ${d.path ?? "?"}`, d.ok ? "ok" : "error");
+    } catch { toast("worktree failed — server unreachable", "error"); }
   };
 
   // Fork this session and open the branch in a second window: two agents, two
@@ -196,20 +258,20 @@ export default function App() {
       const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       const d = (await r.json()) as { sessionId?: string; error?: string };
       if (d.sessionId) {
-        notice(`session forked -> ${d.sessionId} (opening in a new window)`);
+        toast(`session forked -> ${d.sessionId} (opens in a new window)`, "ok");
         void popoutWindow("chat", d.sessionId);
       } else {
-        notice(`fork failed: ${d.error ?? "?"}`);
+        toast(`fork failed: ${d.error ?? "?"}`, "error");
       }
-    } catch { notice("fork failed — server unreachable"); }
+    } catch { toast("fork failed — server unreachable", "error"); }
   };
 
   const checkpointSession = async () => {
     try {
       const r = await apiFetch(`/api/sessions/${encodeURIComponent(session)}/checkpoints`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "manual checkpoint" }) });
       const d = (await r.json()) as { seq?: number; error?: string };
-      notice(d.seq !== undefined ? `checkpoint saved at message ${d.seq}` : `checkpoint failed: ${d.error ?? "?"}`);
-    } catch { notice("checkpoint failed — server unreachable"); }
+      toast(d.seq !== undefined ? `checkpoint saved at message ${d.seq}` : `checkpoint failed: ${d.error ?? "?"}`, d.seq !== undefined ? "ok" : "error");
+    } catch { toast("checkpoint failed — server unreachable", "error"); }
   };
 
   const actions = (): Action[] => [
@@ -303,7 +365,7 @@ export default function App() {
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
           tokens={tokens} setTokens={(n) => { setTokens(clamp(n, 64, 8192)); }}
           autoApprove={autoApprove} setAutoApprove={(v) => { setAutoApprove(v); persistLayout(); }}
-          sending={sending}
+          sending={sending} liveText={liveText} liveThink={liveThink} liveTool={liveTool}
         />
       </Show>
 
@@ -322,6 +384,7 @@ export default function App() {
 
       <StatusBar session={session} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
       <CommandPalette open={paletteOpen} close={() => setPaletteOpen(false)} actions={actions} />
+      <Toasts toasts={toasts} dismiss={dismissToast} />
     </div>
   );
 }

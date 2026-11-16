@@ -83,6 +83,20 @@
       "GET /api/sensory/doctor states exactly what is missing, what was tried, and where to install. Endpoints refuse plainly until the sidecars exist."
     ]
   },
+  "tts": {
+    "adapter": "auto",
+    "voicesDir": "",
+    "speakerFile": "",
+    "engineModel": "",
+    "engineMmproj": "",
+    "language": "en",
+    "notes": [
+      "adapter: auto | system | engine | piper | byok. auto = Windows uses OS voices through the renderer (Web Speech API, Microsoft voices incl. the SAM family), Linux/mac/ARM uses the bundled engine with Pocket TTS (tiny, ~100M) or Qwen3-TTS (1.7B, multilingual).",
+      "engine adapter needs llama-tts.exe (ships with chonkllama) plus a TTS GGUF in ~/.eventhorizon/models (or set engineModel/engineMmproj).",
+      "voicesDir: drop wav/mp3 speaker recordings there; each becomes a selectable voice (voice cloning). Default ~/.eventhorizon/voices.",
+      "Nothing is downloaded automatically. GET /api/tts/voices lists adapters, the platform default, and every available voice."
+    ]
+  },
   "sop": {
     "defaultMode": "gated",
     "notes": [

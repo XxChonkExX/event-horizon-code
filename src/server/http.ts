@@ -15,7 +15,7 @@ import { audit } from "./audit";
 import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture, runProbe, scoreProbe, startOtelReceiver, stopOtelReceiver, acknowledgeFindings, plantCanaries, checkCanaries, detectLoops } from "./agentwatch";
 import { subscribe, broadcast } from "./sse";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
-import { listModels } from "./router";
+import { listModels, modelCapabilities } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
 import {
   createSession, listTodos, addTodo, loadMessages,
@@ -28,11 +28,12 @@ import os from "node:os";
 import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable, openCommandTerminal, terminalBuffer, waitForTerminalExit } from "./terminal";
-import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, sensoryDetect, addGgufDir, engineInfill } from "./engine";
+import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir, engineInfill } from "./engine";
 import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTemplateFiles } from "./chatTemplates";
 import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
-import { sensoryStatus, doctor as sensoryDoctor, transcribe, speak } from "./sensory";
+import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
+import { listVoices, speak } from "./tts";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -234,6 +235,12 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "GET" && url.pathname === "/api/models") {
       const models = await listModels();
       return sendJson(res, 200, models);
+    }
+    // What can this model actually do? Engine /props or Ollama /api/show.
+    if (req.method === "GET" && url.pathname === "/api/models/capabilities") {
+      const model = url.searchParams.get("model") ?? "";
+      const refresh = url.searchParams.get("refresh") === "1";
+      return sendJson(res, 200, await modelCapabilities(model, { engineBase: engineEndpoint(), refresh }));
     }
 
     if (req.method === "GET" && url.pathname === "/api/sessions") {
@@ -561,6 +568,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               agent: params.agent,
               profileId: params.profileId ?? process.env.EH_PROFILE,
               isCancelled: () => cancelledSessions.has(sessionId),
+              // Live tokens over SSE: the renderer paints them as they arrive,
+              // then replaces the draft with the structured final message.
+              onDelta: (delta, kind) => broadcast(workdir, "token", { sessionId, delta, kind: kind ?? "content" }),
             });
             if (turn.model === "none" && !turn.ok) {
               // No model selected - echo + honest hint (never a fake answer).
@@ -1018,6 +1028,23 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       const id = decodeURIComponent(url.pathname.slice("/api/sops/runs/".length, -"/cancel".length));
       const r = cancelRun(id);
       return sendJson(res, r.ok ? 200 : 400, r.run ? { ok: true, status: r.run.status } : r);
+    }
+
+    // ---- text to speech (adapter-based: system voices / engine / piper) ----
+    if (req.method === "GET" && url.pathname === "/api/tts/voices") {
+      return sendJson(res, 200, listVoices());
+    }
+    if (req.method === "POST" && url.pathname === "/api/tts/speak") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { text?: string; voice?: string; adapter?: string };
+          const r = await speak(b.text ?? "", { voice: b.voice, adapter: b.adapter as never });
+          sendJson(res, r.ok ? 200 : 200, r);
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
     }
 
     // ---- sensory sidecars: ears (STT) + mouth (TTS), honest about absence ----

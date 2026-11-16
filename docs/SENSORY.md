@@ -42,7 +42,30 @@ refuses plainly otherwise:
 - `GET /api/sensory/doctor` states what to install, where to drop it, and what
   was tried - no download happens on its own.
 
-## Mouth - text-to-speech (S2) - **surface implemented, sidecar not installed**
+## Mouth - text to speech - **adapter-based, platform-aware default**
+
+`src/server/tts.ts` (server adapters) + `src/renderer/speech.ts` (OS voices).
+
+| Adapter | Where | Default on | Notes |
+|---|---|---|---|
+| `system` | renderer, Web Speech API | **Windows** | OS voices (Microsoft set, incl. the classic SAM family). Instant, no model, no download. Voices are swappable in the composer. |
+| `engine` | server, `llama-tts.exe` from chonkllama | **Linux / macOS / ARM** | Pocket TTS (tiny, ~100M, CC BY 4.0) or Qwen3-TTS (1.7B, multilingual). GGUF, GPU or CPU, zero new runtime. Voices = speaker reference recordings (voice cloning). |
+| `piper` | server, rhasspy/piper | — | Optional sidecar (see the ears section for the install ladder). |
+| `byok` | server, own endpoint | — | Bring your own key; no telemetry. Not configured by default. |
+
+- `GET /api/tts/voices` -> preferred adapter, platform, defaultMode, adapters with
+  plain-language notes, and every available voice (built-in, reference, system).
+- `POST /api/tts/speak {text, voice?, adapter?}` -> `{ok, audio}` (wav data URL).
+  The `system` adapter deliberately refuses server-side synthesis and says so: it
+  plays in the renderer where the OS voices live.
+- UI: a **speak** button on every assistant answer, a **voice** picker plus a
+  **test** button in the composer. The pick persists in localStorage.
+- Voices: drop a wav/mp3 into `~/.eventhorizon/voices/` (or set `tts.voicesDir`)
+  and it appears in the picker as a reference voice for the engine adapter.
+- Tests: `npm run tts:test` (18 checks) covers the platform default, honest
+  absence notes, refusals, and voice listing.
+
+## Legacy piper path (still supported)
 
 - Piper (MIT) as an onnx sidecar. CPU is plenty; voices are 20-80MB.
 - Endpoint: `POST /api/sensory/speak {text}` -> piper -> WAV returned as a data
