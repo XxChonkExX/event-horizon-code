@@ -18,10 +18,27 @@ let runtime: { baseUrl: string; password: string; port: number } | null = null;
 // that needs hardware compositing - prefer CPU rasterization and lose nothing.
 app.commandLine.appendSwitch("disable-gpu-compositing");
 
+// Keep background/occluded windows painting: agent replies stream through
+// rAF-adjacent DOM writes, and Chromium pauses rAF (and clamps timers) for
+// windows that lose focus. `backgroundThrottling: false` on each window covers
+// the blurred case; these process-level switches additionally stop Chromium
+// from backgrounding or occlusion-throttling the renderer, so a turn that is
+// mid-review pauses at its speed, not at a hidden window's. Hermes Desktop
+// ships the same three. (Cost: extra CPU while hidden - the right trade for a
+// streaming agent.)
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+
 // Shared hardening for every window we open. The compositor has died on this
 // machine while a training workload was grabbing the GPU; when it does, the
 // window holds a ruined frame and is unresponsive. A reload costs a second,
 // a dead window costs a session.
+// The windows must never fall back to Chromium's default white: popups and
+// restored windows painted white before the first frame landed (OpenCode's
+// white-flash fix, PR #28247). EHC's document-level canvas is #0b0b10.
+const WINDOW_BACKGROUND = "#0b0b10";
+
 function hardenWindow(win: BrowserWindow, label: string): void {
   // Renderer process crash/exit -> reload the window instead of leaving it dead.
   win.webContents.on("render-process-gone", (_e, details) => {
@@ -46,6 +63,7 @@ app.whenReady().then(async () => {
   ipcMain.handle("window:popout", (_e, kind: string, sessionId: string) => {    const win = new BrowserWindow({
       width: 980, height: 720,
       title: `Event Horizon — ${kind}`,
+      backgroundColor: WINDOW_BACKGROUND,
       show: false,
       webPreferences: {
         contextIsolation: true, nodeIntegration: false,
@@ -96,6 +114,7 @@ app.whenReady().then(async () => {
     const win = new BrowserWindow({
       width: Math.min(1440, wa.width),
       height: Math.min(900, wa.height),
+      backgroundColor: WINDOW_BACKGROUND,
       show: false,
       webPreferences: {
         contextIsolation: true, nodeIntegration: false,
