@@ -12,6 +12,7 @@ declare global {
       pickFolder: () => Promise<string | null>;
       popoutWindow: (kind: string, sessionId: string) => Promise<number>;
       growWindow: (targetWidth: number) => Promise<boolean>;
+      nudgeWindow: () => Promise<boolean>;
     };
   }
 }
@@ -66,5 +67,13 @@ export async function popoutWindow(kind: string, sessionId: string): Promise<voi
 export async function growWindow(targetWidth: number): Promise<void> {
   if (typeof window !== "undefined" && window.eventhorizon?.growWindow) {
     await window.eventhorizon.growWindow(targetWidth);
+  }
+}
+
+// Force a compositor re-measure (a 1px wider then back, all in one IPC). Used
+// after palette open to clear a stale/magnified frame on flaky GPU paths.
+export async function nudgeWindow(): Promise<void> {
+  if (typeof window !== "undefined" && window.eventhorizon?.nudgeWindow) {
+    await window.eventhorizon.nudgeWindow();
   }
 }

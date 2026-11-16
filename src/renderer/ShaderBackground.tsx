@@ -133,7 +133,7 @@ void main(){
   O = vec4(pow(max(col,0.0), vec3(0.92)) * uI, 1.0);
 }`;
 
-export default function ShaderBackground(props: { intensity: () => number }) {
+export default function ShaderBackground(props: { intensity: () => number; paused?: () => boolean }) {
   let canvas: HTMLCanvasElement | undefined;
 
   onMount(() => {
@@ -172,11 +172,17 @@ export default function ShaderBackground(props: { intensity: () => number }) {
 
     let raf = 0;
     let running = false;
+    let frameNo = 0;
     const t0 = performance.now();
     const frame = () => {
+      // 30fps is visually identical for this slow swirl and halves the only
+      // continuous GPU-surface churn in the app (helps a driver/VPGPU that
+      // evicts under heavy VRAM pressure).
+      frameNo++;
+      const draw = frameNo % 2 === 0;
       gl.uniform1f(uT, (performance.now() - t0) / 1000);
       gl.uniform1f(uI, props.intensity());
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (draw) gl.drawArrays(gl.TRIANGLES, 0, 3);
       if (running) raf = requestAnimationFrame(frame);
     };
     const start = () => { if (!running && props.intensity() > 0) { running = true; raf = requestAnimationFrame(frame); } };

@@ -22,7 +22,7 @@ import CommandPalette, { type Action } from "./CommandPalette";
 import ShaderBackground from "./ShaderBackground";
 import Splitter from "./Splitter";
 import ChatColumn, { type ChatMsg } from "./ChatColumn";
-import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo } from "./api";
+import { apiFetch, apiJson, popoutWindow, growWindow, nudgeWindow, runtimeInfo } from "./api";
 import Toasts, { type Toast } from "./Toasts";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
@@ -178,7 +178,10 @@ export default function App() {
   const sidebarLeftEdge = (d: number) => setSidebarW(clamp(sidebarW() - d, 160, 520));
   const sidebarRightEdge = (d: number) => setSidebarW(clamp(sidebarW() + d, 160, 520));
   const chatLeftEdge = (d: number) => setChatW(clamp(chatW() - d, 280, 800));
-  const termTopEdge = (d: number) => setTermH(clamp(termH() + d, 100, 600));
+  // h1 = terminal's top edge   -> drag UP grows the terminal, drag DOWN shrinks it.
+  // The pointer delta is positive downward, and the terminal lives BELOW its handle;
+  // growing it means moving that edge upward (negative delta).
+  const termTopEdge = (d: number) => setTermH(clamp(termH() - d, 100, 600));
   const cycleShader = () => setShaderIdx((i) => (i + 1) % SHADER_STEPS.length);
   const shaderIntensity = () => SHADER_STEPS[shaderIdx()].v;
 
@@ -256,6 +259,44 @@ export default function App() {
     }
   };
 
+  // ---- multi-session tab bar (top strip) ----
+  type SessionTab = { id: string; title: string; messageCount: number };
+  const [sessionTabs, setSessionTabs] = createSignal<SessionTab[]>([{ id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 }]);
+
+  const refreshSessionTabs = async (): Promise<void> => {
+    try {
+      const list = await apiJson<Array<{ id: string; title: string; messageCount: number; lastActivity?: string | null }>>("/api/sessions");
+      // Always include the current session even if not yet persisted, and never
+      // show more than 7; the strip is scrollable.
+      const ordered = [...list].sort((a, b) => (b.lastActivity ?? b.id).localeCompare(a.lastActivity ?? a.id));
+      setSessionTabs(() => {
+        const mine = ordered.find((s) => s.id === session);
+        const cur = mine ?? { id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 };
+        const rest = ordered.filter((s) => s.id !== session).slice(0, 6);
+        return [cur, ...rest].map((s) => ({ id: s.id, title: s.title, messageCount: s.messageCount ?? 0 }));
+      });
+    } catch { /* strip falls back to just the current tab */ }
+  };
+
+  const openSession = (id: string): void => {
+    if (id === session) return;
+    // Switch this window to the chosen session (full reload - the app keys its
+    // state off the ?session= query).
+    window.location.assign(`/?session=${encodeURIComponent(id)}`);
+  };
+
+  const deleteSessionTab = async (id: string): Promise<void> => {
+    if (id === session) { toast("cannot close the session you are in", "warn"); return; }
+    if (!window.confirm(`Delete session "${id}" and its history?`)) return;
+    try {
+      await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await refreshSessionTabs();
+      toast(`session ${id.slice(0, 8)} deleted`, "ok");
+    } catch { toast("could not delete session", "error"); }
+  };
+
+  onMount(() => { void refreshSessionTabs(); });
+
   const newWorktree = async () => {
     try {
       const r = await apiFetch("/api/worktrees", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
@@ -303,7 +344,13 @@ export default function App() {
 
   // Ctrl+K palette
   const keyHandler = (e: KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPaletteOpen((v) => !v); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      setPaletteOpen((v) => !v);
+      // The palette marks the focus transition that was knocking the compositor
+      // out of sync with the window. Nudge a 1px re-measure to re-sync them.
+      void nudgeWindow();
+    }
   };
   window.addEventListener("keydown", keyHandler);
   onCleanup(() => window.removeEventListener("keydown", keyHandler));
@@ -333,10 +380,26 @@ export default function App() {
   return (
     <div class="workbench" style={{ "grid-template-columns": cols(), "grid-template-rows": rows() }}>
       <ShaderBackground intensity={shaderIntensity} />
-      <header>
-        <b>Event Horizon</b>
-        <span class="header-dim">session</span>
-        <span class="status-badge">{session}</span>
+      <header class="ehc-chat-tabs">
+        <div class="chat-tabstrip" role="tablist" aria-label="Agent sessions">
+          <For each={sessionTabs()}>
+            {(t) => (
+              <div
+                class="chat-tab"
+                classList={{ "chat-tab-on": t.id === session }}
+                role="tab"
+                aria-selected={t.id === session}
+                title={`${t.title} (${t.messageCount} messages) - window #${t.id.slice(0, 10)}`}
+                onClick={() => openSession(t.id)}
+              >
+                <span class="chat-tab-title">{t.title || t.id}</span>
+                <span class="chat-tab-meta">{t.messageCount}</span>
+                <button class="chat-tab-close" title="Delete this session" onClick={(e) => { e.stopPropagation(); void deleteSessionTab(t.id); }}>x</button>
+              </div>
+            )}
+          </For>
+          <button class="chat-tab-new" title="New agent session (fork current)" onClick={() => void forkSession()}>+</button>
+        </div>
         <span class="header-file">{activeFile()}</span>
       </header>
 
