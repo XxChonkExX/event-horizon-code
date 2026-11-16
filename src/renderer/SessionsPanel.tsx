@@ -26,11 +26,39 @@ export default function SessionsPanel() {
   const [checkpoints, setCheckpoints] = createSignal<Checkpoint[]>([]);
   const [note, setNote] = createSignal("Fork to try a second approach in a parallel window; the original is untouched.");
   const [busy, setBusy] = createSignal(false);
+  const [selected, setSelected] = createSignal<Set<string>>(new Set());
+
+  const selectable = (): string[] => sessions().filter((s) => s.id !== currentSession).map((s) => s.id);
+  const allSelected = (): boolean => selectable().length > 0 && selectable().every((id) => selected().has(id));
+  const toggleAll = (): void => {
+    setSelected(() => (allSelected() ? new Set<string>() : new Set(selectable())));
+  };
+  const toggleSel = (id: string): void => {
+    setSelected((s) => {
+      const n = new Set<string>(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+  const removeSelected = async (): Promise<void> => {
+    const ids = [...selected()].filter((id) => id !== currentSession);
+    if (ids.length === 0) return;
+    if (!window.confirm(`Delete ${ids.length} session(s) and their messages, instructions and checkpoints?`)) return;
+    setBusy(true);
+    try {
+      for (const id of ids) await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      setSelected(new Set<string>());
+      await refresh();
+      setNote(`${ids.length} session(s) deleted`);
+    } finally { setBusy(false); }
+  };
 
   const refresh = async (): Promise<void> => {
     try {
       const list = await apiJson<SessionMeta[]>("/api/sessions");
       setSessions(list);
+      // Drop selections for sessions that no longer exist (bulk delete / panel delete).
+      setSelected((s) => new Set([...s].filter((id) => list.some((x) => x.id === id))));
     } catch { setNote("Server not running."); }
   };
   onMount(() => void refresh());
@@ -84,15 +112,27 @@ export default function SessionsPanel() {
 
   return (
     <div class="sessions-panel">
-      <h3>Sessions</h3>
+      <h3>Session log</h3>
       <div class="checks">
         <button disabled={busy()} onClick={() => void refresh()}>Refresh</button>
         <button disabled={busy()} onClick={() => { void fork(currentSession); }}>Fork current</button>
+        <span class="session-check">
+          <input type="checkbox" id="s-select-all" checked={allSelected()} onChange={toggleAll} title="Select every session except the current one" />
+          <label for="s-select-all">Select all</label>
+        </span>
+        <button class="danger" disabled={busy() || selected().size === 0} title="Delete every checked session (current one is never deleted)" onClick={() => void removeSelected()}>Delete selected ({selected().size})</button>
       </div>
       <ul class="session-list">
         {sessions().map((s) => (
           <li classList={{ current: s.id === currentSession }}>
             <div class="session-row">
+              <input
+                type="checkbox"
+                checked={selected().has(s.id)}
+                disabled={s.id === currentSession}
+                title={s.id === currentSession ? "The current session cannot be deleted" : "Check to delete in bulk"}
+                onChange={() => toggleSel(s.id)}
+              />
               <span class="session-title" title={s.id}>{s.id === currentSession ? "* " : ""}{s.title}</span>
               <span class="session-meta">{s.messageCount} msg - {ago(s.lastActivity ?? s.created)}</span>
             </div>

@@ -93,6 +93,31 @@ export default function App() {
     { id: "sandbox", label: "Sandbox", el: () => <SandboxControls /> },
   ];
   const [panelTab, setPanelTab] = createSignal(loadNum("ehc.panelTab", 0, 0, PANELS.length - 1));
+  // Side-bar "Session log manager" button: reveals the bottom panels row with
+  // the Sessions tab selected (toggle again to hide it).
+  const SESSIONS_TAB = 0;
+  const sessionsActive = (): boolean => open().panels && panelTab() === SESSIONS_TAB;
+  const toggleSessionLog = (): void => {
+    if (sessionsActive()) { setOpen((o) => ({ ...o, panels: false })); return; }
+    setOpen((o) => ({ ...o, panels: true }));
+    setPanelTab(SESSIONS_TAB);
+    try { localStorage.setItem("ehc.panelTab", String(SESSIONS_TAB)); } catch { /* private mode */ }
+  };
+  // Fresh session in its own OS window (the + button forks in this window).
+  const openFreshSessionWindow = async (): Promise<void> => {
+    try {
+      const r = await apiFetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const d = (await r.json()) as { id?: string; error?: string };
+      if (!d.id) {
+        const why = `could not create session: ${d.error ?? "?"}`;
+        toast(why, "error");
+        setMessages((m) => [...m, { role: "tool", text: why }]);
+        return;
+      }
+      toast("fresh session opened in a new window", "ok");
+      await popoutWindow("chat", d.id);
+    } catch { toast("could not create session - server unreachable", "error"); }
+  };
 
   onMount(async () => {
     try {
@@ -396,14 +421,20 @@ export default function App() {
           </Show>
           <button
             class="chat-tab-new"
-            title="Fork current session into a new window"
-            aria-label="Fork current session into a new window"
+            title="Fork current session (switches this window to the fork)"
+            aria-label="Fork current session"
             onClick={() => void forkSession()}
           >+</button>
+          <button
+            class="chat-tab-new"
+            title="Open a fresh session in a new window"
+            aria-label="Open a fresh session in a new window"
+            onClick={() => void openFreshSessionWindow()}
+          >⧉</button>
         </div>
       </header>
 
-      <ActivityBar open={open} toggle={toggle} />
+      <ActivityBar open={open} toggle={toggle} sessionsActive={sessionsActive} onSessions={toggleSessionLog} />
 
       <Show when={open().sidebar}>
         <Splitter direction="col" class="ehc-split-v1" onDelta={sidebarLeftEdge} onEnd={persistLayout} />
