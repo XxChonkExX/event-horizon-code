@@ -23,8 +23,8 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "pack": "electron-builder",
-    "pack:dir": "electron-builder --dir",
+    "pack": "npm run build && npm run prepare:engine && electron-builder",
+    "pack:dir": "npm run build && npm run prepare:engine && electron-builder --dir",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && npm run lsp:test && npm run detonate:test && npm run toolsearch:test && npm run sop:test && npm run sessions:test && npm run memory:test && npm run sensory:test && npm run tts:test && npm run engram:test",
     "test:integration": "tsx scripts/smoke-test.ts",
@@ -43,7 +43,9 @@
     "sessions:test": "tsx scripts/test-sessions.ts",
     "memory:test": "tsx scripts/test-memory.ts",
     "sensory:test": "tsx scripts/test-sensory.ts",
-    "tts:test": "tsx scripts/test-tts.ts"
+    "tts:test": "tsx scripts/test-tts.ts",
+    "prepare:engine": "node scripts/prepare-engine.mjs",
+    "prepare:engine:verify": "node scripts/prepare-engine.mjs --verify"
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.18",

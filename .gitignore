@@ -9,3 +9,8 @@ engrams/store/
 .git-commit-msg.txt
 .DS_Store
 .vscode/
+
+# Bundled engine is staged by scripts/prepare-engine.mjs at packaging time.
+# The binaries and their machine-specific SHA-256 manifest are not source.
+resources/engine/*
+!resources/engine/.gitkeep
