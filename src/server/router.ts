@@ -3,6 +3,10 @@
 // Direct calls to the user's Ollama — no proxy, no middleman.
 
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { audit } from "./audit";
 
 export type ModelInfo = { id: string; openaiId?: string; capabilities?: string[] };
 
@@ -97,16 +101,26 @@ const OLLAMA_DEFAULT = process.env.EH_OLLAMA_URL ?? "http://127.0.0.1:11434";
 // {id,type,function:{name,arguments}}) into the wire format every backend wants.
 // llama-server rejects a tool_calls item with a missing `type`, which is exactly
 // what the internal shape produces, so convert here rather than at each call site.
-function toOpenAIToolCalls(tcs: unknown): Array<Record<string, unknown>> | undefined {
+// Tool arguments arrive as objects (Ollama) or JSON-encoded strings (OpenAI).
+// Never emit malformed JSON: a truncated string from an upstream parser becomes
+// an empty object rather than a wire-breaking payload.
+function parseToolArgs(args: unknown): unknown {
+  if (typeof args === "string") {
+    try { return JSON.parse(args); } catch { return {}; }
+  }
+  return args ?? {};
+}
+
+function toOpenAIToolCalls(tcs: unknown, argsAsObject = false): Array<Record<string, unknown>> | undefined {
   if (!Array.isArray(tcs) || !tcs.length) return undefined;
   return tcs.map((tc) => {
     const t = tc as { id?: string; name?: string; args?: unknown; function?: { name?: string; arguments?: unknown } };
     const name = t.name ?? t.function?.name ?? "";
-    const args = t.args !== undefined ? t.args : t.function?.arguments;
+    const args = parseToolArgs(t.args !== undefined ? t.args : t.function?.arguments);
     return {
       id: t.id ?? `call_${Math.random().toString(36).slice(2, 10)}`,
       type: "function",
-      function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) },
+      function: { name, arguments: argsAsObject ? args : JSON.stringify(args) },
     };
   });
 }
@@ -270,11 +284,14 @@ function parseArgs(a: unknown): Record<string, unknown> {
 }
 
 // Pass our message shapes through to the wire, preserving tool call plumbing.
-function toWireMessages(messages: ChatMessage[]) {
+// argsAsObject: Ollama mis-parses a re-sent assistant tool_calls arguments
+// STRING when it contains escaped quotes ("can't find closing '}' symbol") -
+// it must receive the parsed object. The OpenAI lane wants the string form.
+function toWireMessages(messages: ChatMessage[], argsAsObject = false) {
   return messages.map((m) => ({
     role: m.role,
     content: m.content,
-    ...(() => { const tcs = toOpenAIToolCalls(m.tool_calls); return tcs ? { tool_calls: tcs } : {}; })(),
+    ...(() => { const tcs = toOpenAIToolCalls(m.tool_calls, argsAsObject); return tcs ? { tool_calls: tcs } : {}; })(),
     ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
     ...(m.name ? { name: m.name } : {}),
   }));
@@ -321,9 +338,11 @@ export async function chat(
   const think = opts?.think ?? "medium";
   const system = THINK_HINTS[think] ?? THINK_HINTS.medium;
   const thinkKey = `${baseUrl}|${model}`;
-  const send = async (includeThink: boolean): Promise<globalThis.Response> => {
+  // Built outside send so a failed request can be captured verbatim.
+  const buildBody = (includeThink: boolean): Record<string, unknown> => {
     // images ride on user turns; Ollama wants raw base64 (no data: prefix)
-    const mapped = toWireMessages(messages).map((m, idx) => ({
+    // argsAsObject=true: Ollama cannot re-parse string arguments (see toWireMessages).
+    const mapped = toWireMessages(messages, true).map((m, idx) => ({
       ...m,
       ...(messages[idx]?.images ? { images: messages[idx].images!.map((i) => (i.startsWith("data:") ? i.slice(i.indexOf(",") + 1) : i)) } : {}),
     }));
@@ -336,6 +355,10 @@ export async function chat(
     };
     if (opts?.tools?.length) body.tools = opts.tools;
     if (includeThink) body.think = mapThink(think);
+    return body;
+  };
+  const send = async (includeThink: boolean): Promise<globalThis.Response> => {
+    const body = buildBody(includeThink);
     return fetch(`${baseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -358,17 +381,29 @@ export async function chat(
       return { ok: false, content: "", model, error: `ollama unreachable: ${String((e as Error)?.message ?? e).slice(0, 160)}` };
     }
     if (!res.ok && res.status === 400) {
-      // Endpoint/model rejects `think` — remember it and retry without.
+      // Endpoint/model rejects `think` - remember it and retry without.
       const errText = await res.text();
       if (/think/i.test(errText)) {
         thinkUnsupported.add(thinkKey);
         res = await send(false);
       } else {
+        // Parse-style 400s mean OUR body is malformed for Ollama - dump the
+        // whole body to disk so the failure is fully inspectable.
+        try {
+          const dump = path.join(os.homedir(), ".eventhorizon", "last-400-body.json");
+          fs.mkdirSync(path.dirname(dump), { recursive: true });
+          fs.writeFileSync(dump, JSON.stringify(buildBody(!thinkUnsupported.has(thinkKey)), null, 2));
+        } catch { /* best-effort */ }
+        audit({ tool: "model.400", note: `ollama 400: ${errText.slice(0, 200)} | body dumped to ~/.eventhorizon/last-400-body.json` });
         return { ok: false, content: "", model, error: `ollama 400: ${errText.slice(0, 200)}` };
       }
     }
     if (!res.ok) {
-      return { ok: false, content: "", model, error: `ollama ${res.status}: ${(await res.text()).slice(0, 200)}` };
+      const detail = (await res.text()).slice(0, 200);
+      // A 400 with a parse-style error means OUR body is malformed for Ollama -
+      // capture the body head so the next report is actionable.
+      audit({ tool: "model.400", note: `ollama ${res.status}: ${detail} | body: ${JSON.stringify(buildBody(!thinkUnsupported.has(thinkKey))).slice(0, 900)}` });
+      return { ok: false, content: "", model, error: `ollama ${res.status}: ${detail}` };
     }
     // ---- streaming path: NDJSON lines, one partial message each ----
     if (opts?.onDelta && res.body) {
