@@ -30,9 +30,10 @@ export default function SessionsPanel() {
   // Native confirm()/prompt() are banned in this app: a modal anchored to a
   // splayed window opens off-screen and blocks the renderer's JS thread, so
   // the delete would never even fire. Inline UI instead.
-  // Two-step confirm IN PLACE on the button that was pressed (a separate
-  // confirm bar elsewhere went unnoticed - no DELETE ever reached the server).
-  const [confirmDel, setConfirmDel] = createSignal<{ ids: string[] } | null>(null);
+  // Delete is ONE click: the user checked the boxes / pressed the row button -
+  // that is the intent, and every multi-step confirm variant (native dialog,
+  // separate bar, in-place second press) failed to complete on this machine.
+  // Feedback is immediate: rows vanish, the note line reports the count.
   const [renaming, setRenaming] = createSignal<{ id: string; value: string } | null>(null);
 
   const selectable = (): string[] => sessions().filter((s) => s.id !== currentSession).map((s) => s.id);
@@ -47,31 +48,28 @@ export default function SessionsPanel() {
       return n;
     });
   };
-  const removeSelected = (): void => {
-    const ids = [...selected()].filter((id) => id !== currentSession);
+  const doDelete = async (ids: string[]): Promise<void> => {
     if (ids.length === 0) return;
-    setConfirmDel({ ids });
-  };
-
-  const doDelete = async (): Promise<void> => {
-    const c = confirmDel();
-    if (!c) return;
     setBusy(true);
     try {
-      for (const id of c.ids) {
+      for (const id of ids) {
         const r = await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
         if (!r.ok) throw new Error(`HTTP ${r.status} on session ${id.slice(0, 10)}`);
       }
-      const gone = new Set(c.ids);
+      const gone = new Set(ids);
       setSelected((s) => new Set([...s].filter((id) => !gone.has(id))));
       if (gone.has(expanded())) setExpanded("");
-      setConfirmDel(null);
-      setNote(`${c.ids.length} session(s) deleted`);
+      setNote(`${ids.length} session(s) deleted`);
       await refresh();
     } catch (e) {
-      setConfirmDel(null);
       setNote(`delete failed: ${(e as Error).message ?? e}`);
     } finally { setBusy(false); }
+  };
+
+  const removeSelected = (): void => {
+    const ids = [...selected()].filter((id) => id !== currentSession);
+    if (ids.length === 0) return;
+    void doDelete(ids);
   };
 
   const refresh = async (): Promise<void> => {
@@ -127,11 +125,7 @@ export default function SessionsPanel() {
     } finally { setBusy(false); }
   };
 
-  const remove = (id: string): void => { setConfirmDel({ ids: [id] }); };
-  const isConfirming = (id: string): boolean => {
-    const c = confirmDel();
-    return !!c && c.ids.length === 1 && c.ids[0] === id;
-  };
+  const remove = (id: string): void => { void doDelete([id]); };
 
   return (
     <div class="sessions-panel">
@@ -149,14 +143,11 @@ export default function SessionsPanel() {
         <button
           class="danger"
           disabled={busy() || selected().size === 0}
-          title="Deletes every checked session (the current one is never deleted). Press twice: the button asks 'Confirm delete N?'."
-          onClick={() => { if (confirmDel()) void doDelete(); else removeSelected(); }}
+          title="Deletes every checked session immediately (the current one is never deleted)"
+          onClick={removeSelected}
         >
-          {confirmDel() ? `Confirm delete ${confirmDel()?.ids.length}?` : `Delete selected (${selected().size})`}
+          Delete selected ({selected().size})
         </button>
-        <Show when={confirmDel()}>
-          <button onClick={() => setConfirmDel(null)}>Cancel</button>
-        </Show>
       </div>
       <ul class="session-list">
         {sessions().map((s) => (
@@ -192,12 +183,11 @@ export default function SessionsPanel() {
               <button disabled={busy()} onClick={() => void openCheckpoints(s.id)}>{expanded() === s.id ? "Hide turns" : "Turns"}</button>
               <button disabled={busy()} onClick={() => rename(s.id, s.title)}>Rename</button>
               <button
-                classList={{ danger: isConfirming(s.id) }}
                 disabled={busy() || s.id === currentSession}
-                title="Press twice — the button asks to confirm. The current session cannot be deleted from its own window."
-                onClick={() => { if (isConfirming(s.id)) void doDelete(); else remove(s.id); }}
+                title="Deletes this session and its history immediately. The current session cannot be deleted from its own window."
+                onClick={() => remove(s.id)}
               >
-                {isConfirming(s.id) ? "Confirm delete?" : "Delete"}
+                Delete
               </button>
             </div>
             {expanded() === s.id && (

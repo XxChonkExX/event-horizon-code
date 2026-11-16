@@ -510,6 +510,9 @@ aside.chat li { font-size: 13.5px; line-height: 1.45; }
   padding: 3px 8px; border-radius: 5px; color: var(--text); font-size: 12.5px;
 }
 .ft-row:hover { background: var(--panel2); }
+.ft-row:hover .ft-name { color: var(--accent); }
+.ft-row { cursor: pointer; }
+.ft-hint { font-size: 11px; color: var(--dim); margin: 4px 0; }
 .ft-icon { color: var(--dim); width: 12px; flex: 0 0 auto; font-family: Consolas, monospace; }
 .ft-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ft-dir-name { color: var(--text); font-weight: 500; }

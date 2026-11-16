@@ -109,21 +109,6 @@ export default function App() {
     setPanelTab(SESSIONS_TAB);
     try { localStorage.setItem("ehc.panelTab", String(SESSIONS_TAB)); } catch { /* private mode */ }
   };
-  // Fresh session in its own OS window (the + button forks in this window).
-  const openFreshSessionWindow = async (): Promise<void> => {
-    try {
-      const r = await apiFetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-      const d = (await r.json()) as { id?: string; error?: string };
-      if (!d.id) {
-        const why = `could not create session: ${d.error ?? "?"}`;
-        toast(why, "error");
-        setMessages((m) => [...m, { role: "tool", text: why }]);
-        return;
-      }
-      toast("fresh session opened in a new window", "ok");
-      await popoutWindow("chat", d.id, wt());
-    } catch { toast("could not create session - server unreachable", "error"); }
-  };
 
   onMount(async () => {
     try {
@@ -438,12 +423,6 @@ export default function App() {
             aria-label="New empty session"
             onClick={() => void newSessionHere()}
           >+</button>
-          <button
-            class="chat-tab-new"
-            title="Open a fresh session in a new window"
-            aria-label="Open a fresh session in a new window"
-            onClick={() => void openFreshSessionWindow()}
-          >⧉</button>
         </div>
       </header>
 

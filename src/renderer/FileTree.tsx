@@ -91,6 +91,7 @@ export default function FileTree(props: { onSelect: (file: string) => void }) {
         value={filter()}
         onInput={(e) => setFilter(e.target.value)}
       />
+      <p class="ft-hint">Click a file to open it in the editor; click a folder to expand.</p>
       {err() ? <p>{err()}</p> : null}
       <ul class="ft-root">
         <Rows dir="." depth={0} />
