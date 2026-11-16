@@ -10,6 +10,7 @@ import AgentWatchPanel from "./AgentWatchPanel";
 import ModelManager from "./ModelManager";
 import ProfilesPanel from "./ProfilesPanel";
 import SessionsPanel from "./SessionsPanel";
+import SessionManager from "./SessionManager";
 import MemoryPanel from "./MemoryPanel";
 import SensoryPanel from "./SensoryPanel";
 import FileTree from "./FileTree";
@@ -68,6 +69,7 @@ export default function App() {
   const [model, setModel] = createSignal<string>("");
   const [think, setThink] = createSignal<string>("medium");
   const [open, setOpen] = createSignal<Record<Panel, boolean>>({ sidebar: true, chat: true, terminal: true, panels: true });
+  const [sessionManagerOpen, setSessionManagerOpen] = createSignal(false);
   const [shaderIdx, setShaderIdx] = createSignal(0); // default OFF - WebGL is opt-in
   // Resizable panel sizes (persisted; adaptive defaults for small displays)
   const [sidebarW, setSidebarW] = createSignal(loadNum("ehc.sidebarW", DEF_SIDEBAR, 160, 520));
@@ -261,10 +263,18 @@ export default function App() {
   type SessionTab = { id: string; title: string; messageCount: number };
   const [sessionTabs, setSessionTabs] = createSignal<SessionTab[]>([{ id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 }]);
   // "+" menu: fork + the full session list regardless of the strip limit.
-  const [tabMenuOpen, setTabMenuOpen] = createSignal(false);
-  const [sessionMenu, setSessionMenu] = createSignal<SessionTab[]>([]);
-  const closeTabMenu = () => setTabMenuOpen(false);
-
+  const [hiddenTabs, setHiddenTabs] = createSignal<Set<string>>(new Set());
+  // Sessions not shown because the strip is capped (includes manager-hidden ones).
+  const [overflowHidden, setOverflowHidden] = createSignal(0);
+  const toggleHiddenTab = (id: string): void => {
+    setHiddenTabs((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+    setSessionTabs((ts) => ts.filter((t) => t.id !== id));
+  };
+  
   const refreshSessionTabs = async (): Promise<void> => {
     try {
       const list = await apiJson<Array<{ id: string; title: string; messageCount: number; lastActivity?: string | null }>>("/api/sessions");
@@ -272,11 +282,19 @@ export default function App() {
       setSessionTabs(() => {
         const mine = ordered.find((s) => s.id === session);
         const cur = mine ?? { id: session, title: `session ${session.slice(0, 6)}`, messageCount: 0 };
-        const rest = ordered.filter((s) => s.id !== session).slice(0, 6);
-        return [cur, ...rest].map((s) => ({ id: s.id, title: s.title, messageCount: s.messageCount ?? 0 }));
+        const rest = ordered.filter((s) => s.id !== session).slice(0, 3);
+        setOverflowHidden(Math.max(0, ordered.length - rest.length - 1));
+        return [cur, ...rest]
+          .filter((s) => !hiddenTabs().has(s.id))
+          .map((s) => ({ id: s.id, title: s.title, messageCount: s.messageCount ?? 0 }));
       });
-      setSessionMenu(ordered.map((s) => ({ id: s.id, title: s.title, messageCount: s.messageCount ?? 0 })));
     } catch { /* strip falls back to just the current tab */ }
+  };
+
+  const closeSessionTab = (id: string): void => {
+    if (id === session) { toast("the current session cannot be hidden - switch to another first", "warn"); return; }
+    setHiddenTabs((s) => new Set(s).add(id));
+    setSessionTabs((ts) => ts.filter((t) => t.id !== id));
   };
 
   const openSession = (id: string): void => {
@@ -329,10 +347,9 @@ export default function App() {
     } catch { toast("checkpoint failed — server unreachable", "error"); }
   };
 
-  // Close the "+" menu on Escape and on any click outside it.
-  const tabMenuKey = (e: KeyboardEvent) => { if (e.key === "Escape") setTabMenuOpen(false); };
+  // Close the session manager with Escape.
+  const tabMenuKey = (e: KeyboardEvent) => { if (e.key === "Escape") setSessionManagerOpen(false); };
   window.addEventListener("keydown", tabMenuKey);
-  window.addEventListener("mousedown", (ev) => { if (!(ev.target as HTMLElement | null)?.closest(".chat-tab-new-wrap")) setTabMenuOpen(false); });
   onCleanup(() => window.removeEventListener("keydown", tabMenuKey));
 
   // ---- Pop-out routes: render only the popped-out panel ----
@@ -361,42 +378,34 @@ export default function App() {
     <div class="workbench" style={{ "grid-template-columns": cols(), "grid-template-rows": rows() }}>
       <ShaderBackground intensity={shaderIntensity} />
       <header class="ehc-chat-tabs">
-        <div class="chat-tabstrip" role="tablist" aria-label="Agent sessions">
-          <For each={sessionTabs()}>
-            {(t) => (
-              <div
-                class="chat-tab"
-                classList={{ "chat-tab-on": t.id === session }}
-                role="tab"
-                aria-selected={t.id === session}
-                title={`${t.title} (${t.messageCount} messages) - window #${t.id.slice(0, 10)}`}
-                onClick={() => openSession(t.id)}
-              >
-                <span class="chat-tab-title">{t.title || t.id}</span>
-                <span class="chat-tab-meta">{t.messageCount}</span>
-                <button class="chat-tab-close" title="Delete this session" onClick={(e) => { e.stopPropagation(); void deleteSessionTab(t.id); }}>x</button>
-              </div>
-            )}
-          </For>
-          <div class="chat-tab-new-wrap">
-            <button class="chat-tab-new" title="Open recent session / fork current" onClick={() => setTabMenuOpen(!tabMenuOpen())}>+</button>
-            <Show when={tabMenuOpen()}>
-              <div class="chat-tab-menu" role="menu">
-                <button class="chat-tab-menu-item chat-tab-menu-primary" onClick={() => { closeTabMenu(); void forkSession(); }}>
-                  <span>New session (fork current)</span>
-                </button>
-                <div class="chat-tab-menu-sep">open recent</div>
-                <For each={sessionMenu()}>
-                  {(s) => (
-                    <button class="chat-tab-menu-item" classList={{ "chat-tab-menu-cur": s.id === session }} onClick={() => { closeTabMenu(); openSession(s.id); }}>
-                      <span class="chat-tab-menu-title">{s.title || s.id.slice(0, 10)}</span>
-                      <span class="chat-tab-menu-meta">{s.messageCount} msg</span>
-                    </button>
-                  )}
-                </For>
-              </div>
-            </Show>
+        <div class="chat-tabstrip">
+          <div class="chat-tabs-scroll" role="tablist" aria-label="Agent sessions">
+            <For each={sessionTabs()}>
+              {(t) => (
+                <div
+                  class="chat-tab"
+                  classList={{ "chat-tab-on": t.id === session }}
+                  role="tab"
+                  aria-selected={t.id === session}
+                  title={`${t.title} (${t.messageCount} messages) - window #${t.id.slice(0, 10)}`}
+                  onClick={() => openSession(t.id)}
+                >
+                  <span class="chat-tab-title">{t.title || t.id}</span>
+                  <span class="chat-tab-meta">{t.messageCount}</span>
+                  <button class="chat-tab-close" title="Hide this tab (session preserved)" onClick={(e) => { e.stopPropagation(); closeSessionTab(t.id); }}>x</button>
+                </div>
+              )}
+            </For>
           </div>
+          <button
+            class="chat-tab-new"
+            classList={{ "has-hidden": hiddenTabs().size > 0 }}
+            title="Session manager"
+            aria-label="Session manager"
+            onClick={() => setSessionManagerOpen(true)}
+          >
+            {hiddenTabs().size + overflowHidden() > 0 ? `+${hiddenTabs().size + overflowHidden()}` : "+"}
+          </button>
         </div>
         <span class="header-file">{activeFile()}</span>
       </header>
@@ -458,6 +467,17 @@ export default function App() {
 
       <StatusBar session={session} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
+      <SessionManager
+        open={sessionManagerOpen}
+        close={() => setSessionManagerOpen(false)}
+        hidden={hiddenTabs}
+        toggleHidden={toggleHiddenTab}
+        fork={(id) => { void (async () => {
+          const r = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+          const d = (await r.json()) as { sessionId?: string };
+          if (d.sessionId) { toast(`forked -> ${d.sessionId.slice(0, 10)}`, "ok"); void popoutWindow("chat", d.sessionId); }
+        })(); }}
+      />
     </div>
   );
 }
