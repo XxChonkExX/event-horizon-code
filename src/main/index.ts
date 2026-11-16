@@ -11,6 +11,13 @@ const port = 8800 + Math.floor(Math.random() * 800);
 const password = crypto.randomBytes(24).toString("hex");
 let runtime: { baseUrl: string; password: string; port: number } | null = null;
 
+// GPU compositing evicts frames from Chromium's compositor while the training
+// workload depletes the primary GPU's VRAM. When it evicts EHC's frames, the
+// window keeps its title bar but shows a stale/offset frame forever (the whole
+// "splayed everywhere, recover on click" bug class). EHC has no visual effect
+// that needs hardware compositing - prefer CPU rasterization and lose nothing.
+app.commandLine.appendSwitch("disable-gpu-compositing");
+
 // Shared hardening for every window we open. The compositor has died on this
 // machine while a training workload was grabbing the GPU; when it does, the
 // window holds a ruined frame and is unresponsive. A reload costs a second,
