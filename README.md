@@ -1,24 +1,30 @@
 # Event Horizon Code
 
-A clean, breakaway, Desktop-first coding harness.
+A local-first, desktop coding agent harness. Monaco (VS Code) + a real agent loop, real tools, and a bundled inference engine — for people who want a serious coding agent that runs on their own hardware with no telemetry, no cloud proxy and full operator control.
 
-Combines the multi-window agent workflow of OpenCode Desktop with the editor power of VS Code (Monaco, LSP/DAP, diff, terminal) into one local package. No telemetry. No cloud proxy. Local models first, bring-your-own-API second.
+Ships as an Electron app (Windows, Linux, macOS) with a workbench UI modelled on OpenCode Desktop. No models are bundled: you choose what runs.
 
-Built for Mac, Windows, and Linux.
+---
 
-## Models — no default shipped
+## TL;DR feature list
 
-No model is bundled, pinned, or promoted by Event Horizon Code. The user chooses at runtime/serve time (Ollama, llama.cpp, BYOK API). Local dev smoke tests use a small Qwen (e.g. `qwen2.5-coder:1.5b`) only to keep overhead low.
+- **Agentic chat** with tools, memory, plan/`/think:low|medium|high|max` control, and a bounded self-correcting loop (max 4 steps, budgeted retries, context-overflow recovery).
+- **Real agent tools** — read / write / edit / bash / grep / glob / run tests (`verify`), plus a JS programmatic tool-caller (`run_js`), exact arithmetic (`calc_verify`), and deterministic emulators (`ti85`, `pyvm`, `rv32`, `z80`, `m6502`, `thumb2`, `dataflow`) via AfterImage.
+- **Bundled inference engine** — `chonkllama.cpp` sidecar (OpenAI-compatible `/v1`, Vulkan, Chonk Buffer pool); also routes to **Ollama** or any **BYOK OpenAI-compatible** endpoint. Ladder: engine → Ollama → BYOK.
+- **Tool calling that actually works** — llama-server serves *69 canonical Jinja templates* (Qwen, DeepSeek, Gemma, GLM, Granite, Llama, Mistral, gpt-oss, …) with automatic family detection, so fine-tuned GGUFs get real tool calls instead of narration.
+- **Sessions** — persistent SQLite store, durable instructions (`remember`), conversation compaction, **fork/branch a session**, **checkpoints per turn**, session rename/delete, hand-off between windows.
+- **SOPs** — repeatable workflows (agent nodes + deterministic script nodes + **human gates** with send-back), adapted from Tencent LoopForge (MIT). Gated by default; **automated mode** available as a preference (gates auto-approve).
+- **Multi-window workbench** — activity bar, tabbed editor (Monaco), real integrated PTY with tabs, panel pop-outs, resizable splitters, live token streaming, slash-commands, toasts, Ctrl+K palette, memory/sessions/profiles panels.
+- **Local memory & engram** — workspace memory (`AGENTS.md`, `.harness/memory.md`), AfterImage engram search/register with typed absence, and an AfterImage verification path for exact claims.
+- **Speech** — text-to-speech adapters (system / engine Pocket-TTS / piper) with swappable voices; speech-to-text (whisper.cpp) surface is implemented and refuses plainly until sidecars are installed.
+- **Security-first tool use** — per-tool permission gates (`allow`/`ask`/`deny`), workspace path jail, detonation lane for unclean inputs (`run_js` review/execute/redteam tiers), no telemetry, audit log (`~/.eventhorizon/audit.jsonl`).
 
-Author note: multi-GPU box — Intel Arc Pro B70 32GB (CodeRed-418 training) + AMD 7900 XTX (primary render). Event Horizon pins UI to the 7900 XTX, keeps B70 headroom (8GB free), and kills session processes on close. Dev stays light while training runs. See `docs/GPU.md`. Revisit a CodeRed-418 preset only after it finishes cooking.
+## Requirements
 
-## Name
-
-Event Horizon Code (EHC). Not "Visual Studio" — that name is a Microsoft trademark. This project is an original work MIT-licensed, inspired by MIT-licensed upstream work with full attribution in NOTICE.md.
-
-## Status
-
-Scaffold / Phase 1. Electron shell + local server + Monaco workbench + git worktree multi-window agents + AfterImage Engram lookup.
+- **Node.js 20+** (Electron 42, npm packages)
+- **Windows 10/11, Linux, or macOS** (prebuilt `node-pty` and engine templates included; the inference engine binary is machine-specific — see [Engine](#engine-setup) below).
+- A model: either a **GGUF** for the bundled engine *(e.g. `huihui-qwen3-4b-abliterated-v2-q8_0.gguf`, `Qwen3-4B`, `DeepSeek-Coder`, `Llama-3-8B-Instruct`, `Gemma-3-12b`)* or **Ollama** or a **BYOK** OpenAI-compatible endpoint.
+- Optional: **Python 3.8+** (AfterImage engram, TI-85 verification), **Ollama**, **ripgrep / fd** (JS fallbacks are built in if absent).
 
 ## Quick start
 
@@ -26,58 +32,74 @@ Scaffold / Phase 1. Electron shell + local server + Monaco workbench + git workt
 git clone https://github.com/XxChonkExX/event-horizon-code.git
 cd event-horizon-code
 npm install
-npm run dev
+I electron_dev=1 npm run dev    # Windows PowerShell: $env:EH_PASS="dev123"; npm run dev
 ```
 
-Packaged builds: `npm run pack` -> dist/ (.dmg, .exe/.msi, .deb/.rpm/.AppImage)
+First run: Electron opens the workbench. Pick a model (see below), and say *"summarise what this repository is"* — the agent will inspect the workspace itself.
 
-## Architecture
-
-```
-Electron Main (thin: windows, menus, deep links)
-    |
-    +-- Window A ─┐   git worktree /wt/A
-    +-- Window B ─┼─► Local Server (TS/Node, SQLite)
-    +-- Window C ─┘   sessions, tools, permissions, engrams
-                      |
-                      +-- Monaco + LSP/DAP
-                      +-- LLM router (Ollama direct + BYOK API)
-                      +-- Engram (AfterImage, deterministic)
+**Headless runtime (for scripts/CI):**
+```bash
+EH_PASS=dev123 npm run serve    # http://127.0.0.1:4126, Basic auth eventhorizon:dev123
+curl -u eventhorizon:dev123 http://127.0.0.1:4126/global/health
 ```
 
-Design docs: `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/PRIVACY.md`
+**Tests:** `npm test` (≈140 checks: typecheck + LSP + detonation gate + tool-search + SOP + sessions + memory + sensory + TTS).
 
-## Engram
+## Engine setup
 
-Local lookup brain for small models. Zero vector DB. Deterministic stemmed inverted index with typed absence, provenance, TI-85 verified arithmetic. See `engrams/` and `docs/ENGRAM_INTEGRATION.md`.
+The bundled engine is **chonkllama.cpp** (an MIT-licensed, Vulkan-accelerated fork of llama.cpp with a Chonk Buffer GPU memory pool). It is **not** bundled as a binary here; you bring a build or point EHC at one:
 
-Pinned corpus is indexed from local files only. Example sources detected on this machine:
-- `F:/llmtrainingpipeline/codetraining/` — C++ Standard Library, Python Standard Library by Example, HTML Standard, OWASP guides, kernel docs
+1. **Machine-specific binary** (this dev build): `.harness/config.json → engine.binaryPath`
+2. **Packaged binaries** (SHA-pinned, for installers): dropped into `resources/engine/`
+3. **Env override:** `EH_ENGINE_BIN=/path/to/llama-server`
 
-No web fetching at runtime. Users pin their own SRDs / library docs locally and register them.
+Everything else is automatic: `GET /api/engine/models` scans `~/.eventhorizon/models`, `./models`, and config-added dirs for GGUFs; `POST /api/engine/start` loads one with `--jinja` (required for tool calling) and `-c 8192` (context kept small so it coexists with other GPU work); `GET /api/engine/templates` auto-detects the model family and supplies the matching tool-capable chat template.
 
-## Agent Skills
+**Ollama lane:** `ollama serve`, then models appear in the picker; capabilities are probed live via `POST /api/show` and shown as badges.
 
-Open Agent Skills standard: `skills/<name>/SKILL.md` with progressive disclosure (metadata -> instructions -> references). First-party skills in `skills/`.
+**BYOK:** `.harness/secrets.json` (gitignored) —
+```json
+{ "openai": { "baseUrl": "https://api.openai.com/v1", "apiKey": "sk-..." } }
+```
 
-## Security / Privacy
+## Security & privacy posture
 
-- No telemetry SDKs, no analytics, no auto-update phone-home (manual check only)
-- Local server binds 127.0.0.1, random port + per-launch password, Basic auth
-- Secrets in OS keychain (Windows Credential Manager / macOS Keychain / libsecret), fallback encrypted file
-- Every tool call logged locally to `~/.eventhorizon/audit.jsonl`
-- Permissions: allow / ask / deny per tool pattern, per workspace
+- **No telemetry, no analytics, no cloud proxy.** All network calls go to endpoints you configure (Ollama on localhost, BYOK, or none).
+- Local server binds `127.0.0.1`; random port + per-launch password (Basic auth). The GUI never ships secrets to the page; keys live in `.harness/secrets.json` (gitignored).
+- **Permission gate** on every tool: `allow` / `ask` / `deny` in `.harness/config.json` (`permissions`). `edit` / `write` / `bash` default to `ask`; the composer's **auto-approve tools** toggle flips them.
+- **Workspace path jail** — tools cannot write outside the workspace; credential files (`.harness/secrets.json`, `.env`) are never agent-readable or agent-writable.
+- **Detonation lane** — untrusted code runs in an isolated microVM (`sbx`), never on the host, and never falls back silently to the host. See `docs/DETONATION.md`, `docs/SECURITY.md`.
+- Every tool call, model call, escalation and context recovery is appended to `~/.eventhorizon/audit.jsonl`.
+- Detonated tools (`run_js` with `tier=execute|redteam`) require `sbx`; without it the tool refuses plainly.
 
-## Multi-window agents
+## Multi-window agents & SOPs
 
-1 task = 1 window = 1 git worktree = 1 branch. Coordinator agent can spawn workers in new windows. Closing a window does not kill work. Diffs reviewed centrally, merge or discard.
+- **`/think:low|medium|high|max`** per message; per-session reasoning slider; per-profile defaults.
+- **SOPs** (`.harness/sops/*.json`) — repeatable multi-step workflows: agent nodes, deterministic `script` nodes, and **human-gate nodes** that pause for review with *approve* / *send back* semantics (adapted from Tencent LoopForge, MIT). Run with `POST /api/sops/<name>/run`. A run can be **gated** (human gates pause) or **automated** (gates auto-approve, for unattended scheduled work) — set per run or in `.harness/config.json → sop.defaultMode`.
+- **Fork a session** from any checkpoint and open the branch in a new window — two agent approaches, one untouched original.
+- Sessions, memory, profiles, and checkpoints all persist in SQLite (`~/.eventhorizon/data.db`).
 
-## Reasoning control
+## Engram (AfterImage)
 
-Per-message `/think:low|medium|high|max`, per-session slider, per-agent defaults. `plan` = medium, `build` = high, `explore` = low. Budget forcing per model. Verification loop via engram.
+Local, deterministic knowledge store — no vector DB, no embeddings, no network. Pinned corpus is indexed from local files. Gives typed-absence answers (*"NO RECORDS, do not guess"*) and TI-85-verified arithmetic. See `docs/ENGRAM_INTEGRATION.md`. You bring the corpus; EHC imports it, it never ships a corpus.
 
 ## Attribution
 
-MIT. Full credit in NOTICE.md for Microsoft VS Code / Monaco, OpenCode, Electron, SolidJS, AfterImage-Engram (XxChonkExX, MIT).
+This project borrows with gratitude and full attribution (see **NOTICE.md**):
 
-(c) 2026 XxChonkExX / Event Horizon Code contributors
+- **Microsoft VS Code / Monaco** (MIT) — the editor component.
+- **OpenCode** (MIT) — client/server agent loop shape, session model, permission model.
+- **llama.cpp / chonkllama.cpp** (MIT/MIT) — bundled engine + 69 canonical chat templates.
+- **AfterImage-Engram** (MIT, XxChonkExX) — typed absence, deterministic machines, TI-85 verifier.
+- **LoopForge** (MIT, Tencent) — SOP workflow model (agent/script/gate nodes).
+- **Electron** (MIT), **SolidJS** (MIT), **whisper.cpp** (MIT), **Piper** (MIT), **Docker Sandboxes** (docs only), plus model-family templates from their authors.
+
+Model weights are never bundled or shipped; community models you choose yourself remain under their licenses.
+
+## License
+
+MIT © 2026 XxChonkExX / Event Horizon Code contributors.
+
+---
+
+Status: **0.1.0 — beta**. Feature set is complete for daily agentic work; the Windows, Linux and macOS paths all build from source. Rough edges are documented in `docs/`; please file issues.

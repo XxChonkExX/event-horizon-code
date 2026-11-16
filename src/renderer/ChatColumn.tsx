@@ -238,6 +238,22 @@ export default function ChatColumn(props: {
   const [ttsAdapter, setTtsAdapter] = createSignal<string>("");
   const [ttsNote, setTtsNote] = createSignal("");
   const [speaking, setSpeaking] = createSignal(false);
+  const [autoSpeak, setAutoSpeak] = createSignal(localStorage.getItem("ehc.autoSpeak") === "1");
+
+  // The toolbar's tool-step tally mirrors the latest assistant message: it tells
+  // the user whether the agent acted this turn, at a glance, above the chat.
+  const latestStepSummary = createMemo(() => {
+    const msgs = props.messages();
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role !== "assistant") continue;
+      const p = parseAssistant(msgs[i].text);
+      if (p.steps.length) {
+        return { total: p.steps.length, ok: p.steps.filter((s) => s.startsWith("OK")).length };
+      }
+      return null;
+    }
+    return null;
+  });
 
   onMount(() => {
     void (async () => {
@@ -290,7 +306,6 @@ export default function ChatColumn(props: {
 
   // Auto-speak preference: read each new assistant answer aloud once. History
   // that was replayed on mount is never re-spoken.
-  const [autoSpeak, setAutoSpeak] = createSignal(localStorage.getItem("ehc.autoSpeak") === "1");
   let spokenCount = props.messages().length;
   createEffect(() => {
     const msgs = props.messages();
@@ -305,14 +320,24 @@ export default function ChatColumn(props: {
 
   return (
     <aside class="chat">
-      <Show when={caps().filter((c) => CAP_LABEL[c]).length > 0}>
-        <div class="cap-row" title={`capabilities reported by the runtime${capsNote() ? ` (${capsNote()})` : ""}`}>
-          <span class="session-meta">{props.model()}</span>
+      <div class="chat-toolbar" title="Model, capabilities, and tool activity this turn">
+        <span class="chat-toolbar-title">Event Horizon</span>
+        <span class="chat-toolbar-sep" />
+        <span class="chat-toolbar-badge" title={`model: ${props.model() || "none"}${capsNote() ? ` (${capsNote()})` : ""}`}>{props.model() || "none"}</span>
+        <span class="chat-toolbar-caps">
           <For each={caps().filter((c) => CAP_LABEL[c])}>
             {(c) => <span class={`cap-badge cap-${c}`}>{CAP_LABEL[c]}</span>}
           </For>
-        </div>
-      </Show>
+        </span>
+        <span class="spacer" />
+        <Show when={latestStepSummary()}>
+          {(sum) => (
+            <span class="chat-toolbar-badge chat-toolbar-badge-tools" title="tool calls this turn (OK / total)">
+              {sum().ok}/{sum().total} tools
+            </span>
+          )}
+        </Show>
+      </div>
       <div class="chat-scroll" ref={listRef}>
         <Show
           when={props.messages().length > 0}
