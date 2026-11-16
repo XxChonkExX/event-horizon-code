@@ -166,6 +166,19 @@ export default function App() {
   };
 
   const toggle = (p: Panel) => setOpen((o) => ({ ...o, [p]: !o[p] }));
+
+  // Splitter handlers. The pointer delta follows the drag, but the sign depends
+  // on WHICH edge of the panel the handle sits: the handle lives in its own
+  // fixed grid track, so moving it right pushes the panel to its LEFT and pulls
+  // the panel to its RIGHT. Getting this wrong makes a border mirror the drag.
+  //   v1 = sidebar's left edge   -> drag right narrows the sidebar
+  //   v2 = sidebar's right edge  -> drag right widens the sidebar
+  //   v3 = chat's left edge      -> drag right narrows the chat
+  //   h1 = terminal's top edge   -> drag down grows the terminal
+  const sidebarLeftEdge = (d: number) => setSidebarW(clamp(sidebarW() - d, 160, 520));
+  const sidebarRightEdge = (d: number) => setSidebarW(clamp(sidebarW() + d, 160, 520));
+  const chatLeftEdge = (d: number) => setChatW(clamp(chatW() - d, 280, 800));
+  const termTopEdge = (d: number) => setTermH(clamp(termH() + d, 100, 600));
   const cycleShader = () => setShaderIdx((i) => (i + 1) % SHADER_STEPS.length);
   const shaderIntensity = () => SHADER_STEPS[shaderIdx()].v;
 
@@ -330,13 +343,13 @@ export default function App() {
       <ActivityBar open={open} toggle={toggle} palette={() => setPaletteOpen(true)} />
 
       <Show when={open().sidebar}>
-        <Splitter direction="col" class="ehc-split-v1" onDelta={(d) => setSidebarW(clamp(sidebarW() + d, 160, 520))} onEnd={persistLayout} />
+        <Splitter direction="col" class="ehc-split-v1" onDelta={sidebarLeftEdge} onEnd={persistLayout} />
         <section class="sidebar">
           <FileTree onSelect={openFile} />
         </section>
       </Show>
 
-      <Splitter direction="col" class="ehc-split-v2" onDelta={(d) => setSidebarW(clamp(sidebarW() - d, 160, 520))} onEnd={persistLayout} />
+      <Splitter direction="col" class="ehc-split-v2" onDelta={sidebarRightEdge} onEnd={persistLayout} />
 
       <section class="main-area">
         <Tabs files={openFiles} active={activeFile} onSelect={setActiveFile} onClose={closeFile} />
@@ -359,7 +372,7 @@ export default function App() {
       </section>
 
       <Show when={open().chat}>
-        <Splitter direction="col" class="ehc-split-v3" onDelta={(d) => setChatW(clamp(chatW() - d, 280, 800))} onEnd={persistLayout} />
+        <Splitter direction="col" class="ehc-split-v3" onDelta={chatLeftEdge} onEnd={persistLayout} />
         <ChatColumn
           messages={messages} input={input} setInput={setInput} onSend={send}
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
@@ -370,7 +383,7 @@ export default function App() {
       </Show>
 
       <Show when={open().terminal}>
-        <Splitter direction="row" class="ehc-split-h1" onDelta={(d) => setTermH(clamp(termH() - d, 100, 600))} onEnd={persistLayout} />
+        <Splitter direction="row" class="ehc-split-h1" onDelta={termTopEdge} onEnd={persistLayout} />
         <footer class="terminal">
           <div class="term-wrap">
             <div class="ehc-toolbar">

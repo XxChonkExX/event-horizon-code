@@ -288,6 +288,21 @@ export default function ChatColumn(props: {
   };
   onCleanup(() => { stopSpeaking(); stopAudio(); });
 
+  // Auto-speak preference: read each new assistant answer aloud once. History
+  // that was replayed on mount is never re-spoken.
+  const [autoSpeak, setAutoSpeak] = createSignal(localStorage.getItem("ehc.autoSpeak") === "1");
+  let spokenCount = props.messages().length;
+  createEffect(() => {
+    const msgs = props.messages();
+    if (msgs.length <= spokenCount) { spokenCount = msgs.length; return; }
+    const last = msgs[msgs.length - 1];
+    spokenCount = msgs.length;
+    if (autoSpeak() && last.role === "assistant" && !props.sending?.()) {
+      const p = parseAssistant(last.text);
+      if ((p.answer ?? "").trim()) void speak(p.answer);
+    }
+  });
+
   return (
     <aside class="chat">
       <Show when={caps().filter((c) => CAP_LABEL[c]).length > 0}>
@@ -413,6 +428,10 @@ export default function ChatColumn(props: {
         <label class="ehc-auto" title="Let the agent run edit/write/bash tools without asking each time (read/ls/grep/glob are always allowed).">
           <input type="checkbox" checked={props.autoApprove()} onChange={(e) => props.setAutoApprove(e.target.checked)} />
           auto-approve tools
+        </label>
+        <label class="ehc-auto" title="Read every reply aloud using the selected speech adapter.">
+          <input type="checkbox" checked={autoSpeak()} onChange={(e) => { setAutoSpeak(e.target.checked); localStorage.setItem("ehc.autoSpeak", e.target.checked ? "1" : "0"); }} />
+          speak replies
         </label>
       </div>
       {/* Voice picker: shown once we know the plan. The OS voice list can be

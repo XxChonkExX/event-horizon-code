@@ -1,6 +1,11 @@
 // Event Horizon Code — Panel splitter (pointer-capture drag handle)
 // direction "col": resize columns (delta = x movement)
 // direction "row": resize rows (delta = y movement)
+//
+// The delta is the raw pointer movement: right/down are POSITIVE. Callers must
+// apply the sign that matches the panel edge they are dragging (see the
+// sidebarLeftEdge/sidebarRightEdge/chatLeftEdge/termTopEdge handlers in App);
+// getting the sign backwards makes a border mirror the mouse.
 
 import { createSignal, onCleanup } from "solid-js";
 

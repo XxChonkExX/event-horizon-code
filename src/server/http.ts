@@ -33,7 +33,7 @@ import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTempla
 import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
-import { listVoices, speak } from "./tts";
+import { listVoices, speak, ttsDoctor } from "./tts";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -1033,6 +1033,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     // ---- text to speech (adapter-based: system voices / engine / piper) ----
     if (req.method === "GET" && url.pathname === "/api/tts/voices") {
       return sendJson(res, 200, listVoices());
+    }
+    if (req.method === "GET" && url.pathname === "/api/tts/doctor") {
+      return sendJson(res, 200, ttsDoctor());
     }
     if (req.method === "POST" && url.pathname === "/api/tts/speak") {
       let raw = "";

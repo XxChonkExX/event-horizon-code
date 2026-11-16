@@ -209,14 +209,24 @@ aside.chat h3 { margin: 10px 12px 4px; color: var(--accent2); }
 }
 .msg-label { font-size: 11px; color: var(--dim); margin-bottom: 6px; letter-spacing: 0.02em; }
 .msg-answer { display: flex; flex-direction: column; gap: 6px; }
+/* Tool output block: a distinct, readable panel rather than a squeezed strip. */
 .msg-tool {
-  align-self: stretch; margin: 0;
-  background: transparent;
-  border: none; border-left: 2px solid var(--accent2);
-  border-radius: 0;
-  padding: 4px 10px; color: var(--dim); font-size: 11.5px;
-  white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto;
+  align-self: stretch; margin: 0 0 8px;
+  background: rgba(10, 10, 14, 0.72);
+  border: 1px solid var(--border); border-left: 3px solid var(--accent2);
+  border-radius: 8px;
+  padding: 8px 12px 9px; color: var(--text); font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow: auto;
+  scrollbar-width: thin;
 }
+.msg-tool::before {
+  content: "TOOL OUTPUT";
+  display: block;
+  font-size: 9.5px; letter-spacing: 0.12em;
+  color: var(--dim); margin-bottom: 5px;
+}
+.msg-assistant .msg-answer { margin-top: 2px; }
 .md-body { display: flex; flex-direction: column; gap: 2px; }
 .md-p { white-space: pre-wrap; }
 .md-h1 { font-size: 15px; font-weight: 700; color: var(--text); margin: 8px 0 3px; }

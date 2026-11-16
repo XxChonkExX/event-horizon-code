@@ -6,7 +6,7 @@
 // renderer consumes.
 
 import path from "node:path";
-import { ttsAvailability, listVoices, speak, detectEngineTts, voicesDir } from "../src/server/tts";
+import { ttsAvailability, listVoices, speak, detectEngineTts, voicesDir, ttsDoctor } from "../src/server/tts";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -69,6 +69,16 @@ async function main(): Promise<void> {
     const p = await speak("hello", { adapter: "piper" });
     check("piper absent refuses with the reason", p.ok === false && Boolean(p.error), p.error ?? "");
   }
+
+  // 8. doctor: an install ladder with no auto-download, platform-appropriate
+  const doc = ttsDoctor();
+  check("doctor reports the platform default", doc.preferred === avail.preferred, doc.preferred);
+  check("doctor lists the adapters", doc.adapters.length === 4);
+  check("doctor gives per-adapter install guidance", doc.install.length >= 3);
+  check("doctor never promises an automatic download", !doc.install.some((l) => /downloading|will download|auto-?download/i.test(l)));
+  check("doctor names the voices dir", doc.voicesDir === voicesDir());
+  if (isWindows) check("doctor says system voices need nothing", doc.install.some((l) => /nothing to install/i.test(l)));
+  else check("doctor mentions a TTS GGUF", doc.install.some((l) => /GGUF/i.test(l)));
 
   console.log(failures === 0 ? "[ehc] tts tests: ALL PASS" : `[ehc] tts tests: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
