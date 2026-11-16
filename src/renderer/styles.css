@@ -513,6 +513,25 @@ aside.chat li { font-size: 13.5px; line-height: 1.45; }
 .ft-row:hover .ft-name { color: var(--accent); }
 .ft-row { cursor: pointer; }
 .ft-hint { font-size: 11px; color: var(--dim); margin: 4px 0; }
+.ft-op-row { display: flex; gap: 6px; align-items: center; padding: 3px 8px; }
+.ft-op-row button { font-size: 11px; padding: 2px 8px; }
+
+/* in-page right-click menu (never native popups, never fullscreen overlays) */
+.ctx-menu {
+  position: fixed; z-index: 95; min-width: 170px;
+  background: rgba(27, 27, 34, 0.98); border: 1px solid var(--border);
+  border-radius: 9px; padding: 4px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+}
+.ctx-item {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: none; border-radius: 6px;
+  color: var(--text); font-size: 12.5px; padding: 6px 10px; cursor: pointer;
+}
+.ctx-item:hover { background: var(--panel2); }
+.ctx-item.danger { color: var(--bad); }
+.ctx-item.danger:hover { background: rgba(248, 113, 113, 0.12); }
+.ctx-item:disabled { color: var(--dim); cursor: default; }
 .ft-icon { color: var(--dim); width: 12px; flex: 0 0 auto; font-family: Consolas, monospace; }
 .ft-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ft-dir-name { color: var(--text); font-weight: 500; }

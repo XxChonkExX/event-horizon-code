@@ -98,6 +98,7 @@ app.whenReady().then(async () => {
       width: 980, height: 720,
       title: `Event Horizon — ${kind}`,
       backgroundColor: WINDOW_BACKGROUND,
+      autoHideMenuBar: true,
       show: false,
       webPreferences: {
         contextIsolation: true, nodeIntegration: false,
@@ -138,7 +139,55 @@ app.whenReady().then(async () => {
     win.setBounds({ x, y: b.y, width: target, height: b.height });
     return true;
   });
-  Menu.setApplicationMenu(null);
+  // Edit roles are load-bearing: with no application menu, Ctrl+C/V/X and
+  // right-click editing never reach Chromium's edit commands on Windows.
+  // The menu bar stays invisible; the roles still fire.
+  const editMenu = Menu.buildFromTemplate([
+    { label: "Edit", submenu: [
+      { role: "undo" }, { role: "redo" }, { type: "separator" },
+      { role: "cut" }, { role: "copy" }, { role: "paste" }, { role: "selectAll" },
+    ] },
+  ]);
+  Menu.setApplicationMenu(editMenu);
+  // In-page right-click menu actions (ContextMenu.tsx) run here - paste cannot
+  // be done from the renderer sandbox without the clipboard-read permission.
+  ipcMain.handle("edit:action", (e, action: string) => {
+    const wc = BrowserWindow.fromWebContents(e.sender)?.webContents;
+    if (!wc) return false;
+    if (action === "copy") wc.copy();
+    else if (action === "cut") wc.cut();
+    else if (action === "paste") wc.paste();
+    else if (action === "selectAll") wc.selectAll();
+    else return false;
+    return true;
+  });
+  // File-system operations for the FileTree context menu (user-initiated).
+  ipcMain.handle("fs:op", (_e, op: { kind: string; path: string; to?: string; type?: string }) => {
+    const p = path.resolve(op.path);
+    const cwd = process.cwd();
+    if (!p.startsWith(cwd) || p === cwd) return { ok: false, error: "path escapes the workspace" };
+    try {
+      if (op.kind === "newFile") {
+        if (fs.existsSync(p)) return { ok: false, error: "already exists" };
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, "", "utf8");
+      } else if (op.kind === "newDir") {
+        if (fs.existsSync(p)) return { ok: false, error: "already exists" };
+        fs.mkdirSync(p, { recursive: true });
+      } else if (op.kind === "rename") {
+        if (!fs.existsSync(p)) return { ok: false, error: "not found" };
+        const to = path.resolve(op.to ?? "");
+        if (!to.startsWith(cwd) || to === cwd || fs.existsSync(to)) return { ok: false, error: "bad destination" };
+        fs.renameSync(p, to);
+      } else if (op.kind === "delete") {
+        if (!fs.existsSync(p)) return { ok: false, error: "not found" };
+        fs.rmSync(p, { recursive: true });
+      } else return { ok: false, error: "unknown op" };
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String((err as Error).message ?? err).slice(0, 160) };
+    }
+  });
   const windows = new Map<string, BrowserWindow>();
   // Multi-window: one BrowserWindow per session/worktree.
   // Clamp to the work area: at high DPI scaling the logical desktop can be
@@ -149,6 +198,7 @@ app.whenReady().then(async () => {
       width: Math.min(1440, wa.width),
       height: Math.min(900, wa.height),
       backgroundColor: WINDOW_BACKGROUND,
+      autoHideMenuBar: true,
       show: false,
       webPreferences: {
         contextIsolation: true, nodeIntegration: false,

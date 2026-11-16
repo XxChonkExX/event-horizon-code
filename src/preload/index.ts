@@ -11,4 +11,6 @@ contextBridge.exposeInMainWorld("eventhorizon", {
   popoutWindow: (kind: string, sessionId: string, worktree?: string) => ipcRenderer.invoke("window:popout", kind, sessionId, worktree) as Promise<number>,
   growWindow: (targetWidth: number) => ipcRenderer.invoke("window:grow", targetWidth) as Promise<boolean>,
   nudgeWindow: () => ipcRenderer.invoke("window:nudge") as Promise<boolean>,
+  editAction: (action: string) => ipcRenderer.invoke("edit:action", action) as Promise<boolean>,
+  fsOp: (op: { kind: string; path: string; to?: string; type?: string }) => ipcRenderer.invoke("fs:op", op) as Promise<{ ok: boolean; error?: string }>,
 });

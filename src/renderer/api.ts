@@ -13,6 +13,8 @@ declare global {
       popoutWindow: (kind: string, sessionId: string, worktree?: string) => Promise<number>;
       growWindow: (targetWidth: number) => Promise<boolean>;
       nudgeWindow: () => Promise<boolean>;
+      editAction: (action: string) => Promise<boolean>;
+      fsOp: (op: { kind: string; path: string; to?: string; type?: string }) => Promise<{ ok: boolean; error?: string }>;
     };
   }
 }
@@ -76,4 +78,21 @@ export async function nudgeWindow(): Promise<void> {
   if (typeof window !== "undefined" && window.eventhorizon?.nudgeWindow) {
     await window.eventhorizon.nudgeWindow();
   }
+}
+
+// Edit commands (copy/cut/paste/selectAll) run in the main process on the
+// focused webContents - paste cannot be done from the renderer sandbox.
+export async function editAction(action: string): Promise<void> {
+  if (typeof window !== "undefined" && window.eventhorizon?.editAction) {
+    await window.eventhorizon.editAction(action);
+  }
+}
+
+// File-system operations behind the FileTree context menu (user-initiated,
+// path-guarded in the main process).
+export async function fsOp(op: { kind: string; path: string; to?: string; type?: string }): Promise<{ ok: boolean; error?: string }> {
+  if (typeof window !== "undefined" && window.eventhorizon?.fsOp) {
+    return window.eventhorizon.fsOp(op);
+  }
+  return { ok: false, error: "not running inside the app" };
 }

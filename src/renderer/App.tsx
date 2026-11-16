@@ -23,6 +23,7 @@ import Splitter from "./Splitter";
 import ChatColumn, { type ChatMsg } from "./ChatColumn";
 import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo } from "./api";
 import Toasts, { type Toast } from "./Toasts";
+import ContextMenu from "./ContextMenu";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
 const popoutKind = new URLSearchParams(location.search).get("popout");
@@ -373,6 +374,7 @@ export default function App() {
   if (popoutKind === "terminal") {
     return (
       <div class="popout-root">
+        <ContextMenu />
         <Terminal worktree={wt()} />
       </div>
     );
@@ -483,6 +485,7 @@ export default function App() {
 
       <StatusBar session={session} file={activeFile} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
+      <ContextMenu />
       <Show when={devPreview}>
         <div class="dev-preview-banner" role="alert">
           <strong>Dev preview (browser)</strong>

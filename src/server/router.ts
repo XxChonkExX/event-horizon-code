@@ -166,18 +166,27 @@ export async function chatOpenAI(
   const system = THINK_HINTS[opts.think ?? "medium"] ?? THINK_HINTS.medium;
   try {
     const streaming = Boolean(opts.onDelta);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: toOpenAIMessages(messages, system),
-        max_tokens: opts.numPredict ?? 400,
-        stream: streaming,
-        ...(opts.tools?.length ? { tools: opts.tools } : {}),
-      }),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000),
-    });
+    let res: globalThis.Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: toOpenAIMessages(messages, system),
+          max_tokens: opts.numPredict ?? 400,
+          stream: streaming,
+          ...(opts.tools?.length ? { tools: opts.tools } : {}),
+        }),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
+      });
+    } catch (e) {
+      if ((e as Error)?.name === "TimeoutError") {
+        const secs = Math.round((opts.timeoutMs ?? 300_000) / 1000);
+        return { ok: false, content: "", model, error: `model timed out after ${secs}s - it was still loading or busy; try again` };
+      }
+      return { ok: false, content: "", model, error: `endpoint unreachable: ${String((e as Error)?.message ?? e).slice(0, 160)}` };
+    }
     if (!res.ok) {
       return { ok: false, content: "", model, error: `openai-compat ${res.status}: ${(await res.text()).slice(0, 200)}` };
     }
@@ -331,11 +340,23 @@ export async function chat(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(opts?.timeoutMs ?? 120_000),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? 300_000),
     });
   };
   try {
-    let res = await send(!thinkUnsupported.has(thinkKey));
+    let res: globalThis.Response;
+    try {
+      res = await send(!thinkUnsupported.has(thinkKey));
+    } catch (e) {
+      // AbortSignal.timeout rejects with a DOMException named TimeoutError -
+      // surface it as a fact, not a stack ("aborted due to timeout" told the
+      // user nothing). Local GGUFs can legitimately take minutes to load.
+      if ((e as Error)?.name === "TimeoutError") {
+        const secs = Math.round((opts?.timeoutMs ?? 300_000) / 1000);
+        return { ok: false, content: "", model, error: `model timed out after ${secs}s - the local model was still loading or busy; try again (first load can take minutes)` };
+      }
+      return { ok: false, content: "", model, error: `ollama unreachable: ${String((e as Error)?.message ?? e).slice(0, 160)}` };
+    }
     if (!res.ok && res.status === 400) {
       // Endpoint/model rejects `think` — remember it and retry without.
       const errText = await res.text();
