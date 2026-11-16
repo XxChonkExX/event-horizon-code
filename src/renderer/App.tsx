@@ -1,5 +1,5 @@
 // Event Horizon Code — Renderer workbench (SolidJS + Monaco)
-// Structure: VS Code (activity bar, tabs, status bar, command palette, resizable splitters).
+// Structure: VS Code structure (activity bar, tabs, status bar, resizable splitters).
 // Look: OpenCode (deep space, glow accents, shader backdrop with easy intensity cycle).
 // Pop-outs: terminal / chat in their own OS windows (?popout=<kind> route).
 
@@ -18,19 +18,18 @@ import Terminal from "./Terminal";
 import ActivityBar, { type Panel } from "./ActivityBar";
 import Tabs from "./Tabs";
 import StatusBar from "./StatusBar";
-import CommandPalette, { type Action } from "./CommandPalette";
 import ShaderBackground from "./ShaderBackground";
 import Splitter from "./Splitter";
 import ChatColumn, { type ChatMsg } from "./ChatColumn";
-import { apiFetch, apiJson, popoutWindow, growWindow, nudgeWindow, runtimeInfo } from "./api";
+import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo } from "./api";
 import Toasts, { type Toast } from "./Toasts";
 
 const session = new URLSearchParams(location.search).get("session") ?? "default";
 const popoutKind = new URLSearchParams(location.search).get("popout");
 const SHADER_STEPS = [
+  { label: "off", v: 0.0 },
   { label: "subtle", v: 0.35 },
   { label: "full", v: 1.0 },
-  { label: "off", v: 0.0 },
 ] as const;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -69,8 +68,7 @@ export default function App() {
   const [model, setModel] = createSignal<string>("");
   const [think, setThink] = createSignal<string>("medium");
   const [open, setOpen] = createSignal<Record<Panel, boolean>>({ sidebar: true, chat: true, terminal: true, panels: true });
-  const [paletteOpen, setPaletteOpen] = createSignal(false);
-  const [shaderIdx, setShaderIdx] = createSignal(0);
+  const [shaderIdx, setShaderIdx] = createSignal(0); // default OFF - WebGL is opt-in
   // Resizable panel sizes (persisted; adaptive defaults for small displays)
   const [sidebarW, setSidebarW] = createSignal(loadNum("ehc.sidebarW", DEF_SIDEBAR, 160, 520));
   const [chatW, setChatW] = createSignal(loadNum("ehc.chatW", DEF_CHAT, 280, 800));
@@ -331,33 +329,6 @@ export default function App() {
     } catch { toast("checkpoint failed — server unreachable", "error"); }
   };
 
-  const actions = (): Action[] => [
-    { label: "Toggle sidebar (worktrees)", run: () => toggle("sidebar") },
-    { label: "Toggle chat", run: () => toggle("chat") },
-    { label: "Toggle terminal", run: () => toggle("terminal") },
-    { label: "Toggle panels row", run: () => toggle("panels") },
-    { label: "Pop out chat to window", hint: "new window", run: () => void popoutWindow("chat", session) },
-    { label: "Pop out terminal to window", hint: "new window", run: () => void popoutWindow("terminal", session) },
-    { label: "New worktree", hint: "git worktree add", run: () => void newWorktree() },
-    { label: "Fork session to a new window", hint: "branch the conversation", run: () => void forkSession() },
-    { label: "Checkpoint this session", hint: "fork/revert point", run: () => void checkpointSession() },
-    { label: "Cycle shader background", hint: SHADER_STEPS[shaderIdx()].label, run: cycleShader },
-    { label: "Focus composer", run: () => document.querySelector<HTMLInputElement>(".composer input")?.focus() },
-  ];
-
-  // Ctrl+K palette
-  const keyHandler = (e: KeyboardEvent) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-      e.preventDefault();
-      setPaletteOpen((v) => !v);
-      // The palette marks the focus transition that was knocking the compositor
-      // out of sync with the window. Nudge a 1px re-measure to re-sync them.
-      void nudgeWindow();
-    }
-  };
-  window.addEventListener("keydown", keyHandler);
-  onCleanup(() => window.removeEventListener("keydown", keyHandler));
-
   // Close the "+" menu on Escape and on any click outside it.
   const tabMenuKey = (e: KeyboardEvent) => { if (e.key === "Escape") setTabMenuOpen(false); };
   window.addEventListener("keydown", tabMenuKey);
@@ -430,7 +401,7 @@ export default function App() {
         <span class="header-file">{activeFile()}</span>
       </header>
 
-      <ActivityBar open={open} toggle={toggle} palette={() => setPaletteOpen(true)} />
+      <ActivityBar open={open} toggle={toggle} />
 
       <Show when={open().sidebar}>
         <Splitter direction="col" class="ehc-split-v1" onDelta={sidebarLeftEdge} onEnd={persistLayout} />
@@ -486,7 +457,6 @@ export default function App() {
       </Show>
 
       <StatusBar session={session} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
-      <CommandPalette open={paletteOpen} close={() => setPaletteOpen(false)} actions={actions} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
     </div>
   );
