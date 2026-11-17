@@ -76,7 +76,9 @@ export function buildDetonatePlan(worktree: string, tier: DetonateTier, artifact
   const steps = tier === "review"
     ? ["1. Static triage in microVM (no exec yet)", "2. engram_search for reference records", "3. Operator approves before execute"]
     : tier === "execute"
-    ? ["1. Copy artifact to read-only mount in VM", "2. Run in pyvm / rv32 / ti85 harness (no syscalls, capped steps)", "3. Capture stdout/stderr, cap output", "4. Kill VM, diff host before/after"]
+    // Sweep-5 honesty: artifact DELIVERY into the VM is not implemented yet -
+    // these steps describe the intended pipeline, not demonstrated behavior.
+    ? ["1. INTENDED: deliver artifact into the VM (delivery not yet implemented)", "2. INTENDED: run in the VM harness", "3. INTENDED: capture output, cap size", "4. INTENDED: kill VM, diff host before/after"]
     : ["1. Full red-team lane (BlackICE class-targeted behavior)", "2. Engram injection + arithmetic ledger verify", "3. All tool output treated as untrusted, human re-review required"];
 
   const args = tier === "execute" || tier === "redteam"
@@ -87,9 +89,10 @@ export function buildDetonatePlan(worktree: string, tier: DetonateTier, artifact
     worktree,
     tier,
     ...DEFAULT_POLICY,
+    artifactPath,
     args,
     env: { EH_DETONATE: "1", EH_NETWORK: "off", EH_CREDENTIALS: "0" },
-    steps: artifactPath ? [...steps, `artifact: ${artifactPath}`] : steps,
+    steps: artifactPath ? [...steps, `artifact (metadata only - delivery NOT implemented): ${artifactPath}`] : steps,
   };
 }
 
@@ -136,7 +139,63 @@ export function quarantineCheck(hostWorktree: string, allowedRelPaths: string[] 
     const bad = changed.filter((f) => !allowed.has(f));
     return { ok: bad.length === 0, changed: bad };
   } catch {
-    // If git is unavailable, treat as quarantine failure — stated blind spot, operator must review.
+    // If git is unavailable, treat as quarantine failure - stated blind spot, operator must review.
+    return { ok: false, changed: ["git status unavailable"] };
+  }
+}
+
+// Sweep-5: capture the PRE-execution status. Detonation verification compares
+// AFTER against BEFORE, so pre-existing uncommitted changes cannot cause false
+// failures - and modifications to already-dirty files are still detected.
+export function quarantineBaseline(hostWorktree: string): { ok: boolean; files: Set<string>; dirtyContent: Map<string, string> } {
+  const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+  try {
+    const out = execFileSync("git", ["status", "--porcelain"], { cwd: hostWorktree, timeout: 5000, encoding: "utf8" }) as string;
+    const files = new Set<string>();
+    const dirtyContent = new Map<string, string>();
+    for (const line of out.split("\n").filter(Boolean)) {
+      const status = line.slice(0, 2);
+      const file = line.slice(3).trim();
+      files.add(file);
+      // Content fingerprint for already-modified tracked files: a detonated
+      // script that edits a dirty file changes its hash even if git status
+      // still reports it as modified.
+      try {
+        if (status.trim().startsWith("M") || status.trim() === "AM") {
+          dirtyContent.set(file, execFileSync("git", ["hash-object", path.join(hostWorktree, file)], { cwd: hostWorktree, timeout: 5000, encoding: "utf8" }).trim());
+        }
+      } catch { /* unreadable file - status comparison still applies */ }
+    }
+    return { ok: true, files, dirtyContent };
+  } catch {
+    return { ok: false, files: new Set(), dirtyContent: new Map() };
+  }
+}
+
+// Compare AFTER vs BEFORE: only NEW changes (not in the baseline) or content
+// drift on baseline-dirty files count as quarantine violations.
+export function quarantineDiff(hostWorktree: string, baseline: { files: Set<string>; dirtyContent: Map<string, string> }, allowedRelPaths: string[] = []): { ok: boolean; changed: string[] } {
+  const post = quarantineCheck(hostWorktree);
+  const allowed = new Set(allowedRelPaths);
+  const bad: string[] = [];
+  try {
+    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+    const out = execFileSync("git", ["status", "--porcelain"], { cwd: hostWorktree, timeout: 5000, encoding: "utf8" }) as string;
+    for (const line of out.split("\n").filter(Boolean)) {
+      const file = line.slice(3).trim();
+      if (allowed.has(file)) continue;
+      if (!baseline.files.has(file)) bad.push(file); // NEW change
+      else if (baseline.dirtyContent.has(file)) {
+        // Was already dirty - only a violation if its content hash changed.
+        let hash = "";
+        try {
+          hash = execFileSync("git", ["hash-object", path.join(hostWorktree, file)], { cwd: hostWorktree, timeout: 5000, encoding: "utf8" }).trim();
+        } catch { /* keep empty */ }
+        if (hash && hash !== baseline.dirtyContent.get(file)) bad.push(`${file} (content changed)`);
+      }
+    }
+    return { ok: bad.length === 0, changed: bad };
+  } catch {
     return { ok: false, changed: ["git status unavailable"] };
   }
 }

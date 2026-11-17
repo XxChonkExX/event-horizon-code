@@ -401,6 +401,7 @@ export default function App() {
     <div class="workbench" style={{ "grid-template-columns": cols(), "grid-template-rows": rows() }}>
       <ShaderBackground intensity={shaderIntensity} />
       <header class="ehc-chat-tabs">
+        <span class="ehc-brand" title="Event Horizon Code">Event Horizon</span>
         <div class="chat-tabstrip">
           <div class="chat-tabs-scroll" role="tablist" aria-label="Agent sessions">
             <For each={sessionTabs()}>
@@ -487,7 +488,7 @@ export default function App() {
         </footer>
       </Show>
 
-      <StatusBar session={session} file={activeFile} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
+      <StatusBar session={session} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
       <ContextMenu />
       <Show when={devPreview}>

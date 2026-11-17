@@ -291,17 +291,30 @@ export async function approveRun(id: string, decision: { approved?: boolean; sen
   // Script-node pause (sweep-3 #26): approval authorizes THIS exact command -
   // the pending command is immutable, and rejection fails the run.
   if (run.pendingCommand) {
+    // Sweep-5: execute the APPROVED COMMAND SNAPSHOT, not the current SOP node -
+    // a workflow edited while the approval was pending must not change what
+    // the operator actually reviewed and authorized.
+    const approvedCommand = run.pendingCommand;
     const sop = getSop(run.sop);
-    if (!sop) return { ok: false, error: `SOP "${run.sop}" no longer exists` };
     const nodeId = run.pendingNodeId ?? "unknown";
-    const node = sop.nodes.find((n) => n.id === nodeId);
-    if (decision.approved) {
-      run.status = "running";
-      const result = await runScriptNode(run, node ?? { id: nodeId, type: "script", cmd: run.pendingCommand });
-      record(run, node ?? { id: nodeId, type: "script" }, result.ok ? "ok" : "fail", `approved by operator - ${result.output}`);
+    const node = sop?.nodes.find((n) => n.id === nodeId);
+    if (!sop) {
+      run.status = "failed";
+      run.error = "SOP definition was removed while the script awaited approval - command not executed";
+      record(run, { id: nodeId, type: "script" }, "fail", run.error);
       run.pendingCommand = undefined;
       run.pendingNodeId = undefined;
-      audit({ tool: "sop.approve", note: `${id} script approved` });
+      touch(run);
+      return { ok: true, run };
+    }
+    const approvedNode = { ...(node ?? { id: nodeId, type: "script" as const }), cmd: approvedCommand };
+    if (decision.approved) {
+      run.status = "running";
+      const result = await runScriptNode(run, approvedNode);
+      record(run, node ?? { id: nodeId, type: "script" }, result.ok ? "ok" : "fail", `approved by operator (cmd hash recorded) - ${result.output}`);
+      run.pendingCommand = undefined;
+      run.pendingNodeId = undefined;
+      audit({ tool: "sop.approve", note: `${id} script approved: ${Buffer.from(approvedCommand).toString("base64").slice(0, 48)}` });
       if (!result.ok) {
         run.status = "failed";
         run.error = "approved script node failed";

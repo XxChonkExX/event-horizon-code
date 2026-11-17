@@ -5,29 +5,57 @@ on:
     tags: ['v*']
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+  # Release gate: the FULL suite (including the end-to-end smoke) must pass
+  # before anything is packaged (sweep-5 finding: the release pipeline did not
+  # run the tests).
+  test:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - run: npm ci
+      - run: npm test
+
+  build:
+    needs: test
+    # Windows-only: the packer currently stages the WINDOWS chonkllama engine
+    # build (see docs/RELEASE.md known issues - Linux/macOS staging is roadmap).
+    runs-on: windows-latest
+    env:
+      # Secret must point at a zip containing the pinned chonkllama build
+      # (llama-server.exe, llama-tts.exe, DLLs, mtmd.dll). Without it the job
+      # FAILS - an installer with an empty engine directory must never ship.
+      ENGINE_URL: ${{ secrets.ENGINE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Fail early when the pinned engine source is not configured
+        if: env.ENGINE_URL == ''
+        run: |
+          echo "::error::ENGINE_URL secret is not set. The release cannot stage the bundled engine."
+          echo "Set it to a URL hosting the pinned chonkllama build zip (llama-server.exe + DLLs + mtmd.dll)."
+          exit 1
+      - name: Download the pinned engine build
+        run: |
+          Invoke-WebRequest -Uri "$env:ENGINE_URL" -OutFile "$env:RUNNER_TEMP\engine.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP\engine.zip" -DestinationPath "$env:RUNNER_TEMP\engine-src" -Force
+          $src = (Resolve-Path "$env:RUNNER_TEMP\engine-src").Path
+          if (-not (Test-Path "$src\llama-server.exe")) { throw "staged engine source has no llama-server.exe" }
+          "EH_ENGINE_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Stage + verify the bundled engine (SHA256 manifest)
+        run: |
+          node scripts/prepare-engine.mjs
+          node scripts/prepare-engine.mjs --verify
       - run: npm run build
-      - name: Package (Mac DMG)
-        if: matrix.os == 'macos-latest'
-        run: npx electron-builder --mac dmg --publish never
-      - name: Package (Windows NSIS/MSI)
-        if: matrix.os == 'windows-latest'
-        run: npx electron-builder --win nsis msi --publish never
-      - name: Package (Linux AppImage/deb/rpm)
-        if: matrix.os == 'ubuntu-latest'
-        run: npx electron-builder --linux AppImage deb rpm --publish never
+      - name: Package (Windows NSIS)
+        run: npx electron-builder --win nsis --publish never
       - uses: actions/upload-artifact@v4
         with:
-          name: event-horizon-${{ matrix.os }}
+          name: event-horizon-windows
           path: dist/*
           if-no-files-found: error

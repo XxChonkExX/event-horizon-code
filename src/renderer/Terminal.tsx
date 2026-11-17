@@ -8,7 +8,7 @@ import { createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { apiFetch, authQuery, baseUrl } from "./api";
+import { apiFetch, eventStreamTicket, baseUrl } from "./api";
 
 type Tab = { serverId: string; label: string };
 
@@ -101,7 +101,7 @@ function TermBody(props: { serverId: string; active: () => string }) {
         const id = props.serverId;
         term.onData((data) => { void apiFetch(`/api/terminal/${id}/input`, { method: "POST", body: JSON.stringify({ data }) }); });
         term.onResize(({ cols, rows }) => { void apiFetch(`/api/terminal/${id}/resize`, { method: "POST", body: JSON.stringify({ cols, rows }) }); });
-        const q = await authQuery();
+        const q = `ticket=${encodeURIComponent(await eventStreamTicket())}`;
         const es = new EventSource(`${baseUrl()}/api/terminal/${id}/stream?${q}`);
         es.onmessage = (ev) => {
           try { term.write(JSON.parse(ev.data).d as string); } catch { /* skip malformed frame */ }

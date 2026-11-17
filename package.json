@@ -29,7 +29,6 @@
     "test": "npm run typecheck && npm run wsguard:test && npm run acpsec:test && npm run lsp:test && npm run detonate:test && npm run toolsearch:test && npm run sop:test && npm run sessions:test && npm run memory:test && npm run sensory:test && npm run tts:test && npm run engram:test && npm run test:integration",
     "wsguard:test": "tsx scripts/test-wsguard.ts",
     "acpsec:test": "tsx scripts/test-acp-security.ts",
-    "acpsec:test": "tsx scripts/test-acp-security.ts",
     "test:integration": "tsx scripts/smoke-test.ts",
     "engram:test": "node scripts/check-engram.mjs",
     "languages:generate": "node scripts/generate-languages.mjs",

@@ -28,10 +28,10 @@ function resolveEngramSrc(): string | null {
 }
 import { searchEngram, verifyArithmetic, registerEngram } from "./engram";
 import { listTodos, addTodo, toggleTodo, putInstruction } from "./store";
-import vm from "node:vm";
+import crypto from "node:crypto";
 import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
-import { buildDetonatePlan, runDetonate, quarantineCheck, scanUncleanScript, type DetonateTier } from "./detonate";
+import { buildDetonatePlan, runDetonate, quarantineBaseline, quarantineDiff, scanUncleanScript, type DetonateTier } from "./detonate";
 import { isMcpTool, callMcpTool } from "./mcp";
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
@@ -515,8 +515,10 @@ export async function runTool(
           audit({ tool, note: "detonate disabled in config" });
           return { ok: false, error: "the detonation lane is disabled (.harness/config.json detonate.enabled=false). Rewrite the script without host/network access, or enable the lane in config.", out: "" };
         }
-        const artifact = path.join(os.tmpdir(), `ehc-detonate-${Date.now().toString(36)}.mjs`);
-        fs.writeFileSync(artifact, code);
+        // Sweep-5: unpredictable name + exclusive creation - a predictable temp
+        // path is a local pre-creation/overwrite race.
+        const artifact = path.join(os.tmpdir(), `ehc-detonate-${crypto.randomUUID()}.mjs`);
+        fs.writeFileSync(artifact, code, { flag: "wx" });
         const plan = buildDetonatePlan(worktree, tier, artifact);
         plan.timeoutMs = det.timeoutMs ?? plan.timeoutMs;
         plan.maxOutputBytes = det.maxOutputBytes ?? plan.maxOutputBytes;
@@ -533,7 +535,9 @@ export async function runTool(
         if (r.missing) {
           return { ok: false, error: "the detonation lane needs sbx (microVM), which is not installed. Install sbx, or run with tier=review in the clean sandbox.", out: r.out };
         }
-        const q = quarantineCheck(worktree);
+        // Sweep-5: capture the pre-execution status - detonation verification compares after vs before, so pre-existing dirty files cannot fake a pass or a fail.
+        const baseline = quarantineBaseline(worktree);
+        const q = quarantineDiff(worktree, baseline);
         const head = `detonation lane (${tier}) exit=${r.code}${r.killed ? " KILLED: timeout" : ""}` +
           (q.ok ? "" : ` | quarantine: host changed (${q.changed.slice(0, 3).join(", ")})`);
         // Sweep-3 #27: quarantine failure IS a failure - a "successful" run
@@ -585,7 +589,8 @@ export async function runTool(
         results.push({ op: o.op ?? "?", ok: result.ok, output });
       }
       audit({ tool, note: `batch ops=${results.length} bytes=${totalBytes}` });
-      return { ok: true, out: results.map((x) => `[${x.op}${x.ok ? "" : " FAILED"}] ${x.output}`).join("\n---\n") };
+      const allOk = results.every((x) => x.ok);
+      return { ok: allOk, out: results.map((x) => `[${x.op}${x.ok ? "" : " FAILED"}] ${x.output}`).join("\n---\n"), error: allOk ? undefined : "one or more batch operations failed" };
     }
     if (tool === "todo") {
       // Plan/progress tracking (OpenAI Agents SDK pattern). Stored per session.

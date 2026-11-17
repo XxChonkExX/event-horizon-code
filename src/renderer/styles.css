@@ -59,6 +59,10 @@ header {
   padding: 2px 10px; min-height: 38px; max-height: 38px;
   border-bottom: 1px solid var(--border); overflow: hidden;
 }
+.ehc-brand { color: var(--accent); font-weight: 600; font-size: 12.5px; white-space: nowrap; flex: 0 0 auto; letter-spacing: 0.02em; }
+  padding: 2px 10px; min-height: 38px; max-height: 38px;
+  border-bottom: 1px solid var(--border); overflow: hidden;
+}
 .chat-tabstrip { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; min-height: 36px; }
 .chat-tabs-scroll {
   display: flex; align-items: center; gap: 3px; flex: 1 1 auto; min-width: 0;

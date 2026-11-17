@@ -147,3 +147,47 @@ Verified: npm run typecheck clean; npm test exit=0 (11 stages incl. wsguard 11/1
 Smoke-test hardening: prompt fetch retries once and dumps the server output tail plus liveness on failure (one unexplained prompt death in a previous run is now diagnosable; clean-environment rerun fully green).
 
 Verification: npm run typecheck clean; npm test exit=0 - 12 stages (wsguard 14/14, acpsec 9/9, 8 suites ALL PASS, smoke green) on a clean environment with no other EHC process holding the database.
+
+---
+
+# Sweep 5 response - final pre-release audit, 10+ findings (baseline 3e0500c)
+
+## Release-critical - all fixed
+
+| Finding | Fix |
+|---|---|
+| P1 SOP approval executes the CURRENT node command, not the reviewed snapshot | approval now runs the approved COMMAND SNAPSHOT captured at pause time; a SOP edited while waiting cannot change what executes; SOP-deleted-while-waiting fails the run instead of executing |
+| P1 run_js tool schema declared ops as a STRING (interface/implementation mismatch - my regression from the declarative-batch change) | proper JSON Schema: array 1..16, items with op enum + path/pattern; aggregate ok = every operation succeeded |
+| P1 detonation artifact delivery incomplete | stated plainly: plan steps rewritten as INTENDED-pipeline, artifactPath marked metadata-only, agentTools description says delivery is not yet implemented; sbx absence still refuses the lane. Full delivery+integration-test remains gated on vendoring sbx |
+| P1 release workflow packages an EMPTY engine (no prepare:engine step) | release.yml rewritten: test job (full npm test) gates the build; build job Windows-only (staging is Windows-only today), downloads the pinned engine from ENGINE_URL secret, FAILS the job if unset or if llama-server.exe is missing, then stages + SHA-verifies before packaging |
+| P1 EventSource migration incomplete (Terminal.tsx + MonacoMount.tsx still used auth=) | both migrated to the single-use ticket exchange; authQuery() removed |
+
+## Additional fixes
+
+- P2 terminal env: PATH and PATHEXT added to the blocked override set (executable resolution is no longer caller-influenceable)
+- P2 detonation quarantine: pre-execution baseline capture + after-vs-before comparison (pre-existing dirty files can no longer fake pass/fail; content-hash drift on dirty files is detected)
+- P2 detonation artifact name: unpredictable (UUID) + exclusive creation
+- P2 MCP env: configured values may not override PATH/PATHEXT/NODE_OPTIONS/ELECTRON_RUN_AS_NODE; key/value shape validated
+- P3 run_js aggregate success folded into the schema fix
+
+## UI/UX regression check - responded
+
+- Command palette removal: intentional (compositor trigger; first confirmed splay cause). A non-overlay in-page launcher may return post-alpha - recorded as roadmap.
+- Header branding restored: the strip now carries the Event Horizon label again.
+- Status bar literal worktree fixed: it now displays the session's ACTUAL worktree directory.
+
+## Pipeline findings - responded
+
+- CI now runs the FULL npm test suite (ubuntu, plain npm ci so native modules install).
+- Release workflow: test job gates the build; engine staging fails the job loudly when the pinned source is not configured.
+- Packaging narrowed to Windows (the only verified target) - Linux/macOS remain roadmap with the engine-staging work.
+
+## Deferred (unchanged, documented)
+
+- runtime:info still returns the master password to the trusted renderer (XSS-in-trusted-renderer residual) - main-process API proxy is post-alpha.
+- fs:op anchored to process.cwd() rather than a session worktree - worktree-plumbing milestone.
+- MCP per-server permissions and name validation - documented.
+
+## Verification
+
+npm run typecheck clean. npm test exit=0 - 12 stages (wsguard 14/14 incl. dangling-symlink + credential-alias, acpsec 9/9, 8 suites ALL PASS, smoke green) on a clean environment.

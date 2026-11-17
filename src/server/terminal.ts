@@ -21,6 +21,10 @@ const BLOCKED_ENV = new Set([
   "PYTHONHOME",
   "ELECTRON_RUN_AS_NODE",
   "COMSPEC",
+  // Sweep-5: executable-resolution variables - an overridden PATH/PATHEXT
+  // decides which binary actually runs, so callers may never set them.
+  "PATH",
+  "PATHEXT",
 ]);
 
 // Exported for the ACP security tests.

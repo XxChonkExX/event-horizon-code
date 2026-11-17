@@ -33,6 +33,15 @@ class McpServer {
 
   async start(timeoutMs = 15000): Promise<void> {
     if (this.proc) return;
+    // Sweep-5: configured env values may not override executable-resolution
+    // variables (PATH decides which binary the MCP server itself runs through).
+    const BLOCKED_MCP_ENV = new Set(["PATH", "PATHEXT", "NODE_OPTIONS", "ELECTRON_RUN_AS_NODE"]);
+    const configured: Record<string, string> = {};
+    for (const [k, v] of Object.entries(this.cfg.env ?? {})) {
+      if (!BLOCKED_MCP_ENV.has(k.toUpperCase()) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof v === "string" && v.length <= 8192) {
+        configured[k] = v;
+      }
+    }
     const proc = spawn(this.cfg.command, this.cfg.args ?? [], {
       // Env allowlist: pass PATH/HOME/system basics, plus the server's own vars.
       env: {
@@ -40,7 +49,7 @@ class McpServer {
         HOME: process.env.HOME ?? process.env.USERPROFILE ?? "",
         SystemRoot: process.env.SystemRoot ?? "",
         TEMP: process.env.TEMP ?? "",
-        ...(this.cfg.env ?? {}),
+        ...configured,
       },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,

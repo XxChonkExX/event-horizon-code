@@ -3,6 +3,7 @@
 export default function StatusBar(props: {
   session: string;
   file: () => string;
+  worktree: () => string;
   model: () => string;
   think: () => string;
   shader: () => string;
@@ -12,7 +13,7 @@ export default function StatusBar(props: {
     <div class="status-bar">
       <span>session {props.session}</span>
       <span class="status-dim">·</span>
-      <span>worktree .eventhorizon/worktrees</span>
+      <span title="the directory this session's tools operate in">worktree {props.worktree()}</span>
       <span class="status-dim">·</span>
       <span class="status-file" title={props.file()}>{props.file()}</span>
       <div class="status-spacer" />

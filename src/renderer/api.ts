@@ -43,9 +43,19 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function authQuery(): Promise<string> {
+// EH-010: exchange the master password (sent once, in a request header) for a
+// single-use short-lived event ticket - EventSource URLs never carry the
+// password. Every EventSource in the app goes through this.
+export async function eventStreamTicket(): Promise<string> {
   const rt = await runtimeInfo();
-  return rt ? `auth=${encodeURIComponent(rt.password)}` : "";
+  if (!rt) throw new Error("runtime unavailable - renderer not launched from Electron main");
+  const res = await fetch(`${rt.baseUrl}/api/events/ticket`, {
+    headers: { authorization: "Basic " + btoa(`eventhorizon:${rt.password}`) },
+  });
+  if (!res.ok) throw new Error(`event ticket request failed: HTTP ${res.status}`);
+  const j = (await res.json()) as { ticket?: string };
+  if (!j.ticket) throw new Error("event ticket request returned no ticket");
+  return j.ticket;
 }
 
 export function baseUrl(): string {

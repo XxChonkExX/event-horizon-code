@@ -12,7 +12,7 @@ import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
 import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import { apiFetch, runtimeInfo } from "./api";
+import { apiFetch, runtimeInfo, eventStreamTicket } from "./api";
 
 (self as unknown as { MonacoEnvironment: { getWorker: (workerId: string, label: string) => Worker } }).MonacoEnvironment = {
   getWorker(_workerId: string, label: string) {
@@ -92,7 +92,8 @@ export default function MonacoMount(props: { file: string; worktree?: string }) 
     try {
       const rt = await runtimeInfo();
       if (!rt) return;
-      const q = `auth=${encodeURIComponent(rt.password)}&worktree=${encodeURIComponent(worktree())}`;
+      const ticket = await eventStreamTicket();
+      const q = `ticket=${encodeURIComponent(ticket)}&worktree=${encodeURIComponent(worktree())}`;
       diagSource?.close();
       diagSource = new EventSource(`${rt.baseUrl}/api/events?${q}`);
       diagSource.addEventListener("diagnostics", (ev) => {

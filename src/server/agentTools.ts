@@ -22,8 +22,28 @@ export const TOOL_SPECS: ToolDef[] = [
     type: "function",
     function: {
       name: "run_js",
-      description: "Batch read-only tool calling: declare 1-16 operations (read/ls/grep/glob with paths/patterns) and get every result in one round trip. Declarative only - the clean tier executes NO model-written code. For arbitrary code use tier=execute/redteam (detonation lane via sbx; refuses plainly if sbx is not installed). Result cap: 100 KB.",
-      parameters: { type: "object", properties: { ops: str("Array of 1-16 operations: {\"op\":\"read\",\"path\":\"src/x.ts\"} | {\"op\":\"ls\",\"path\":\"src\"} | {\"op\":\"grep\",\"pattern\":\"TODO\",\"path\":\"src\"} | {\"op\":\"glob\",\"pattern\":\"*.ts\"}.") }, required: ["ops"] },
+      description: "Batch read-only tool calling: declare 1-16 operations (read/ls/grep/glob with paths/patterns) and get every result in one round trip. Declarative only - the clean tier executes NO model-written code. ok reflects whether EVERY operation succeeded. For arbitrary code use tier=execute/redteam (detonation lane via sbx; refuses plainly if sbx is not installed; artifact delivery into the VM is not yet implemented).",
+      parameters: {
+        type: "object",
+        properties: {
+          ops: {
+            type: "array",
+            minItems: 1,
+            maxItems: 16,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                op: { type: "string", enum: ["read", "ls", "grep", "glob"] },
+                path: { type: "string", description: "workspace-relative path or directory" },
+                pattern: { type: "string", description: "glob pattern or grep regex" }
+              },
+              required: ["op"]
+            }
+          }
+        },
+        required: ["ops"]
+      },
     },
   },
   {
