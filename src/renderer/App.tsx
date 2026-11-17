@@ -21,7 +21,7 @@ import StatusBar from "./StatusBar";
 import ShaderBackground from "./ShaderBackground";
 import Splitter from "./Splitter";
 import ChatColumn, { type ChatMsg } from "./ChatColumn";
-import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo } from "./api";
+import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo, eventStreamTicket } from "./api";
 import Toasts, { type Toast } from "./Toasts";
 import ContextMenu from "./ContextMenu";
 
@@ -73,6 +73,23 @@ export default function App() {
   const [think, setThink] = createSignal<string>("medium");
   const [open, setOpen] = createSignal<Record<Panel, boolean>>({ sidebar: true, chat: true, terminal: true, panels: true });
   const [shaderIdx, setShaderIdx] = createSignal(0); // default OFF - WebGL is opt-in
+  // Operator command surface: global pause + capabilities.
+  const [agentsPaused, setAgentsPaused] = createSignal(false);
+  const fetchRuntimePause = async (): Promise<void> => {
+    try {
+      const r = await apiFetch("/api/runtime/pause");
+      const d = (await r.json()) as { paused?: boolean };
+      setAgentsPaused(d.paused === true);
+    } catch { /* preview shell without the app */ }
+  };
+  const toggleAgentsPaused = async (): Promise<void> => {
+    const next = !agentsPaused();
+    try {
+      const r = await apiFetch("/api/runtime/pause", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paused: next }) });
+      const d = (await r.json()) as { paused?: boolean };
+      setAgentsPaused(d.paused === next);
+    } catch { toast(next ? "could not pause agents" : "could not resume agents", "error"); }
+  };
   // Directory tools/terminal/LSP operate in: from the session row's worktree
   // column (popouts receive it in the ?wt= query).
   const [wt, setWt] = createSignal<string>(bootWorktree);
@@ -146,11 +163,10 @@ export default function App() {
     try {
       const rt = await runtimeInfo();
       if (!rt) return;
-      // EH-010: exchange the master password (sent once, in a header) for a
-      // single-use 60s event ticket - the URL never carries the password.
-      const tk = await fetch(`${rt.baseUrl}/api/events/ticket`, { headers: { authorization: "Basic " + btoa(`eventhorizon:${rt.password}`) } });
-      const tkt = (await tk.json()) as { ticket?: string };
-      const q = `ticket=${encodeURIComponent(tkt.ticket ?? "")}&worktree=${encodeURIComponent(wt())}`;
+      // EH-010 + sweep-5: the ticket is minted in MAIN (the credential never
+      // enters the renderer); the URL carries a scoped single-use ticket.
+      const ticket = await eventStreamTicket();
+      const q = `ticket=${encodeURIComponent(ticket)}&worktree=${encodeURIComponent(wt())}`;
       es?.close();
       es = new EventSource(`${rt.baseUrl}/api/events?${q}`);
       es.addEventListener("token", (ev) => {
@@ -238,6 +254,7 @@ export default function App() {
   // column. Grow once on load (grow-only, clamped in main).
   onMount(() => {
     if (window.innerWidth < 1200) void growWindow(1280);
+    void fetchRuntimePause();
   });
   const closeFile = (f: string) => {
     setOpenFiles((fs) => {
@@ -438,7 +455,7 @@ export default function App() {
       <Show when={open().sidebar}>
         <Splitter direction="col" class="ehc-split-v1" onDelta={sidebarLeftEdge} onEnd={persistLayout} />
         <section class="sidebar">
-          <FileTree onSelect={openFile} />
+          <FileTree onSelect={openFile} root={wt} />
         </section>
       </Show>
 
@@ -488,7 +505,7 @@ export default function App() {
         </footer>
       </Show>
 
-      <StatusBar session={session} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} />
+      <StatusBar session={session} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} paused={agentsPaused} onPause={toggleAgentsPaused} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
       <ContextMenu />
       <Show when={devPreview}>

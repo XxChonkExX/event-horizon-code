@@ -11,7 +11,7 @@ import { openContextMenu } from "./ContextMenu";
 
 type Entry = { name: string; type: "dir" | "file" };
 
-export default function FileTree(props: { onSelect: (file: string) => void }) {
+export default function FileTree(props: { onSelect: (file: string) => void; root?: () => string }) {
   const [openDirs, setOpenDirs] = createSignal<Set<string>>(new Set());
   const [children, setChildren] = createSignal<Record<string, Entry[]>>({});
   const [loading, setLoading] = createSignal<Record<string, boolean>>({});
@@ -52,7 +52,7 @@ export default function FileTree(props: { onSelect: (file: string) => void }) {
   const parentOf = (p: string): string => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".");
 
   async function runOp(op: { kind: string; path: string; to?: string; type?: string }): Promise<void> {
-    const r = await fsOp(op);
+    const r = await fsOp(op, props.root ? props.root() : undefined);
     if (!r.ok) { setOpErr(r.error ?? "operation failed"); return; }
     setOpErr("");
     setPendingNew(null);

@@ -124,7 +124,9 @@ app.whenReady().then(async () => {
   runtime = await resolveRuntime();
   ipcMain.handle("runtime:info", (e) => {
     if (!isTrustedRenderer(e)) throw new Error("Untrusted IPC sender");
-    return runtime;
+    // Sweep-5 P0: the renderer never receives the API password. Authenticated
+    // calls go through api:proxy (below); EventSource gets scoped tickets.
+    return runtime ? { baseUrl: runtime.baseUrl, port: runtime.port } : null;
   });
   // Folder picker for the Model Manager (renderer has no fs access by design).
   ipcMain.handle("dialog:pickFolder", async (e) => {
@@ -212,22 +214,71 @@ app.whenReady().then(async () => {
     else return false;
     return true;
   });
+  // Sweep-5 P0: authenticated API proxy. The MAIN process owns the credential;
+  // the renderer sends (method, path, body) and receives {status, body}.
+  // EventSource cannot go through here (it needs a URL), so streams use
+  // single-use tickets (events:ticket) - the password never leaves main.
+  ipcMain.handle("api:proxy", async (e, req: { method?: string; path?: string; body?: unknown }) => {
+    if (!isTrustedRenderer(e)) throw new Error("Untrusted IPC sender");
+    if (typeof req?.path !== "string" || !req.path.startsWith("/")) throw new Error("bad path");
+    const method = (req.method ?? "GET").toUpperCase();
+    if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) throw new Error("bad method");
+    const rt = runtime;
+    if (!rt) return { status: 503, body: { error: "runtime unavailable" } };
+    try {
+      const res = await fetch(`${rt.baseUrl}${req.path}`, {
+        method,
+        headers: {
+          authorization: "Basic " + Buffer.from(`eventhorizon:${rt.password}`).toString("base64"),
+          ...(req.body !== undefined ? { "content-type": "application/json" } : {}),
+        },
+        body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
+        signal: AbortSignal.timeout(90_000),
+      });
+      const text = await res.text();
+      let body: unknown = text;
+      try { body = JSON.parse(text); } catch { /* non-JSON body passed through */ }
+      return { status: res.status, body };
+    } catch (err) {
+      return { status: 502, body: { error: `proxy failed: ${String((err as Error)?.message ?? err).slice(0, 160)}` } };
+    }
+  });
+  // Single-use event ticket, minted in main (which holds the credential).
+  ipcMain.handle("events:ticket", async (e) => {
+    if (!isTrustedRenderer(e)) throw new Error("Untrusted IPC sender");
+    const rt = runtime;
+    if (!rt) throw new Error("runtime unavailable");
+    const r = await fetch(`${rt.baseUrl}/api/events/ticket`, {
+      method: "POST",
+      headers: { authorization: "Basic " + Buffer.from(`eventhorizon:${rt.password}`).toString("base64") },
+      signal: AbortSignal.timeout(5000),
+    });
+    const j = (await r.json()) as { ticket?: string; error?: string };
+    if (!j.ticket) throw new Error(j.error ?? "ticket unavailable");
+    return j.ticket;
+  });
   // File-system operations for the FileTree context menu (user-initiated).
   // EH-001/002: canonical containment via the shared guard (sibling-prefix and
   // symlink proof), sender confined to app windows, ops allowlisted, payload
   // shapes and lengths validated at runtime.
   const FS_OPS = new Set(["newFile", "newDir", "rename", "delete"]);
-  ipcMain.handle("fs:op", (e, op: { kind?: unknown; path?: unknown; to?: unknown; type?: unknown }) => {
+  ipcMain.handle("fs:op", (e, op: { kind?: unknown; path?: unknown; to?: unknown; type?: unknown }, root?: string) => {
     if (!isTrustedRenderer(e)) return { ok: false, error: "rejected sender" };
+    // Sweep-back item: operations anchor to the SESSION's validated worktree
+    // (passed by the renderer), never the server's cwd - a session pinned to a
+    // git worktree cannot touch the host workspace root.
+    const rootGuard = contained(process.cwd(), typeof root === "string" && root ? root : ".");
+    if (!rootGuard.ok || !rootGuard.abs) return { ok: false, error: rootGuard.error ?? "invalid session worktree" };
+    const effectiveRoot = rootGuard.abs;
     if (typeof op?.kind !== "string" || !FS_OPS.has(op.kind)) return { ok: false, error: "unknown op" };
     if (typeof op.path !== "string" || op.path.length === 0 || op.path.length > 1024) return { ok: false, error: "invalid path" };
     if (op.to !== undefined && (typeof op.to !== "string" || op.to.length > 1024)) return { ok: false, error: "invalid destination" };
-    const guard = contained(process.cwd(), op.path);
+    const guard = contained(effectiveRoot, op.path);
     if (!guard.ok || !guard.abs) return { ok: false, error: guard.error ?? "path escapes the workspace" };
     const p = guard.abs;
     // Deleting or renaming the workspace root itself is always refused
     // (containment permits "." - the caller decides what the root means).
-    if ((op.kind === "delete" || op.kind === "rename") && path.relative(process.cwd(), p) === "") {
+    if ((op.kind === "delete" || op.kind === "rename") && path.relative(effectiveRoot, p) === "") {
       return { ok: false, error: "the workspace root cannot be deleted or renamed" };
     }
     try {

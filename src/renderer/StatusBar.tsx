@@ -8,6 +8,8 @@ export default function StatusBar(props: {
   think: () => string;
   shader: () => string;
   onShader: () => void;
+  paused: () => boolean;
+  onPause: () => void;
 }) {
   return (
     <div class="status-bar">
@@ -21,6 +23,14 @@ export default function StatusBar(props: {
       <span class="status-badge">think: {props.think()}</span>
       <button class="status-badge status-btn" title="Cycle shader background" onClick={props.onShader}>
         shader: {props.shader()}
+      </button>
+      <button
+        class="status-badge status-btn"
+        classList={{ "agents-paused": props.paused() }}
+        title={props.paused() ? "Agents paused - resume autonomous work" : "Pause all agents between steps"}
+        onClick={props.onPause}
+      >
+        agents: {props.paused() ? "paused" : "running"}
       </button>
     </div>
   );

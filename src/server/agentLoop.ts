@@ -129,6 +129,13 @@ async function withSessionLock<T>(sessionId: string, operation: () => Promise<T>
   }
 }
 
+// Sweep "operator control": a global pause stops all autonomous work between
+// steps and before tool calls, without killing the app. In-flight tools finish;
+// nothing new starts while paused.
+let agentPaused = false;
+export function setAgentPaused(v: boolean): void { agentPaused = v; }
+export function isAgentPaused(): boolean { return agentPaused; }
+
 export function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult> {
   return withSessionLock(p.sessionId, () => runAgentTurnUnlocked(p));
 }
@@ -233,7 +240,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     for (let step = 0; step < 4; step++) {
       // Cooperative cancel: honoured between steps; a model call already in
       // flight finishes first.
-      if (p.isCancelled?.()) {
+      if (p.isCancelled?.() || isAgentPaused()) {
         cancelled = true;
         result = { ok: true, content: "(cancelled by request - run stopped between agent steps)", model: usedModel || "none" };
         break;
@@ -316,7 +323,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
           // Cooperative cancel: honoured between tool calls, not mid-execution -
           // a started tool runs to completion and its result is recorded before
           // the run stops (no silent loss of a completed mutation).
-          if (p.isCancelled?.()) {
+          if (p.isCancelled?.() || isAgentPaused()) {
             cancelled = true;
             convo.push({ role: "tool", content: "(run cancelled by request before this tool executed)", name: tc.name, tool_call_id: tc.id });
             steps.push("X  cancelled between tool calls");

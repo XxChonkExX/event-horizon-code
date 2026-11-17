@@ -24,7 +24,7 @@ import path from "node:path";
 import { exec } from "node:child_process";
 import { audit } from "./audit";
 import { broadcast } from "./sse";
-import { runAgentTurn } from "./agentLoop";
+import { runAgentTurn, isAgentPaused } from "./agentLoop";
 
 export type SopNode = {
   id: string;
@@ -177,6 +177,8 @@ async function advance(runId: string, sop: Sop, run: SopRun): Promise<void> {
   try {
     while (run.status === "running") {
       if (cancelledRuns.has(runId)) { run.status = "cancelled"; touch(run); break; }
+      // Operator global pause (sweep: command center): stop advancing all autonomous work.
+      if (isAgentPaused()) { run.status = 'cancelled'; run.error = 'runtime paused by operator'; touch(run); break; }
       if (run.history.length >= REWORK_LIMIT) {
         run.status = "failed";
         run.error = `rework limit reached (${REWORK_LIMIT} node executions) - the workflow kept cycling; check the failing step's onFail edge`;

@@ -2,6 +2,8 @@
 // Spawns serve.ts directly via node+tsx (no npx shell quirks), polls /global/health,
 // exercises the core endpoints, then kills the whole process tree (Windows-safe).
 import { spawn, execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -41,8 +43,14 @@ async function main() {
   const runner = path.join("scripts", "run-electron-node.mjs");
   // Electron's embedded Node (ELECTRON_RUN_AS_NODE): same ABI as the GUI, so
   // better-sqlite3 + node-pty load in headless too.
-  const child = spawn(process.execPath, [runner, tsxCli, "scripts/serve.ts"], {
-    env: { ...process.env, EH_PORT: String(PORT), EH_PASS: PASS },
+  // Isolated environment: empty cwd (no .harness config/profiles) + a temp DB,
+  // so the smoke never triggers a real model load and never touches operator
+  // data. The echo path (no model) makes the run fast and deterministic.
+  const smokeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-smoke-home-"));
+  const projectDir = process.cwd();
+  const child = spawn(process.execPath, [path.join(projectDir, runner), path.join(projectDir, tsxCli), path.join(projectDir, "scripts", "serve.ts")], {
+    cwd: smokeHome,
+    env: { ...process.env, EH_PORT: String(PORT), EH_PASS: PASS, EH_DB: path.join(smokeHome, "smoke.db"), EH_SOPS_DIR: path.join(smokeHome, "sops") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";

@@ -603,6 +603,7 @@ footer.terminal {
 }
 .status-btn { cursor: pointer; font-size: 12px; }
 .status-btn:hover { border-color: var(--accent); }
+.agents-paused { border-color: rgba(251,191,36,0.6); color: var(--warn); }
 
 /* ---- command palette ---- */
 .palette-overlay {

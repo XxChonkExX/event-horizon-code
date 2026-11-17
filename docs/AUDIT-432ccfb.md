@@ -191,3 +191,11 @@ Verification: npm run typecheck clean; npm test exit=0 - 12 stages (wsguard 14/1
 ## Verification
 
 npm run typecheck clean. npm test exit=0 - 12 stages (wsguard 14/14 incl. dangling-symlink + credential-alias, acpsec 9/9, 8 suites ALL PASS, smoke green) on a clean environment.
+
+---
+
+# Sweep 5 follow-up: password boundary CLOSED (P0 -> done)
+
+runtime:info no longer returns the credential. The renderer never holds the API password: JSON calls go through the main-process proxy (api:proxy, sender-trusted), and every EventSource stream uses a main-minted single-use ticket. Residual (unchanged, accepted): a successful XSS inside the trusted renderer equals full app compromise - mitigated by CSP, the minimal bridge, and sender validation; a scoped-credential design can further shrink that after alpha.
+
+Also landed in this batch: operator command surface (global pause + /api/capabilities health-derived + /api/approvals queue + status-bar toggle), fs:op session-worktree binding, MCP permission prefix patterns (mcp_server_*), docs/ROADMAP.md, integrations/omarchy scaffold, detonation plan steps marked INTENDED (delivery not implemented), detonation artifact UUID + exclusive creation, quarantine pre/post baseline, SOP approved-command snapshot, run_js schema + aggregate ok.

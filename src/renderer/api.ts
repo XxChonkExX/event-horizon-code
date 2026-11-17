@@ -1,8 +1,10 @@
 // Event Horizon Code — Renderer server client
-// Gets runtime credentials over the preload bridge (IPC), never from DOM/URL.
-// All server calls carry Basic auth. connect-src CSP already allows 127.0.0.1:*.
+// Sweep-5 P0: the renderer NEVER holds the API password. Authenticated calls
+// go through the main-process proxy (api:proxy); EventSource streams use
+// single-use tickets minted in main (events:ticket). The renderer only knows
+// the runtime's base URL - never a credential.
 
-type RuntimeInfo = { baseUrl: string; password: string; port: number } | null;
+type RuntimeInfo = { baseUrl: string; port: number } | null;
 
 declare global {
   interface Window {
@@ -14,7 +16,9 @@ declare global {
       growWindow: (targetWidth: number) => Promise<boolean>;
       nudgeWindow: () => Promise<boolean>;
       editAction: (action: string) => Promise<boolean>;
-      fsOp: (op: { kind: string; path: string; to?: string; type?: string }) => Promise<{ ok: boolean; error?: string }>;
+      apiProxy: (req: { method?: string; path?: string; body?: unknown }) => Promise<{ status: number; body: unknown }>;
+      eventTicket: () => Promise<string>;
+      fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => Promise<{ ok: boolean; error?: string }>;
     };
   }
 }
@@ -29,13 +33,21 @@ export async function runtimeInfo(): Promise<RuntimeInfo> {
   return cached;
 }
 
+// Proxied fetch: the main process attaches the credential. The Response-like
+// shape is preserved so callers keep working.
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  if (typeof window !== "undefined" && window.eventhorizon?.apiProxy) {
+    const method = (init?.method ?? "GET").toUpperCase();
+    const body = init?.body !== undefined ? JSON.parse(String(init.body)) as unknown : undefined;
+    const r = await window.eventhorizon.apiProxy({ method, path, body });
+    return new Response(typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? null), {
+      status: r.status,
+      headers: { "content-type": "application/json" },
+    });
+  }
   const rt = await runtimeInfo();
-  if (!rt) throw new Error("runtime unavailable — renderer not launched from Electron main");
-  const headers = new Headers(init?.headers);
-  headers.set("Authorization", "Basic " + btoa(`eventhorizon:${rt.password}`));
-  if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-  return fetch(`${rt.baseUrl}${path}`, { ...init, headers });
+  if (!rt) throw new Error("runtime unavailable - renderer not launched from Electron main");
+  return fetch(`${rt.baseUrl}${path}`, init);
 }
 
 export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -43,19 +55,13 @@ export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-// EH-010: exchange the master password (sent once, in a request header) for a
-// single-use short-lived event ticket - EventSource URLs never carry the
-// password. Every EventSource in the app goes through this.
+// EH-010 + sweep-5: the ticket is minted in MAIN (credential stays there).
+// EventSource URLs carry a scoped single-use ticket, never the password.
 export async function eventStreamTicket(): Promise<string> {
-  const rt = await runtimeInfo();
-  if (!rt) throw new Error("runtime unavailable - renderer not launched from Electron main");
-  const res = await fetch(`${rt.baseUrl}/api/events/ticket`, {
-    headers: { authorization: "Basic " + btoa(`eventhorizon:${rt.password}`) },
-  });
-  if (!res.ok) throw new Error(`event ticket request failed: HTTP ${res.status}`);
-  const j = (await res.json()) as { ticket?: string };
-  if (!j.ticket) throw new Error("event ticket request returned no ticket");
-  return j.ticket;
+  if (typeof window !== "undefined" && window.eventhorizon?.eventTicket) {
+    return window.eventhorizon.eventTicket();
+  }
+  throw new Error("runtime unavailable - renderer not launched from Electron main");
 }
 
 export function baseUrl(): string {
@@ -100,9 +106,9 @@ export async function editAction(action: string): Promise<void> {
 
 // File-system operations behind the FileTree context menu (user-initiated,
 // path-guarded in the main process).
-export async function fsOp(op: { kind: string; path: string; to?: string; type?: string }): Promise<{ ok: boolean; error?: string }> {
+export async function fsOp(op: { kind: string; path: string; to?: string; type?: string }, root?: string): Promise<{ ok: boolean; error?: string }> {
   if (typeof window !== "undefined" && window.eventhorizon?.fsOp) {
-    return window.eventhorizon.fsOp(op);
+    return window.eventhorizon.fsOp(op, root);
   }
   return { ok: false, error: "not running inside the app" };
 }

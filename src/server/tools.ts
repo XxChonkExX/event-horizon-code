@@ -45,10 +45,16 @@ function readConfig(): { permissions?: Record<string, string> } {
 
 function permissionFor(tool: ToolName): string {
   const perms = readConfig().permissions ?? {};
-  return perms[tool] ?? "ask";
+  if (perms[tool]) return perms[tool];
+  // Sweep-back: prefix patterns let one rule govern a family (e.g.
+  // "mcp_github_*" denies every tool of that server without listing each).
+  for (const [pattern, value] of Object.entries(perms)) {
+    if (pattern.endsWith("*") && tool.startsWith(pattern.slice(0, -1))) return value;
+  }
+  return "ask";
 }
 
-function readDetonateConfig(): { enabled: boolean; timeoutMs?: number; maxOutputBytes?: number } {
+export function readDetonateConfig(): { enabled: boolean; timeoutMs?: number; maxOutputBytes?: number } {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as {
       detonate?: { enabled?: boolean; policy?: { timeoutMs?: number; maxOutputBytes?: number } };

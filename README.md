@@ -51,7 +51,7 @@ No Ollama? You don't need it. The model ladder works without it on every platfor
 
 Ollama is a *convenience*, not a requirement (native Linux/macOS/Windows builds exist if you want it).
 
-Roadmap (post-alpha): Linux/macOS engine staging in the packer, an [Omarchy](https://omarchy.org) shell plugin (bar widget + session menu driven by the local runtime API), speech-to-text sidecar.
+Roadmap (post-alpha): Linux/macOS engine staging in the packer, an [Omarchy](https://omarchy.org) shell plugin (bar widget + session menu driven by the local runtime API), speech-to-text sidecar. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
 
 ## Quick start
 

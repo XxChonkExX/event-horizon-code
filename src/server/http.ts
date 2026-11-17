@@ -27,8 +27,10 @@ import {
   forkSession, addCheckpoint, listCheckpoints, messageCount, newSessionId,
 } from "./store";
 import os from "node:os";
-import { runTool, safePath } from "./tools";
+import { runTool, safePath, resolveBin, readDetonateConfig } from "./tools";
 import type { ToolName } from "./tools";
+import { hasMcpServers } from "./mcp";
+import { setAgentPaused, isAgentPaused } from "./agentLoop";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable, openCommandTerminal, terminalBuffer, waitForTerminalExit } from "./terminal";
 import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir, engineInfill } from "./engine";
 import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTemplateFiles } from "./chatTemplates";
@@ -142,6 +144,58 @@ function writeActiveProfile(id: string): void {
 // callers, consumed on first use, expired after 60 seconds. The master Basic
 // Auth password never appears in an EventSource URL.
 const eventTickets = new Map<string, number>();
+
+// Capability discovery (sweep roadmap 2A): every value is derived from a real
+// health probe with a short timeout, never from a config flag. Cached 30s.
+let capsCache: { at: number; payload: unknown } | null = null;
+async function capabilitiesSnapshot(): Promise<unknown> {
+  if (capsCache && Date.now() - capsCache.at < 30_000) return capsCache.payload;
+  const withTimeout = <T,>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
+    Promise.race([p, new Promise<T>((r) => { setTimeout(() => r(fallback), ms); })]);
+  const [engine, mcp, lspPacks, detonation, sensory, engramSrc, sbx, ollama, agentwatch] = await Promise.all([
+    withTimeout(engineHealth(), 4000, { running: false, healthy: false, endpoint: null, uptimeMs: 0 }),
+    Promise.resolve(hasMcpServers()),
+    Promise.resolve(loadLanguagePacks().length),
+    Promise.resolve(readDetonateConfig().enabled),
+    Promise.resolve(sensoryStatus()),
+    Promise.resolve(resolveEngramSrcProbe() !== null),
+    Promise.resolve(resolveBin(["sbx"]) !== null),
+    withTimeout((async () => { try { return (await listModels()).length > 0; } catch { return false; } })(), 4000, false),
+    Promise.resolve(readAgentWatchConfig().enabled),
+  ]);
+  const payload = {
+    runtime: { version: "0.1.0", ready: true },
+    capabilities: {
+      localInference: Boolean((engine as { healthy?: boolean }).healthy),
+      ollama,
+      mcp,
+      lsp: lspPacks > 0,
+      detonation,
+      sandbox: sbx,
+      agentwatch,
+      speechToText: Boolean(sensory.ears.ready),
+      speechToSpeech: Boolean(sensory.mouth.ready),
+      engram: engramSrc,
+    },
+  };
+  capsCache = { at: Date.now(), payload };
+  return payload;
+}
+
+// resolveEngramSrc is local to tools.ts; probe the same locations cheaply here.
+function resolveEngramSrcProbe(): string | null {
+  const candidates = [
+    process.env.EH_ENGRAM_SRC ?? "",
+    path.join(process.cwd(), "..", "AfterImage-Engram", "src"),
+    path.join(process.cwd(), "AfterImage-Engram", "src"),
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    const abs = path.resolve(c);
+    if (fs.existsSync(path.join(abs, "machines.py"))) return abs;
+  }
+  return null;
+}
 function issueEventTicket(): string {
   // Lazy purge so the map cannot grow unbounded over long uptimes.
   const now = Date.now();
@@ -181,7 +235,10 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         req.destroy();
       }
     });
-    req.setTimeout(60_000, () => {
+    // 310s: local model calls legitimately take minutes (cold GGUF load + a
+    // full tool-using turn, capped at 300s by the router). The byte-count
+    // guard handles volume abuse; this timeout only reaps dead sockets.
+    req.setTimeout(310_000, () => {
       try { if (!res.writableEnded) sendJson(res, 408, { error: "request timeout" }); } catch { /* ignore */ }
       req.destroy();
     });
@@ -201,6 +258,48 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "POST" && url.pathname === "/api/events/ticket") {
       const ticket = issueEventTicket();
       return sendJson(res, 200, { ticket });
+    }
+
+    // ---- Operator command surface (sweep roadmap: command center) ----
+    // Global pause: stop all autonomous work between steps; in-flight tools
+    // finish. Does not kill the app.
+    if (req.method === "GET" && url.pathname === "/api/runtime/pause") {
+      return sendJson(res, 200, { paused: isAgentPaused() });
+    }
+    if (req.method === "POST" && url.pathname === "/api/runtime/pause") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { paused?: boolean };
+          setAgentPaused(body.paused === true);
+          audit({ tool: "runtime.pause", note: body.paused === true ? "paused" : "resumed" });
+          sendJson(res, 200, { paused: isAgentPaused() });
+        } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+
+    // Approvals queue: what is waiting on a human right now (SOP gates and
+    // script-node pauses). Tool approvals remain the Review pane's domain.
+    if (req.method === "GET" && url.pathname === "/api/approvals") {
+      const approvals = listRuns()
+        .filter((r) => r.status === "waiting")
+        .map((r) => ({
+          kind: r.pendingCommand ? "sop-script" as const : "sop-gate" as const,
+          runId: r.id,
+          sop: r.sop,
+          mode: r.mode,
+          node: r.currentNode,
+          command: r.pendingCommand,
+        }));
+      return sendJson(res, 200, { approvals });
+    }
+
+    // Capability discovery: values derived from REAL health probes, not config
+    // flags (cached briefly so the UI can poll cheaply).
+    if (req.method === "GET" && url.pathname === "/api/capabilities") {
+      return sendJson(res, 200, await capabilitiesSnapshot());
     }
 
     if (req.method === "GET" && url.pathname === "/api/toolchain") {
