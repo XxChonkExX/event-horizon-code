@@ -14,10 +14,23 @@ Ships as an Electron app (Windows, Linux, macOS) with a workbench UI modelled on
 - **Tool calling that actually works** — llama-server serves *69 canonical Jinja templates* (Qwen, DeepSeek, Gemma, GLM, Granite, Llama, Mistral, gpt-oss, …) with automatic family detection, so fine-tuned GGUFs get real tool calls instead of narration.
 - **Sessions** — persistent SQLite store, durable instructions (`remember`), conversation compaction, **fork/branch a session**, **checkpoints per turn**, session rename/delete, hand-off between windows.
 - **SOPs** — repeatable workflows (agent nodes + deterministic script nodes + **human gates** with send-back), adapted from Tencent LoopForge (MIT). Gated by default; **automated mode** available as a preference (gates auto-approve).
-- **Multi-window workbench** — activity bar, tabbed editor (Monaco), real integrated PTY with tabs, panel pop-outs, resizable splitters, live token streaming, slash-commands, toasts, Ctrl+K palette, memory/sessions/profiles panels.
+- **Multi-window workbench** - activity bar, tabbed editor (Monaco) with live LSP hover/diagnostics (TypeScript), real integrated PTY with tabs, panel pop-outs, resizable splitters, live token streaming, slash-commands, toasts, right-click menus (copy/paste/select-all; file ops in the sidebar), and a Session log manager (search, sort, hide/restore, bulk delete).
 - **Local memory & engram** — workspace memory (`AGENTS.md`, `.harness/memory.md`), AfterImage engram search/register with typed absence, and an AfterImage verification path for exact claims.
 - **Speech** — text-to-speech adapters (system / engine Pocket-TTS / piper) with swappable voices; speech-to-text (whisper.cpp) surface is implemented and refuses plainly until sidecars are installed.
-- **Security-first tool use** — per-tool permission gates (`allow`/`ask`/`deny`), workspace path jail, detonation lane for unclean inputs (`run_js` review/execute/redteam tiers), no telemetry, audit log (`~/.eventhorizon/audit.jsonl`).
+- **Security-first tool use** - per-tool permission gates (`allow`/`ask`/`deny`), shared workspace containment guard (sibling-prefix, traversal and symlink/junction proof, realpath canonicalisation), single-use event-stream tickets (the master password never rides in a URL), bounded request bodies, approval authority that the model cannot self-grant, detonation lane for unclean inputs (`run_js` review/execute/redteam tiers), no telemetry, audit log with rotation and health reporting (`~/.eventhorizon/audit.jsonl`).
+- **One runtime, zero downloads** - the Electron shell attaches to an existing local runtime (or spawns exactly one); two servers on one database cannot happen. Missing models are refused with the command you can run - nothing is ever pulled over the network.
+
+## Known issues (stated, not hidden)
+
+- **Windows compositor**: under heavy GPU load a window can present a stale frame; a single click recovers it. Every in-app trigger found by two independent audits is fixed; the machine-level trigger remains under investigation (`docs/GPU.md`).
+- **Not bundled**: speech-to-text (whisper sidecar), the `sbx` microVM sandbox (the detonation lane refuses plainly without it), the AfterImage engram (imported via subprocess - see `docs/ENGRAM_INTEGRATION.md`), and the AgentWatch `aw` CLI. Every absent dependency is stated plainly in the UI rather than faked.
+- **Packaging cosmetics**: default Electron icon, no code-signing certificate.
+- **Session switching** reloads the window (in-place tabs are on the roadmap).
+- **Linux/macOS builds**: the runtime is portable (llama.cpp engine, native Ollama, BYOK to any OpenAI-compatible server - including your own llama-server), but the packer currently stages Windows binaries only. An [Omarchy](https://omarchy.org) shell plugin is on the roadmap after the Linux build.
+
+## Release
+
+The full hand-driven pipeline lives in [`docs/RELEASE.md`](docs/RELEASE.md): version bump, pre-flight tests, engine staging with SHA-256 verification, `pack:dir`, a release-candidate checklist, artifact hashing, and the tag/publish template. `npm run pack:dir` has been verified end-to-end (engine staged, RC launched, own runtime, health green).
 
 ## Requirements
 

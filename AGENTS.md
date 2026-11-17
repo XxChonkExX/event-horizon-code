@@ -25,7 +25,7 @@ Never claim something is done, fixed, or verified without command output, a test
 
 ## Things worth knowing in this codebase
 
-- **The server, not the Electron shell, is the source of truth.** Headless runtime at `scripts/serve.ts` (`npm run serve`, port 4126) with the GUI driving it. If the workbench and server disagree, the bug is usually the two-port split.
+- **The server, not the Electron shell, is the source of truth.** Headless runtime at `scripts/serve.ts` (`npm run serve`, port 4126, password `EH_PASS`). The Electron shell ATTACHES to an existing runtime when one is healthy (attach-first, via `~/.eventhorizon/runtime.json`) and only spawns its own when none exists — so there is exactly one server per database. If the workbench and a curl disagree, check which runtime each one is talking to (the shell logs the port it attached to).
 - **Monaco is the editor.** Tabs are editor tabs; saving from the UI posts `edit` with approval already granted by the Save button.
 - **Models live in a ladder**: bundled engine → Ollama → BYOK. If a prompt "works but tools don't," check `/api/engine/models` capabilities — a model running with a tool-stripped template narrates tool calls without executing them. `chatTemplate: "auto"` (default) is supposed to prevent that; the template arrives in `.harness/config.json`.
 - **Zero download is policy, not preference**: Ollama would implicitly pull a missing tag over the network; the router blocks that (`router.ts` verifies the model is installed and refuses otherwise). Never add a code path that downloads weights or installs dependencies - a missing model is a stated fact with the command the USER can run (`ollama pull ...`), nothing more. Without Ollama at all: the bundled llama.cpp engine or the BYOK lane pointed at any OpenAI-compatible server (including the user's own llama-server) covers Linux/macOS.
@@ -40,7 +40,7 @@ TypeScript/Node server (`src/server/`), SolidJS renderer (`src/renderer/`), Elec
 
 ## Before you claim done
 
-- Does `npm test` (≈140 checks) pass? (or the narrowest subset you touched)
+- Does `npm test` pass? (10 stages: typecheck, wsguard containment, LSP, detonation gate, tool-search, SOPs, sessions, memory, sensory, TTS, engram - plus the 9-check end-to-end smoke) or the narrowest subset you touched.
 - Did you leave stray processes? (engine, terminal PTYs, language servers) — they are killed with the app; don't leave orphans.
 - Did you update `docs/` for behavior changes? Especially `docs/TOOLUSE.md`, `docs/BACKEND.md`, `docs/SENSORY.md`, `NOTICE.md` (attribution).
 - If you touched the UI, screenshot it. If you touched the server, restart `serve` and prove with curl.
