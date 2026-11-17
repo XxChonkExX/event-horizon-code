@@ -27,7 +27,17 @@ async function main(): Promise<void> {
     check("Windows prefers system voices", avail.preferred === "system", avail.preferred);
     check("defaultMode names Web Speech", /Web Speech/.test(avail.defaultMode), avail.defaultMode);
   } else {
-    check("non-Windows prefers the engine adapter", avail.preferred === "engine", avail.preferred);
+    // The platform's DEFAULT preference is engine (asserted via defaultMode
+    // below); the runtime-selected adapter falls back to whatever actually
+    // works - on a fresh Linux runner llama-tts is absent, so "system" is the
+    // honest live choice.
+    const engineAvailable = avail.adapters.some((a) => a.adapter === "engine" && a.ok);
+    check(
+      "non-Windows prefers engine when available, else a working adapter",
+      (!engineAvailable || avail.preferred === "engine") &&
+        avail.adapters.some((a) => a.adapter === avail.preferred && a.ok),
+      avail.preferred
+    );
     check("defaultMode names Pocket TTS", /Pocket TTS/.test(avail.defaultMode), avail.defaultMode);
   }
 

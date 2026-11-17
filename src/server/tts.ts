@@ -179,8 +179,12 @@ export function ttsDoctor(): {
     install.push("system: on macOS the OS voices are used as-is; on Linux install speech-dispatcher (or espeak-ng) for Web Speech to have voices.");
   }
 
+  // The TTS GGUF requirement is stated on EVERY install path - a binary alone
+  // is not a working engine, and fresh installs must not be told otherwise.
+  const GGUF_HINT = "engine: a TTS GGUF is still required (e.g. Pocket TTS / kyutai/pocket-tts CC BY 4.0, or ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF Apache-2.0). Drop the gguf into ~/.eventhorizon/models or set tts.engineModel.";
   if (!eng.bin) {
     install.push("engine: llama-tts was not found next to llama-server - use a chonkllama build that includes tools/tts.");
+    install.push(GGUF_HINT);
   } else if (!eng.model) {
     install.push("engine: llama-tts is present; add a TTS GGUF. Smallest: Pocket TTS (kyutai/pocket-tts, CC BY 4.0) - convert languages/<lang> with llama.cpp's convert_hf_to_gguf.py (model + --mmproj). Larger/multilingual: ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF (Apache-2.0), e.g. `llama-tts -hf ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF -p \"hi\" --output out.wav`. Drop the gguf into ~/.eventhorizon/models or set tts.engineModel.");
   } else {
