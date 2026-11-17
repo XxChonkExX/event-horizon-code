@@ -37,12 +37,16 @@ node scripts/prepare-engine.mjs --verify   # re-verify resources/engine/ in plac
   hangs, check that `scripts/smoke-test.ts` spawns its child with
   `detached: true` on POSIX (the group-kill depends on it).
 - `release.yml`: on `v*` tags (or manual dispatch) the `test` job runs the full
-  suite on Windows and **gates** the `build` job. The build job intentionally
-  **FAILS** when the `ENGINE_URL` repository secret is not configured — it must
-  point to a zip with the pinned `llama-server.exe` + DLLs + `mtmd.dll`. This is
-  a safety gate, not a broken workflow: an installer with an empty engine
-  directory must never ship. For a one-off local alpha, build with
-  `npm run pack:dir` on a machine with the sibling engine checkout instead.
+  suite on Windows and **gates** the `build` job. The build job skips packaging
+  with a clear notice when the `ENGINE_URL` repository secret is not configured
+  (no red X, no empty installer) — for an alpha released from locally verified
+  `npm run pack:dir` artifacts that is the expected path. When the secret IS
+  set, it must point to a zip with the pinned `llama-server.exe` + DLLs +
+  `mtmd.dll`; the job then stages and SHA-verifies the engine, and **fails
+  loudly** if the archive is missing the executable. An installer with an empty
+  engine directory must never ship. Note: a tag-triggered run uses the workflow
+  file from that tag; re-run via manual dispatch on `main` to pick up workflow
+  changes made after tagging.
 
 ## 3. Build the release candidate
 
