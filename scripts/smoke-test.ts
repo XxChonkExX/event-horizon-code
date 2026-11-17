@@ -50,6 +50,10 @@ async function main() {
   const projectDir = process.cwd();
   const child = spawn(process.execPath, [path.join(projectDir, runner), path.join(projectDir, tsxCli), path.join(projectDir, "scripts", "serve.ts")], {
     cwd: smokeHome,
+    // POSIX group kill in killTree() requires the child to be a process-group
+    // leader. Without `detached`, process.kill(-pid) fails, the child survives
+    // and keeps our captured pipes open -> the CI runner hangs forever.
+    detached: process.platform !== "win32",
     env: { ...process.env, EH_PORT: String(PORT), EH_PASS: PASS, EH_DB: path.join(smokeHome, "smoke.db"), EH_SOPS_DIR: path.join(smokeHome, "sops") },
     stdio: ["ignore", "pipe", "pipe"],
   });

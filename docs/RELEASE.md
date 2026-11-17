@@ -30,6 +30,20 @@ node scripts/prepare-engine.mjs --verify   # re-verify resources/engine/ in plac
 - `resources/engine/` is gitignored — binaries never enter the repository.
 - **If staging fails, the build fails.** Do not release with a stale or missing engine.
 
+## 2b. CI workflows (what is expected to happen on GitHub)
+
+- `ci.yml`: on every push/PR it runs the **full** `npm test` (12 stages) on
+  ubuntu, after installing Electron's shared libraries. If the smoke stage
+  hangs, check that `scripts/smoke-test.ts` spawns its child with
+  `detached: true` on POSIX (the group-kill depends on it).
+- `release.yml`: on `v*` tags (or manual dispatch) the `test` job runs the full
+  suite on Windows and **gates** the `build` job. The build job intentionally
+  **FAILS** when the `ENGINE_URL` repository secret is not configured — it must
+  point to a zip with the pinned `llama-server.exe` + DLLs + `mtmd.dll`. This is
+  a safety gate, not a broken workflow: an installer with an empty engine
+  directory must never ship. For a one-off local alpha, build with
+  `npm run pack:dir` on a machine with the sibling engine checkout instead.
+
 ## 3. Build the release candidate
 
 ```pwsh
