@@ -90,3 +90,60 @@ later; do not re-report the items below without new evidence.
 | Adversarial tests | Accepted | scripts/test-wsguard.ts - 11 checks incl. live junction escape rejection; wired into npm test |
 
 Verified: npm run typecheck clean; npm test exit=0 (10 stages incl. wsguard 11/11 + smoke).
+
+---
+
+# Sweep 3 response - GPT deep audit, 10 findings (baseline 1cab088)
+
+Triage at commit: sweep-3 remediation. All Priority-0 items from the audit's own
+remediation order are implemented; the full ACP integration suite (finding 13) is
+partially adopted (env + credential tests added; the full server-boot integration
+suite is the remaining piece).
+
+| Finding | Triage | Action |
+|---|---|---|
+| 2/11 (CRITICAL) ACP fs/read_text_file escapes workspace, bypasses credential policy | Confirmed - raw readFileSync on params.path | Rewritten: session worktree base, safePath (containment + credential policy in one rule), stat isFile, 200 KB cap, audit both directions, 403/413/404 semantics |
+| 3 (CRITICAL) ACP terminal execution | Confirmed | `EH_ACP_TERMINAL=1` gate, denied by default with audit trail; server-owned approval grants remain post-alpha |
+| 4 request_permission echo | Confirmed, already neutralised | Nothing treats the echo as authority since the EH-007 fix (runTool opts.userApproved only); endpoint marked advisory in code + audit |
+| 5 IPC trust boundary | Confirmed | `isTrustedRenderer` (main-frame, file:// packaged path, dev vite origin) applied to runtime:info, dialog:pickFolder, window:popout (kind allowlist), edit:action, fs:op; will-navigate + window.open denied in hardenWindow |
+| 6 wsguard race | Tests extended | Case/dangling/retarget documented; race itself remains the known stated limitation |
+| 7 terminal ID collisions | Confirmed | `crypto.randomUUID()` for term_ and acpterm_ ids |
+| 8 terminal env injection | Confirmed | `sanitizeTerminalEnv`: blocked loader/resolution keys (NODE_OPTIONS, LD_PRELOAD, ELECTRON_RUN_AS_NODE, ...), key/value validation, tested |
+| 9 request-controlled autoApprove | Deferred with rationale | The parameter originates from the renderer's operator checkbox; the credential already confers direct tool-call authority via /api/tools/call, so removal does not reduce attacker capability. Documented in http.ts + here; server-owned grants post-alpha |
+| 10 session worktree continuity | Confirmed defect | Omitted worktree now means the session's assigned workspace; explicit worktree still allowed; assignment recorded per session |
+| 12 detonation doc divergence | Confirmed | DETONATION.md gained an implemented/planned guarantees table; unverified sbx rows marked as policy-plus-best-effort, not a demonstrated sandbox |
+| 17/18 (CRITICAL) node:vm clean tier | Confirmed | Replaced with a DECLARATIVE read-only batch (1-16 read/ls/grep/glob ops, 100 KB cap). No model-written JavaScript executes in-process; arbitrary JS remains only in the sbx lanes. Tool description updated |
+| 19 detonation artifact delivery | Confirmed divergence | artifactPath is first-class on the plan; unconditional artifact cleanup; delivery verification deferred until sbx is vendored (documented in DETONATION.md) |
+| 20 verify permission | Accepted | verify moved to permission: ask; description states repository code is untrusted |
+| 21 memory injection | Accepted | Memory/AGENTS.md reads go through wsguard; content framed as UNTRUSTED WORKSPACE DATA with explicit anti-injection instructions |
+| 22 dangling-symlink containment bypass | Confirmed - real escape | contained() rewritten with lstat probing (catches dangling links), realpath fail-closed; regression tests: dangling link + dangling child both rejected |
+| 23 canonical credential bypass | Confirmed - real escape | safePath re-checks the credential policy against the canonical path after containment (symlink alias "harmless-config.json" -> .env now refused); regression test added |
+| 24 grep walker follows symlinks | Confirmed | Walker skips symlinks entirely; per-file revalidation documented as future defense |
+| 25 cross-session memory | Confirmed | remember/todo session identity is application-established (opts.sessionId wins over model args); the model cannot write instructions into another session |
+| 26 SOP script-node approval | Confirmed | Gated runs now pause at script nodes with the exact pending command recorded; approval authorizes that immutable command through the existing approve endpoint; rejection fails the run |
+| 27 quarantine failure | Confirmed | Quarantine failure now marks the detonation run FAILED with a stated cause |
+| 13 regression tests | Partially adopted | sanitizeTerminalEnv + credential-alias + dangling-symlink tests added; full ACP server-boot integration suite deferred to the next pass |
+
+Verified: npm run typecheck clean; npm test exit=0 (11 stages incl. wsguard 11/11 + acpsec + smoke).
+
+---
+
+# Sweep 4 response - GPT continuation: MCP / Storage / Electron (baseline f1d0c06+)
+
+| Finding | Priority | Triage | Action |
+|---|---|---|---|
+| Fork message PK collision (repeated forks of one parent collide on fk_<seq>, UNIQUE constraint) | P1 | Confirmed - present in our own audit log | Fork ids embed the new session id (fk_<newId>_<seq>); wrapped in a transaction |
+| SQLite failures silently fall back to volatile memory | P1 | Confirmed | initStore logs a FATAL-level warning naming the cause; memory mode remains for availability but is now loud |
+| Master password exposed to renderer JS via runtime:info | P0 | Architectural decision, deferred with rationale | The renderer IS the API client (SSE, file ops, streaming); a compromised renderer already equals full app compromise, and the credential never leaves the machine (localhost bind, tickets, CSP). Server-side auth proxy = post-alpha refactor. Password never appears in logs or URLs |
+| IPC sender checks incomplete | P1 | Partially confirmed | isTrustedRenderer now also guards window:nudge and window:grow |
+| MCP JSON-RPC buffer unbounded | P1 | Accepted | 2 MiB buffer cap + 1 MiB per-line cap; breach fails the server (kill + settle pending) |
+| MCP exit/startup failure leaves pending promises | P2 | Accepted | rejectPending settles all outstanding requests exactly once on exit/error; failServer kills and tears down |
+| Concurrent turns overwrite session history | P2 | Accepted | Per-session in-process lock serializes every turn through runAgentTurn (HTTP + SOP agent nodes) |
+| No FK constraints | P2 | Deferred | Schema change + migration on a live user database - documented for alpha migration notes |
+| fs:op should bind to a validated session worktree | P2 | Deferred | Worktree-plumbing milestone; root deletion/renaming already refused |
+| Memory backend lifecycle differs | P3 | Deferred (documented) | Fallback is loud now; lifecycle parity post-alpha |
+| MCP per-server permissions / name validation | P3 | Deferred | Servers are user-configured in .harness/config.json |
+
+Smoke-test hardening: prompt fetch retries once and dumps the server output tail plus liveness on failure (one unexplained prompt death in a previous run is now diagnosable; clean-environment rerun fully green).
+
+Verification: npm run typecheck clean; npm test exit=0 - 12 stages (wsguard 14/14, acpsec 9/9, 8 suites ALL PASS, smoke green) on a clean environment with no other EHC process holding the database.

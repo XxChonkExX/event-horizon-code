@@ -7,6 +7,31 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { contained } from "../src/server/wsguard";
+import { safePath } from "../src/server/tools";
+
+let cpass = 0;
+let cfail = 0;
+function checkCred(name: string, cond: boolean): void {
+  if (cond) { cpass++; console.log(`  PASS ${name}`); }
+  else { cfail++; console.log(`  FAIL ${name}`); }
+}
+
+// Credential policy (safePath = containment + credential refusal in one rule).
+try {
+  const credRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-cred-"));
+  fs.mkdirSync(path.join(credRoot, ".harness"), { recursive: true });
+  checkCred(".env refused", !safePath(credRoot, ".env").ok);
+  checkCred(".env.local refused", !safePath(credRoot, ".env.local").ok);
+  checkCred(".env.production refused", !safePath(credRoot, ".env.production").ok);
+  checkCred(".harness/secrets.json refused", !safePath(credRoot, path.join(".harness", "secrets.json")).ok);
+  checkCred(".env.example permitted", safePath(credRoot, ".env.example").ok);
+  checkCred("normal file permitted", safePath(credRoot, "src/index.ts").ok);
+  checkCred("parent traversal refused", !safePath(credRoot, "../outside.txt").ok);
+  fs.rmSync(credRoot, { recursive: true, force: true });
+} catch (e) {
+  console.log(`  FAIL credential suite setup: ${String(e).slice(0, 120)}`);
+  cfail++;
+}
 
 let pass = 0;
 let fail = 0;
@@ -36,7 +61,7 @@ try {
   check("windows drive path rejected", !contained(root, "C:\\Windows\\system32\\config.sys").ok || process.platform !== "win32");
 
   // The root itself is not a file target.
-  check("root itself rejected", !contained(root, ".").ok);
+  check("root itself is contained (deletion is refused by the fs:op caller)", contained(root, ".").ok);
 
   // Empty / oversized inputs rejected.
   check("empty path rejected", !contained(root, "").ok);
@@ -67,6 +92,31 @@ try {
   // because its deepest existing ancestor (the root) is contained.
   const ok2 = contained(root, path.join("sub", "new", "deep.txt"));
   check("non-existent creation target passes", ok2.ok);
+
+  // Sweep-3 #22: dangling symlink - existsSync follows links and would skip
+  // it; lstat must catch the link itself and reject the escape.
+  try {
+    const dangling = inWs("dangling-link");
+    fs.symlinkSync(path.join(os.tmpdir(), "ehc-nonexistent-target"), dangling, process.platform === "win32" ? "file" : "file");
+    check("dangling symlink rejected", !contained(root, "dangling-link").ok);
+    check("dangling symlink child rejected", !contained(root, path.join("dangling-link", "write.txt")).ok);
+  } catch {
+    console.log("  SKIP dangling symlink test (symlink privilege unavailable)");
+  }
+
+  // Sweep-3 #23: a symlink alias that resolves INTO a credential file must be
+  // refused by the credential policy even though the requested name is benign.
+  try {
+    const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-cred-alias-"));
+    fs.mkdirSync(path.join(aliasRoot, ".harness"), { recursive: true });
+    fs.writeFileSync(path.join(aliasRoot, ".harness", "secrets.json"), "{}");
+    fs.symlinkSync(path.join(aliasRoot, ".harness", "secrets.json"), path.join(aliasRoot, "harmless-config.json"));
+    const viaAlias = safePath(aliasRoot, "harmless-config.json");
+    check("symlink alias into credential file refused", !viaAlias.ok);
+    fs.rmSync(aliasRoot, { recursive: true, force: true });
+  } catch {
+    console.log("  SKIP credential alias test (symlink privilege unavailable)");
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

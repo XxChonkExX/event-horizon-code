@@ -43,19 +43,25 @@ const gate = { id: "g1", type: "gate", label: "Human review", note: "check the o
 async function main(): Promise<void> {
   console.log("[ehc] sop workflow tests");
 
-  // 1. gated flow: script -> gate (waits) -> approve -> done
+  // 1. gated flow: script (waits for approval) -> gate (waits) -> script (waits) -> done
+  //    Sweep-3 #26: "gated" means EVERY executable step pauses, script or gate.
   writeSop({ name: "gated-ok", nodes: [okScript, gate, okScript2] });
   const r1 = startRun("gated-ok", { worktree: process.cwd() });
   check("run starts", r1.ok === true && !!r1.run?.id, r1.error ?? "");
   const id1 = r1.run!.id;
-  await until(() => getRun(id1)!.status === "waiting", 10000, "gate wait");
+  await until(() => getRun(id1)!.status === "waiting" && getRun(id1)!.currentNode === "s1", 10000, "script approval wait");
+  check("gated run pauses at the script node", getRun(id1)!.status === "waiting" && /step-ok/.test(getRun(id1)!.pendingCommand ?? ""));
+  approveRun(id1, { approved: true });
+  await until(() => getRun(id1)!.status === "waiting" && getRun(id1)!.currentNode === "g1", 10000, "gate wait");
   check("gated run pauses at human gate", getRun(id1)!.status === "waiting" && getRun(id1)!.currentNode === "g1");
-  const gateRec = getRun(id1)!.history.find((h) => h.status === "waiting");
+  const gateRec = getRun(id1)!.history.find((h) => h.status === "waiting" && h.node === "g1");
   check("gate records what to review", !!gateRec && (gateRec.output ?? "").includes("check the outputs"));
   const a1 = approveRun(id1, { approved: true });
-  await until(() => getRun(id1)!.status === "done", 10000, "completion after approval");
+  await until(() => getRun(id1)!.status === "waiting" && getRun(id1)!.currentNode === "s2", 10000, "second script approval wait");
+  approveRun(id1, { approved: true });
+  await until(() => getRun(id1)!.status === "done", 10000, "completion after approvals");
   check("approval completes the run", getRun(id1)!.status === "done");
-  check("script outputs recorded", getRun(id1)!.history.some((h) => h.status === "ok" && h.output.includes("step-ok")));
+  check("script outputs recorded", getRun(id1)!.history.some((h) => h.output.includes("step-ok")) && getRun(id1)!.history.some((h) => h.output.includes("step-two-ok")));
   check("gate approval recorded", getRun(id1)!.history.some((h) => h.node === "g1" && h.status === "ok" && /approved/.test(h.output)));
   void a1;
 
@@ -98,12 +104,16 @@ async function main(): Promise<void> {
   await until(() => getRun(id5)!.status === "failed", 30000, "plain failure");
   check("unhandled script failure fails the run", getRun(id5)!.status === "failed" && /Failing step/.test(getRun(id5)!.error ?? ""), getRun(id5)!.error ?? "");
 
-  // 6. send back to a chosen step from a gate (LoopForge acceptance flow)
+  // 6. send back to a chosen step from a gate (LoopForge acceptance flow).
+  //    The sent-back script then pauses for its own approval (gated mode).
   writeSop({ name: "send-back", nodes: [gate, okScript] });
   const r6 = startRun("send-back", { worktree: process.cwd() });
   const id6 = r6.run!.id;
   await until(() => getRun(id6)!.status === "waiting", 10000, "gate wait (send-back)");
   approveRun(id6, { approved: false, sendBackTo: "s1" });
+  await until(() => getRun(id6)!.status === "waiting" && getRun(id6)!.currentNode === "s1", 10000, "script approval wait after send-back");
+  check("send-back waits at the script approval", getRun(id6)!.pendingCommand?.includes("step-ok") === true);
+  approveRun(id6, { approved: true });
   await until(() => getRun(id6)!.status === "done", 10000, "completion after send-back");
   check("send-back reruns the target step and completes", getRun(id6)!.status === "done");
   check("send-back decision recorded", getRun(id6)!.history.some((h) => h.node === "g1" && /sent back/.test(h.output)));

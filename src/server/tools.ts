@@ -106,8 +106,12 @@ function walkFiles(root: string, maxFiles = 2000): string[] {
     for (const e of entries) {
       if (skip.has(e.name)) continue;
       const full = path.join(dir, e.name);
+      // Sweep-3 #24: never follow symlinks - a link can point outside the
+      // workspace (or at a credential file) and Dirent.isFile() is true for
+      // file links.
+      if (e.isSymbolicLink()) continue;
       if (e.isDirectory()) stack.push(full);
-      else out.push(full);
+      else if (e.isFile()) out.push(full);
     }
   }
   return out;
@@ -130,12 +134,26 @@ function isCredentialPath(rel: string): boolean {
   return CREDENTIAL_FILES.test(norm);
 }
 
-function safePath(worktree: string, p: string): { ok: boolean; abs?: string; error?: string } {
+// Exported for sweep-3 remediation: the ACP HTTP layer must enforce the SAME
+// credential policy as the agent tools (one security rule, one implementation).
+export function safePath(worktree: string, p: string): { ok: boolean; abs?: string; error?: string } {
   if (isCredentialPath(p)) {
     return { ok: false, error: "refused: credential files (.harness/secrets.json, .env) are never agent-readable or agent-writable. Ask the user to edit them by hand." };
   }
   // Shared containment policy (sibling-prefix proof + symlink canonicalisation).
-  return contained(worktree, p);
+  const result = contained(worktree, p);
+  if (!result.ok || !result.abs) return result;
+  // Sweep-3 #23: the canonical path can resolve INTO a credential file through
+  // a symlink alias ("harmless-config.json" -> ".env") - re-check the resolved
+  // path against the same policy.
+  try {
+    const rootReal = fs.realpathSync(path.resolve(worktree));
+    const canonicalRel = path.relative(rootReal, result.abs);
+    if (isCredentialPath(canonicalRel)) {
+      return { ok: false, error: "resolved path targets a protected credential file" };
+    }
+  } catch { /* fall through to the containment result */ }
+  return result;
 }
 
 async function agentWatchGate(tool: ToolName, worktree: string) {
@@ -183,7 +201,7 @@ export async function runTool(
   tool: ToolName,
   args: Record<string, unknown>,
   worktree = process.cwd(),
-  opts?: { userApproved?: boolean }
+  opts?: { userApproved?: boolean; sessionId?: string }
 ): Promise<ToolResult> {
   const perm = permissionFor(tool);
   if (perm === "deny") {
@@ -202,6 +220,10 @@ export async function runTool(
   }
   // The model cannot authorize its own tool calls - strip the flag entirely.
   delete (args as { approved?: boolean }).approved;
+  // Sweep-3 #25: session identity is established by the application, not the
+  // model - cross-session memory writes would be instruction injection.
+  const sessionFor = opts?.sessionId ?? String(args.sessionId ?? "default");
+  delete (args as { sessionId?: boolean }).sessionId;
 
   const gate = await agentWatchGate(tool, worktree);
   if (!gate.allow) {
@@ -438,7 +460,7 @@ export async function runTool(
         return { ok: true, out: `Added to project memory (.harness/memory.md): ${text}` };
       }
       const key = String(args.key ?? `note-${Date.now().toString(36)}`);
-      putInstruction(String(args.sessionId ?? "default"), key, text);
+      putInstruction(sessionFor, key, text);
       audit({ tool, note: `remember ${key}` });
       return { ok: true, out: `Remembered [${key}]: ${text}` };
     }
@@ -478,16 +500,15 @@ export async function runTool(
       });
     }
     if (tool === "run_js") {
-      // Programmatic tool calling (Anthropic PTC pattern): the model writes one
-      // program that batches read-only tools instead of one round trip per call.
-      // Tiers, driven by the detonate block in .harness/config.json:
-      //   review (default) - clean-path node:vm sandbox, static gate first
-      //   execute/redteam  - detonation lane (microVM via sbx). If sbx is
-      //                      unavailable we refuse; never a silent host fallback.
+      // Programmatic tool calling: the clean tier is a DECLARATIVE read-only
+      // batch (ops: read/ls/grep/glob, 1..16, no model-written code executes
+      // in-process). tier=execute/redteam still accepts a code artifact and
+      // routes to the detonation lane (microVM via sbx; refuses plainly when
+      // sbx is unavailable - never a silent host fallback).
       const code = String(args.code ?? "").trim();
-      if (!code) return { ok: false, error: "code required", out: "" };
       const tier = String(args.tier ?? "review") as DetonateTier;
       const det = readDetonateConfig();
+      if (tier !== "review" && !code) return { ok: false, error: "code required for the execute/redteam tiers", out: "" };
 
       if (tier !== "review") {
         if (!det.enabled) {
@@ -499,61 +520,77 @@ export async function runTool(
         const plan = buildDetonatePlan(worktree, tier, artifact);
         plan.timeoutMs = det.timeoutMs ?? plan.timeoutMs;
         plan.maxOutputBytes = det.maxOutputBytes ?? plan.maxOutputBytes;
+        plan.artifactPath = artifact;
         audit({ tool, note: `detonate tier=${tier}` });
-        const r = await runDetonate(plan);
-        try { fs.rmSync(artifact, { force: true }); } catch { /* best effort */ }
+        let r: Awaited<ReturnType<typeof runDetonate>>;
+        try {
+          r = await runDetonate(plan);
+        } finally {
+          // Sweep-3 #19: artifact cleanup is unconditional - a runner throw
+          // must not leave temporary scripts in the host temp directory.
+          try { fs.rmSync(artifact, { force: true }); } catch { /* best effort */ }
+        }
         if (r.missing) {
           return { ok: false, error: "the detonation lane needs sbx (microVM), which is not installed. Install sbx, or run with tier=review in the clean sandbox.", out: r.out };
         }
         const q = quarantineCheck(worktree);
         const head = `detonation lane (${tier}) exit=${r.code}${r.killed ? " KILLED: timeout" : ""}` +
           (q.ok ? "" : ` | quarantine: host changed (${q.changed.slice(0, 3).join(", ")})`);
-        return { ok: !r.killed && r.code === 0, out: `${head}\n\n${r.out}`, error: r.code ? `exit code ${r.code}` : undefined };
-      }
-
-      const violations = scanUncleanScript(code);
-      if (violations.length) {
-        audit({ tool, note: `gate blocked: ${violations.join(", ")}` });
+        // Sweep-3 #27: quarantine failure IS a failure - a "successful" run
+        // that changed the host is exactly what the lane exists to catch.
         return {
-          ok: false,
-          error: `clean-path gate refused this script: ${violations.join(", ")}. Such constructs can escape the sandbox or reach the host/network. Rewrite without them, or call again with tier="execute" to use the detonation lane (isolated microVM, requires sbx).`,
-          out: "",
+          ok: !r.killed && r.code === 0 && q.ok,
+          out: `${head}\n\n${r.out}`,
+          error: r.killed ? "detonation timed out" : r.code !== 0 ? `exit code ${r.code}` : !q.ok ? "quarantine verification failed - the host workspace changed during detonation" : undefined,
         };
       }
 
-      const stubCalls = { n: 0 };
-      const MAX_CALLS = 16;
-      const stub = (name: string) => async (a: Record<string, unknown>) => {
-        if (++stubCalls.n > MAX_CALLS) throw new Error(`stub call cap (${MAX_CALLS}) exceeded`);
-        const r = await runTool(name as ToolName, a, worktree);
-        return JSON.stringify({ ok: r.ok, out: (r.ok ? r.out : (r.error ?? "")).slice(0, 20000) });
-      };
-      const captured: string[] = [];
-      const sandbox: Record<string, unknown> = {
-        read: stub("read"), ls: stub("ls"), grep: stub("grep"), glob: stub("glob"),
-        console: { log: (...a: unknown[]) => { captured.push(a.map(String).join(" ")); } },
-      };
-      try {
-        // codeGeneration off closes eval / new Function inside the sandbox (the
-        // main vm-escape vector) and costs nothing for analysis scripts.
-        const ctx = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
-        const script = `(async () => {\n${code}\n})()`;
-        const result = await vm.runInContext(script, ctx, { timeout: 10_000, displayErrors: true });
-        const out = [
-          captured.length ? `[log]\n${captured.join("\n").slice(0, 2000)}` : "",
-          result !== undefined ? `[return]\n${String(result).slice(0, 20000)}` : "",
-          `[stub calls: ${stubCalls.n}]`,
-        ].filter(Boolean).join("\n");
-        audit({ tool, note: `calls=${stubCalls.n} out=${out.length}` });
-        return { ok: true, out };
-      } catch (e) {
-        return { ok: false, error: `sandbox: ${String(e).slice(0, 200)}`, out: captured.join("\n").slice(0, 2000) };
+      // Sweep-3 #17/18: the clean tier is a DECLARATIVE read-only batch. The
+      // previous node:vm + host-stub design let model-generated JS run inside
+      // the privileged server process: the static gate was bypassable via
+      // dynamic property construction, host-created stub functions crossed the
+      // realm boundary, and the vm timeout did not cover async continuations.
+      // The batch preserves the tool's purpose (fewer round trips) with no
+      // model-written code executing in-process. Arbitrary JS still exists via
+      // tier=execute/redteam (detonation lane; refuses plainly without sbx).
+      const opsRaw = (args as { ops?: unknown }).ops;
+      if (!Array.isArray(opsRaw) || opsRaw.length === 0 || opsRaw.length > 16) {
+        return {
+          ok: false,
+          error: 'run_js (clean tier) takes ops: 1..16 read-only operations, e.g. {"ops":[{"op":"glob","pattern":"*.ts"},{"op":"read","path":"src/index.ts"},{"op":"grep","pattern":"TODO","path":"src"}]}. ops: read | ls | grep | glob. For arbitrary code use tier="execute" (detonation lane, requires sbx).',
+          out: "",
+        };
       }
+      const MAX_RESULT_BYTES = 100_000;
+      const results: Array<{ op: string; ok: boolean; output: string }> = [];
+      let totalBytes = 0;
+      let opIndex = 0;
+      for (const rawOp of opsRaw) {
+        const o = (rawOp ?? {}) as { op?: string; path?: string; pattern?: string };
+        let result: ToolResult;
+        switch (o.op) {
+          case "read": result = await runTool("read", { path: o.path ?? "" }, worktree, { userApproved: opts?.userApproved === true }); break;
+          case "ls": result = await runTool("ls", { path: o.path ?? "." }, worktree, { userApproved: opts?.userApproved === true }); break;
+          case "grep": result = await runTool("grep", { pattern: o.pattern ?? "", path: o.path ?? "." }, worktree, { userApproved: opts?.userApproved === true }); break;
+          case "glob": result = await runTool("glob", { pattern: o.pattern ?? "" }, worktree, { userApproved: opts?.userApproved === true }); break;
+          default:
+            return { ok: false, error: `unsupported op "${String(o.op ?? "").slice(0, 40)}" at index ${opIndex} - allowed: read | ls | grep | glob`, out: "" };
+        }
+        opIndex++;
+        const output = (result.ok ? result.out : (result.error ?? "operation failed")).slice(0, 20000);
+        totalBytes += Buffer.byteLength(output, "utf8");
+        if (totalBytes > MAX_RESULT_BYTES) {
+          return { ok: false, error: "batch result limit exceeded (100 KB) - narrow the query", out: results.map((x) => `[${x.op}] ${x.output}`).join("\n").slice(0, 4000) };
+        }
+        results.push({ op: o.op ?? "?", ok: result.ok, output });
+      }
+      audit({ tool, note: `batch ops=${results.length} bytes=${totalBytes}` });
+      return { ok: true, out: results.map((x) => `[${x.op}${x.ok ? "" : " FAILED"}] ${x.output}`).join("\n---\n") };
     }
     if (tool === "todo") {
       // Plan/progress tracking (OpenAI Agents SDK pattern). Stored per session.
       const op = String(args.op ?? "list");
-      const sessionId = String(args.sessionId ?? "default");
+      const sessionId = sessionFor;
       if (op === "add") {
         const text = String(args.text ?? "").trim();
         if (!text) return { ok: false, error: "text required", out: "" };

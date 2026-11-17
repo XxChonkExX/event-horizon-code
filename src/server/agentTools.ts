@@ -22,8 +22,8 @@ export const TOOL_SPECS: ToolDef[] = [
     type: "function",
     function: {
       name: "run_js",
-      description: "Programmatic tool calling: write one JavaScript program that calls read/ls/grep/glob (async, return JSON strings) as many times as needed and returns the final result. Far fewer round trips than one call per tool. Clean path (tier=review, default) is a hardened sandbox: no fs, no network, no require/eval/Function/constructor chains - a static gate refuses scripts containing them. tier=execute or tier=redteam routes to the detonation lane (isolated microVM via sbx; refuses plainly if sbx is not installed). Cap: 16 stub calls, 10s.",
-      parameters: { type: "object", properties: { code: str("An async IIFE body, e.g. `const f = JSON.parse(await glob('*.ts')); return f;`. Await stubs; return a value or console.log."), tier: str("review (default, clean sandbox) | execute | redteam (detonation lane).") }, required: ["code"] },
+      description: "Batch read-only tool calling: declare 1-16 operations (read/ls/grep/glob with paths/patterns) and get every result in one round trip. Declarative only - the clean tier executes NO model-written code. For arbitrary code use tier=execute/redteam (detonation lane via sbx; refuses plainly if sbx is not installed). Result cap: 100 KB.",
+      parameters: { type: "object", properties: { ops: str("Array of 1-16 operations: {\"op\":\"read\",\"path\":\"src/x.ts\"} | {\"op\":\"ls\",\"path\":\"src\"} | {\"op\":\"grep\",\"pattern\":\"TODO\",\"path\":\"src\"} | {\"op\":\"glob\",\"pattern\":\"*.ts\"}.") }, required: ["ops"] },
     },
   },
   {
@@ -134,7 +134,7 @@ export const TOOL_SPECS: ToolDef[] = [
     type: "function",
     function: {
       name: "verify",
-      description: "Run the project's own checks (tests / typecheck / build) using its detected package manager. Call this AFTER editing code to confirm the change works. Returns PASSED or FAILED with the command output.",
+      description: "Run PROJECT-CONTROLLED verification (tests / typecheck / build via the detected package manager). These commands execute repository code - in unfamiliar repositories they are untrusted and require operator approval (permission: ask). Call after editing code you have been asked to change.",
       parameters: { type: "object", properties: {} },
     },
   },

@@ -27,7 +27,7 @@ import {
   forkSession, addCheckpoint, listCheckpoints, messageCount, newSessionId,
 } from "./store";
 import os from "node:os";
-import { runTool } from "./tools";
+import { runTool, safePath } from "./tools";
 import type { ToolName } from "./tools";
 import { openTerminal, getTerminal, terminalInput, terminalResize, killTerminal, ptyAvailable, openCommandTerminal, terminalBuffer, waitForTerminalExit } from "./terminal";
 import { readEngineConfig, scanGgufDirs, startEngine, stopEngine, engineHealth, engineEndpoint, sensoryDetect, addGgufDir, engineInfill } from "./engine";
@@ -632,11 +632,23 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           } else if (method === "session/prompt") {
             const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string; agent?: string };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img${params.autoApprove ? ":auto" : ""}` });
+            // Sweep-3 finding 9: autoApprove here is the OPERATOR channel - it
+            // originates from the renderer's "auto-approve tools" checkbox and
+            // profile config, both set by the credential holder. Anything with
+            // this credential already has direct tool-call authority through
+            // /api/tools/call, so this parameter does not widen the surface.
+            // A server-owned grant system remains a post-alpha item (see
+            // docs/AUDIT-432ccfb.md, finding 9).
             // Profile/lane resolution and the bounded tool loop now live in
             // runAgentTurn (src/server/agentLoop.ts) - the same loop that SOP
             // agent nodes and future multi-window agents call.
-            const workdir = resolveWorktree(params.worktree);
+            // Sweep-3 continuity fix: an omitted worktree means "the session's
+            // assigned workspace", never silently the server's cwd.
             const sessionId = params.sessionId ?? "default";
+            const existingWorktree = sessionWorktrees.get(sessionId);
+            const workdir = params.worktree
+              ? resolveWorktree(params.worktree)
+              : existingWorktree ?? resolveWorktree(undefined);
             sessionWorktrees.set(sessionId, workdir);
             const turn = await runAgentTurn({
               sessionId,
@@ -666,18 +678,30 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               sendJson(res, 200, turn);
             }
           } else if (method === "fs/read_text_file") {
-            const params = (body.params ?? {}) as { path?: string };
-            const critical = isUnclean(path.basename(params.path ?? "") + " " + (params.path ?? ""));
-            if (critical) {
-              sendJson(res, 200, { content: "", error: "blocked: unclean path requires detonate lane", critical: true });
-              return;
+            // Sweep-3 critical fix: reads are workspace-contained, credential-
+            // protected (safePath), regular-file-only, size-capped and audited.
+            const params = (body.params ?? {}) as { path?: string; sessionId?: string };
+            const sessionId = params.sessionId ?? "default";
+            const worktree = sessionWorktrees.get(sessionId) ?? process.cwd();
+            const requestedPath = params.path ?? "";
+            if (typeof requestedPath !== "string" || requestedPath.length === 0 || requestedPath.length > 4096) {
+              return sendJson(res, 400, { content: "", error: "invalid path" });
             }
-            // Language packs gate reads to workspace in full implementation; here read file.
+            const guard = safePath(worktree, requestedPath);
+            if (!guard.ok || !guard.abs) {
+              audit({ tool: "acp.fs.read", note: `blocked path=${requestedPath.slice(0, 120)}` });
+              return sendJson(res, 403, { content: "", error: guard.error ?? "path outside workspace" });
+            }
             try {
-              const text = (await import("node:fs")).readFileSync(params.path ?? "", "utf8");
-              sendJson(res, 200, { content: text.slice(0, 200000) });
-            } catch {
-              sendJson(res, 200, { content: "", error: "read failed" });
+              const stat = fs.statSync(guard.abs);
+              if (!stat.isFile()) return sendJson(res, 400, { content: "", error: "not a regular file" });
+              if (stat.size > 200_000) return sendJson(res, 413, { content: "", error: "file exceeds the 200 KB ACP read limit" });
+              const text = fs.readFileSync(guard.abs, "utf8");
+              audit({ tool: "acp.fs.read", note: `${requestedPath.slice(0, 120)} bytes=${stat.size}` });
+              return sendJson(res, 200, { content: text });
+            } catch (error) {
+              audit({ tool: "acp.fs.read", note: `read failed: ${String(error).slice(0, 120)}` });
+              return sendJson(res, 404, { content: "", error: "read failed" });
             }
           } else if (method === "session/load") {
             // Resume a session: history + durable instructions + todos, so an
@@ -718,7 +742,15 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             sendJson(res, 200, r.needsApproval ? { needsApproval: true, error: r.error } : { ok: r.ok, error: r.error });
           } else if (method === "terminal/create") {
             // ACP terminal: run a specific command in a PTY, not a shell.
+            // Sweep-3: arbitrary execution over the HTTP API is DISABLED by
+            // default - possessing the local credential must not equal blanket
+            // execute permission. Operators opt in with EH_ACP_TERMINAL=1.
             const params = (body.params ?? {}) as { sessionId?: string; cwd?: string; command?: string; args?: string[]; env?: Array<{ name?: string; value?: string }>; output_byte_limit?: number };
+            if (process.env.EH_ACP_TERMINAL !== "1") {
+              audit({ tool: "acp.terminal.create", note: "blocked: terminal execution disabled (set EH_ACP_TERMINAL=1 to enable)" });
+              sendJson(res, 403, { error: "ACP terminal execution is disabled (set EH_ACP_TERMINAL=1 to enable)" });
+              return;
+            }
             const cmd = params.command ?? "";
             const cmdText = `${cmd} ${(params.args ?? []).join(" ")}`;
             if (isUnclean(cmdText)) {
@@ -754,9 +786,12 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: `acp.terminal.${method.split("/")[1]}`, note: `${params.terminalId ?? ""} ok=${ok}` });
             sendJson(res, 200, { ok });
           } else if (method === "session/request_permission") {
+            // Advisory-only protocol shim (ACP clients drive this). Nothing in
+            // this server treats the echoed decision as execution authority:
+            // since the EH-007 fix, runTool authorization comes exclusively
+            // from opts.userApproved, which this endpoint cannot grant.
             const params = (body.params ?? {}) as { tool?: string; approved?: boolean };
-            // In real UI the frontend prompts the operator. Server records the decision.
-            audit({ tool: "acp.permission", note: `${params.tool ?? ""}:${params.approved === true}` });
+            audit({ tool: "acp.permission", note: `advisory ${params.tool ?? ""}:${params.approved === true}` });
             sendJson(res, 200, { approved: params.approved === true });
           } else {
             sendJson(res, 200, { type: method, ok: true });
@@ -1104,10 +1139,10 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       const id = decodeURIComponent(url.pathname.slice("/api/sops/runs/".length, -"/approve".length));
       let raw = "";
       req.on("data", (c) => { raw += c; });
-      req.on("end", () => {
+      req.on("end", async () => {
         try {
           const b = JSON.parse(raw || "{}") as { approved?: boolean; sendBackTo?: string };
-          const r = approveRun(id, b);
+          const r = await approveRun(id, b);
           sendJson(res, r.ok ? 200 : 400, r.run ? { ok: true, status: r.run.status, currentNode: r.run.currentNode, error: r.run.error } : r);
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });

@@ -44,3 +44,18 @@ Nothing executes until operator presses Run. The panel copy states: "Unclean lan
 ## Why a separate function
 
 Agent tool output, MCP tool output, web fetches, pasted code, and model-generated exploits are all untrusted until verified inside the chamber. Putting the check in `isUnclean()` + `buildDetonatePlan()` + `runDetonate()` as a standalone module (`src/server/detonate.ts`) keeps the clean path fast (host mode) and the unclean path honest. One function, one boundary, machine-checkable.
+
+## Implemented vs planned guarantees (sweep-3 audit, stated plainly)
+
+A policy that REFUSES dangerous operations is not the same as a sandbox that PREVENTS them. Per audit sweep 3, the honest state of each documented claim:
+
+| Claim | Status |
+|---|---|
+| run_js review tier | **Declarative read-only batch** (1-16 read/ls/grep/glob ops, 100 KB result cap). No model-written JavaScript executes in-process - the previous node:vm + host-stub design was removed after the sweep-3 finding. |
+| Detonation artifact delivery | **Implemented but NOT adversarially verified**: the artifact path is now first-class on the plan and cleanup is unconditional, but sbx is not installed on the dev machine, so delivery into the VM has never been demonstrated. Requires an integration test proving a known artifact reaches the guest and returns expected output. |
+| Git quarantine | Post-run status check only (pre-execution baseline snapshot not yet implemented); a quarantine failure now marks the run FAILED. |
+| Network off | Passed to sbx as a flag; enforcement depends on the installed sbx version - unverified. |
+| Credential exclusion | Plan policy field exists; not yet passed through to the runner. |
+| Kill on timeout | Two overlapping timeout mechanisms (detonate policy + exec timeout); needs integration verification. |
+
+Until the sbx-dependent rows are adversarially verified, treat the detonation lane as **policy refusal plus best-effort isolation**, not a demonstrated OS-level sandbox.

@@ -3,6 +3,7 @@
 // Non-negotiable: no domain logic here. Sessions/tools/engrams live in server.
 
 import { app, BrowserWindow, Menu, ipcMain, dialog, screen } from "electron";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
@@ -77,7 +78,39 @@ app.commandLine.appendSwitch("disable-background-timer-throttling");
 // white-flash fix, PR #28247). EHC's document-level canvas is #0b0b10.
 const WINDOW_BACKGROUND = "#0b0b10";
 
+// Sweep-3 EH: privileged IPC must only ever answer OUR renderer. A compromised
+// or future-untrusted frame gets nothing - most importantly not runtime:info,
+// which carries the local API password.
+function isTrustedRenderer(e: Electron.IpcMainInvokeEvent): boolean {
+  const frame = e.senderFrame;
+  if (!frame || frame !== e.sender.mainFrame) return false; // reject subframes
+  let url: URL;
+  try { url = new URL(frame.url); } catch { return false; }
+  if (url.protocol === "file:") {
+    // Packaged build: the frame must be our own bundled index.html.
+    try {
+      const actual = path.resolve(fileURLToPath(url));
+      const expected = path.resolve(path.join(__dirname, "../renderer/index.html"));
+      return process.platform === "win32"
+        ? actual.toLowerCase() === expected.toLowerCase()
+        : actual === expected;
+    } catch { return false; }
+  }
+  // Development build: only the configured vite origin, root path.
+  const configured = process.env.ELECTRON_RENDERER_URL;
+  if (!configured) return false;
+  try {
+    const expected = new URL(configured);
+    return url.origin === expected.origin && (url.pathname === "/" || url.pathname === "");
+  } catch { return false; }
+}
+
 function hardenWindow(win: BrowserWindow, label: string): void {
+  // Sweep-3: the renderer must never navigate away from our own content, and
+  // it must not open arbitrary popups (window.open is denied - pop-outs go
+  // through the explicit window:popout IPC).
+  win.webContents.on("will-navigate", (e) => { e.preventDefault(); });
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   // Renderer process crash/exit -> reload the window instead of leaving it dead.
   win.webContents.on("render-process-gone", (_e, details) => {
     console.error(`[ehc] ${label} renderer gone (reason=${details.reason}, code=${details.exitCode}) - reloading window`);
@@ -89,15 +122,25 @@ if (!app.requestSingleInstanceLock()) app.quit();
 
 app.whenReady().then(async () => {
   runtime = await resolveRuntime();
-  ipcMain.handle("runtime:info", () => runtime);
+  ipcMain.handle("runtime:info", (e) => {
+    if (!isTrustedRenderer(e)) throw new Error("Untrusted IPC sender");
+    return runtime;
+  });
   // Folder picker for the Model Manager (renderer has no fs access by design).
-  ipcMain.handle("dialog:pickFolder", async () => {
+  ipcMain.handle("dialog:pickFolder", async (e) => {
+    if (!isTrustedRenderer(e)) return null;
     const win = BrowserWindow.getFocusedWindow() ?? undefined;
     const r = await dialog.showOpenDialog(win as BrowserWindow, { properties: ["openDirectory", "createDirectory"] });
     return r.canceled ? null : r.filePaths[0];
   });
   // Pop-out windows: terminal / chat in their own OS window, same session.
-  ipcMain.handle("window:popout", (_e, kind: string, sessionId: string, worktree?: string) => {    const win = new BrowserWindow({
+  // Sweep-3: kind is allowlisted, and only trusted renderers may spawn windows.
+  const POPOUT_KINDS = new Set(["terminal", "chat"]);
+  ipcMain.handle("window:popout", (e, kind: string, sessionId: string, worktree?: string) => {
+    if (!isTrustedRenderer(e)) return null;
+    if (typeof kind !== "string" || !POPOUT_KINDS.has(kind)) return null;
+    if (typeof sessionId !== "string" || sessionId.length > 128) return null;
+    const win = new BrowserWindow({
       width: 980, height: 720,
       title: `Event Horizon — ${kind}`,
       backgroundColor: WINDOW_BACKGROUND,
@@ -120,6 +163,7 @@ app.whenReady().then(async () => {
   // Re-measure nudge: a 1px resize + back. Used to force Chromium/DWM to re-present a
   // stale frame (e.g. after the palette marks a focus transition that wedges the compositor).
   ipcMain.handle("window:nudge", (e) => {
+    if (!isTrustedRenderer(e)) return false;
     const win = BrowserWindow.fromWebContents(e.sender);
     if (!win) return false;
     const b = win.getBounds();
@@ -130,6 +174,8 @@ app.whenReady().then(async () => {
   });
   // Grow-only, clamped to the display work area; shifts left if it would overflow.
   ipcMain.handle("window:grow", (e, targetW: number) => {
+    if (!isTrustedRenderer(e)) return false;
+    if (typeof targetW !== "number" || !Number.isFinite(targetW)) return false;
     const win = BrowserWindow.fromWebContents(e.sender);
     if (!win) return false;
     const display = screen.getDisplayNearestPoint(win.getBounds());
@@ -155,6 +201,7 @@ app.whenReady().then(async () => {
   // In-page right-click menu actions (ContextMenu.tsx) run here - paste cannot
   // be done from the renderer sandbox without the clipboard-read permission.
   ipcMain.handle("edit:action", (e, action: string) => {
+    if (!isTrustedRenderer(e)) return false;
     if (!["copy", "cut", "paste", "selectAll"].includes(action)) return false; // allowlist (EH-002)
     const wc = BrowserWindow.fromWebContents(e.sender)?.webContents;
     if (!wc) return false;
@@ -171,18 +218,18 @@ app.whenReady().then(async () => {
   // shapes and lengths validated at runtime.
   const FS_OPS = new Set(["newFile", "newDir", "rename", "delete"]);
   ipcMain.handle("fs:op", (e, op: { kind?: unknown; path?: unknown; to?: unknown; type?: unknown }) => {
-    const frame = e.senderFrame?.url ?? "";
-    let origin: URL;
-    try { origin = new URL(frame); } catch { return { ok: false, error: "rejected sender" }; }
-    if (origin.protocol !== "file:" && origin.hostname !== "localhost" && origin.hostname !== "127.0.0.1") {
-      return { ok: false, error: "rejected sender" };
-    }
+    if (!isTrustedRenderer(e)) return { ok: false, error: "rejected sender" };
     if (typeof op?.kind !== "string" || !FS_OPS.has(op.kind)) return { ok: false, error: "unknown op" };
     if (typeof op.path !== "string" || op.path.length === 0 || op.path.length > 1024) return { ok: false, error: "invalid path" };
     if (op.to !== undefined && (typeof op.to !== "string" || op.to.length > 1024)) return { ok: false, error: "invalid destination" };
     const guard = contained(process.cwd(), op.path);
     if (!guard.ok || !guard.abs) return { ok: false, error: guard.error ?? "path escapes the workspace" };
     const p = guard.abs;
+    // Deleting or renaming the workspace root itself is always refused
+    // (containment permits "." - the caller decides what the root means).
+    if ((op.kind === "delete" || op.kind === "rename") && path.relative(process.cwd(), p) === "") {
+      return { ok: false, error: "the workspace root cannot be deleted or renamed" };
+    }
     try {
       if (op.kind === "newFile") {
         if (fs.existsSync(p)) return { ok: false, error: "already exists" };

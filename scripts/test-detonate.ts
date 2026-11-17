@@ -50,18 +50,22 @@ async function main(): Promise<void> {
   // A grep for the literal word "process" must not trip the process-access rule.
   check("grep for 'process' is not flagged", scanUncleanScript(`await grep({pattern: 'process'})`).length === 0);
 
-  // 3. clean path runs benign scripts
-  const ok = await runTool("run_js", { code: `const a = await ls({}); return 'entries:' + a.length;` }, worktree, { userApproved: true });
-  check("benign script executes", ok.ok === true, ok.error ?? "");
+  // 3. clean path runs declarative read-only batches (sweep-3 #17/18: no
+  //    model-written JavaScript executes in-process any more)
+  const ok = await runTool("run_js", { ops: [{ op: "ls", path: "." }, { op: "read", path: "package.json" }] }, worktree, { userApproved: true });
+  check("batch executes", ok.ok === true && /\[ls\]/.test(ok.out ?? ""), ok.error ?? "");
+  check("batch returns both results", /\[read\]/.test(ok.out ?? ""), ok.out ?? "");
 
-  // 4. a gate-violating script is refused with guidance, never executed
-  const bad = await runTool("run_js", { code: `const p = process.env; return p;` }, worktree, { userApproved: true });
-  check("violation refused", bad.ok === false && /clean-path gate/.test(bad.error ?? ""), bad.error ?? "");
-  check("refusal names the construct", /process access/.test(bad.error ?? ""));
+  // 4. unsupported ops and over-sized batches are refused, never executed
+  const bad = await runTool("run_js", { ops: [{ op: "eval" }] }, worktree, { userApproved: true });
+  check("unsupported op refused", bad.ok === false && /unsupported op/i.test(bad.error ?? ""), bad.error ?? "");
+  const tooMany = await runTool("run_js", { ops: Array.from({ length: 17 }, () => ({ op: "ls" })) }, worktree, { userApproved: true });
+  check("17-op batch refused", tooMany.ok === false && /1\.\.16/.test(tooMany.error ?? ""), tooMany.error ?? "");
 
-  // 5. this-escape stays contained inside the sandbox
-  const escape = await runTool("run_js", { code: `return this.process ? 'escaped' : 'contained';` }, worktree, { userApproved: true });
-  check("this-escape contained", escape.ok === false || !/escaped/.test(escape.out ?? ""), escape.out ?? "");
+  // 5. code is no longer accepted on the clean tier at all - arbitrary JS can
+  //    only run in the detonation lanes (which refuse plainly without sbx)
+  const legacyCode = await runTool("run_js", { code: `return this.process ? 'escaped' : 'contained';` }, worktree, { userApproved: true });
+  check("review tier no longer executes code", legacyCode.ok === false && /ops:/i.test(legacyCode.error ?? ""), legacyCode.error ?? "");
 
   // 6. detonation tiers state their refusal plainly. Here the lane is enabled in
   // config but sbx is not installed: the required property is that we NEVER

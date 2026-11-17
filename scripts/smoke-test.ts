@@ -78,10 +78,31 @@ async function main() {
   const sessionId = session.body?.sessionId;
   console.log(`[smoke] ok  /api/acp/session/new -> ${sessionId ?? "?"}`);
 
-  const prompt = await fetchJson("/api/acp/session/prompt", {
-    method: "POST",
-    body: JSON.stringify({ params: { sessionId, text: "ping", think: "low", numPredict: 32 } }),
-  });
+  // The prompt is the first request that exercises the agent loop - retry once
+  // so a transient socket reset under machine load does not fail the whole
+  // smoke run, and dump the server's captured output when it really fails.
+  let prompt: JsonRes | null = null;
+  let promptError = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      prompt = await fetchJson("/api/acp/session/prompt", {
+        method: "POST",
+        body: JSON.stringify({ params: { sessionId, text: "ping", think: "low", numPredict: 32 } }),
+      });
+      promptError = "";
+      break;
+    } catch (e) {
+      promptError = String((e as Error)?.cause ? (e as Error & { cause: Error }).cause.message : e).slice(0, 160);
+      await sleep(1000);
+    }
+  }
+  if (!prompt) {
+    console.error(`[smoke] FAIL: prompt fetch failed twice (${promptError}). Server tail:\n${out.slice(-2000)}`);
+    const stillUp = await fetch(`${BASE}/global/health`, { headers: { Authorization: AUTH } }).then((r) => r.ok).catch(() => false);
+    console.error(`[smoke] server still healthy after the failed request: ${stillUp}`);
+    killTree(child.pid);
+    process.exit(1);
+  }
   const echoed = typeof prompt.body?.reply === "string" && prompt.body.reply.length >= 0;
   console.log(`[smoke] ok  /api/acp/session/prompt (${prompt.status}, echo=${echoed})`);
 

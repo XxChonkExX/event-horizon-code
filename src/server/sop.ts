@@ -65,6 +65,10 @@ export type SopRun = {
   task?: string;
   status: SopRunStatus;
   currentNode: string | null;
+  // Sweep-3 #26: gated runs pause at script nodes for per-command approval -
+  // "gated" means EVERY executable step needs a human, not just gate nodes.
+  pendingCommand?: string;
+  pendingNodeId?: string;
   history: SopNodeRecord[];
   started: string;
   updated: string;
@@ -198,7 +202,20 @@ async function advance(runId: string, sop: Sop, run: SopRun): Promise<void> {
       }
 
       let result: { ok: boolean; output: string };
-      if (node.type === "script") result = await runScriptNode(run, node);
+      if (node.type === "script") {
+        // Sweep-3 #26: "gated" means every executable step needs a human.
+        // Script nodes run shell commands, so in gated mode they pause for
+        // per-command approval (automated mode executes immediately).
+        if (run.mode === "gated") {
+          run.pendingCommand = (node.cmd ?? "").trim();
+          run.pendingNodeId = node.id;
+          record(run, node, "waiting", `script node waiting for approval: ${run.pendingCommand}`);
+          run.status = "waiting";
+          touch(run);
+          break;
+        }
+        result = await runScriptNode(run, node);
+      }
       else result = await runAgentNode(run, sop, node);
 
       // A cancel may arrive while a node executes - the node's outcome is
@@ -267,10 +284,44 @@ export function startRun(sopName: string, opts: { worktree: string; sessionId?: 
 
 // Human gate resolution (LoopForge): approve and continue, or send the work
 // back to a chosen step. A rejection with no send-back target fails the run.
-export function approveRun(id: string, decision: { approved?: boolean; sendBackTo?: string }): { ok: boolean; run?: SopRun; error?: string } {
+export async function approveRun(id: string, decision: { approved?: boolean; sendBackTo?: string }): Promise<{ ok: boolean; run?: SopRun; error?: string }> {
   const run = runs.get(id);
   if (!run) return { ok: false, error: `no such run: ${id}` };
   if (run.status !== "waiting") return { ok: false, error: `run is not waiting at a gate (status: ${run.status})` };
+  // Script-node pause (sweep-3 #26): approval authorizes THIS exact command -
+  // the pending command is immutable, and rejection fails the run.
+  if (run.pendingCommand) {
+    const sop = getSop(run.sop);
+    if (!sop) return { ok: false, error: `SOP "${run.sop}" no longer exists` };
+    const nodeId = run.pendingNodeId ?? "unknown";
+    const node = sop.nodes.find((n) => n.id === nodeId);
+    if (decision.approved) {
+      run.status = "running";
+      const result = await runScriptNode(run, node ?? { id: nodeId, type: "script", cmd: run.pendingCommand });
+      record(run, node ?? { id: nodeId, type: "script" }, result.ok ? "ok" : "fail", `approved by operator - ${result.output}`);
+      run.pendingCommand = undefined;
+      run.pendingNodeId = undefined;
+      audit({ tool: "sop.approve", note: `${id} script approved` });
+      if (!result.ok) {
+        run.status = "failed";
+        run.error = "approved script node failed";
+        touch(run);
+        return { ok: true, run };
+      }
+      run.currentNode = nextNodeId(sop, nodeId);
+      touch(run);
+      void advance(id, sop, run);
+      return { ok: true, run };
+    }
+    run.status = "failed";
+    run.error = `script node rejected by operator: ${run.pendingCommand}`;
+    record(run, node ?? { id: nodeId, type: "script" }, "fail", "script rejected by operator");
+    run.pendingCommand = undefined;
+    run.pendingNodeId = undefined;
+    audit({ tool: "sop.approve", note: `${id} script rejected` });
+    touch(run);
+    return { ok: true, run };
+  }
   const sop = getSop(run.sop);
   if (!sop) return { ok: false, error: `SOP "${run.sop}" no longer exists` };
   const gate = run.history.filter((h) => h.status === "waiting").at(-1);

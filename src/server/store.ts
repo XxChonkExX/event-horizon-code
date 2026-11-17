@@ -38,8 +38,12 @@ export function initStore(): { mode: "sqlite" | "memory" } {
     // Migration: older DBs predate the lastActivity column.
     try { db.exec("ALTER TABLE sessions ADD COLUMN lastActivity TEXT"); } catch { /* already present */ }
     return { mode: "sqlite" };
-  } catch {
+  } catch (e) {
+    // P1 (sweep 3): a silent memory fallback makes storage failure LOOK like a
+    // successful session - sessions would silently vanish on restart. Fail
+    // loudly here; callers keep their honest in-memory degradation.
     db = null;
+    console.error(`[ehc] FATAL: SQLite initialization failed - falling back to VOLATILE MEMORY. Sessions, messages and profiles will NOT survive a restart. Cause: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
     return { mode: "memory" };
   }
 }
@@ -276,10 +280,13 @@ export function forkSession(fromId: string, opts?: { title?: string; atSeq?: num
     db.transaction(() => {
       db.prepare("INSERT INTO sessions (id,title,worktree,created) VALUES (?,?,?,?)").run(id, session.title, session.worktree, session.created);
       const now = new Date().toISOString();
+      // Fork message ids embed the NEW session id: two forks of the same
+      // parent previously collided on 'fk_<seq>' (UNIQUE constraint on
+      // messages.id) and the second fork failed outright.
       if (at === undefined) {
-        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? ORDER BY seq").run(id, now, fromId);
+        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||?||'_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? ORDER BY seq").run(id, id, now, fromId);
       } else {
-        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? AND seq < ? ORDER BY seq").run(id, now, fromId, at);
+        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||?||'_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? AND seq < ? ORDER BY seq").run(id, id, now, fromId, at);
       }
       db.prepare("INSERT INTO instructions (sessionId,key,text,ts) SELECT ?, key, text, ? FROM instructions WHERE sessionId=?").run(id, now, fromId);
     })();

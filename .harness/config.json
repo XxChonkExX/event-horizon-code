@@ -54,7 +54,7 @@
     "write": "ask",
     "bash": "ask",
     "run_js": "ask",
-    "verify": "allow",
+    "verify": "ask",
     "code_complete": "allow",
     "screenshot": "ask",
     "websearch": "ask",

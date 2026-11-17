@@ -18,6 +18,9 @@ export type DetonatePolicy = {
   maxOutputBytes: number;
   allowNetwork: false;
   allowCredentials: false;
+  // Sweep-3 #19: the artifact is now first-class on the plan so runners can
+  // verify and deliver it (previous plan only mentioned it in the steps text).
+  artifactPath?: string;
 };
 
 export const DEFAULT_POLICY: Pick<DetonatePolicy, "timeoutMs" | "maxOutputBytes" | "allowNetwork" | "allowCredentials"> = {

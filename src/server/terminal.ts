@@ -5,7 +5,36 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { audit } from "./audit";
+
+// EH (sweep 3): caller-supplied environment must not be able to alter
+// executable resolution or inject code loaders into the child process.
+// Defense in depth - not a substitute for process isolation.
+const BLOCKED_ENV = new Set([
+  "NODE_OPTIONS",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "ELECTRON_RUN_AS_NODE",
+  "COMSPEC",
+]);
+
+// Exported for the ACP security tests.
+export function sanitizeTerminalEnv(supplied: Record<string, string> = {}): Record<string, string> {
+  const result = { ...process.env } as Record<string, string>;
+  for (const [key, value] of Object.entries(supplied)) {
+    const normalized = key.toUpperCase();
+    if (BLOCKED_ENV.has(normalized)) continue;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (typeof value !== "string" || value.length > 8192) continue;
+    result[key] = value;
+  }
+  return result;
+}
 
 type PtyModule = {
   spawn: (file: string, args: string[], opts: Record<string, unknown>) => { pid: number; onData: (cb: (d: string) => void) => void; onExit: (cb: (e: { exitCode: number }) => void) => void; write: (d: string) => void; resize: (c: number, r: number) => void; kill: () => void };
@@ -52,7 +81,9 @@ export function openTerminal(worktree: string): { ok: boolean; id?: string; erro
   }
   const { file, args } = shellForPlatform();
   const p = pty.spawn(file, args, { name: "xterm-256color", cols: 80, rows: 24, cwd, env: { ...process.env } });
-  const id = `term_${Date.now().toString(36)}`;
+  // Collision-resistant: two creations in the same millisecond must not
+  // overwrite each other in the sessions Map (sweep-3 finding).
+  const id = `term_${crypto.randomUUID()}`;
   const s: TermSession = { id, worktree: cwd, pty: p };
   sessions.set(id, s);
   audit({ tool: "terminal.open", note: `${id} pid=${p.pid} cwd=${cwd}${cwdNote ? ` (${cwdNote})` : ""}` });
@@ -100,9 +131,9 @@ export function openCommandTerminal(
   const byteLimit = Math.max(1024, Math.min(opts?.outputByteLimit ?? 512_000, 4_000_000));
   const p = pty.spawn(resolveExecutable(command), args, {
     name: "xterm-256color", cols: 120, rows: 30, cwd,
-    env: { ...process.env, ...(opts?.env ?? {}) },
+    env: sanitizeTerminalEnv(opts?.env),
   });
-  const id = `acpterm_${Date.now().toString(36)}`;
+  const id = `acpterm_${crypto.randomUUID()}`;
   const s: TermSession = { id, worktree: cwd, pty: p, command, buffer: "", truncated: false, byteLimit, exit: null, waiters: [] };
   sessions.set(id, s);
   audit({ tool: "terminal.open-command", note: `${id} pid=${p.pid} cmd=${command} cwd=${cwd}` });

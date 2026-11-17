@@ -48,7 +48,18 @@ class McpServer {
     this.proc = proc;
     proc.stdout?.on("data", (d: Buffer) => this.onData(d.toString()));
     proc.stderr?.on("data", () => { /* servers log freely; ignore */ });
-    proc.on("exit", () => { this.proc = null; this.ready = false; });
+    proc.on("exit", () => {
+    // Sweep-3: exit/startup failure settles every outstanding request exactly
+    // once - pending promises must never hang until their timeout fires.
+    this.proc = null;
+    this.ready = false;
+    this.rejectPending(new Error(`${this.name}: server process exited`));
+  });
+  proc.on("error", (err: Error) => {
+    this.proc = null;
+    this.ready = false;
+    this.rejectPending(new Error(`${this.name}: ${err.message}`));
+  });
     const init = await this.request("initialize", {
       protocolVersion: "2025-06-18",
       capabilities: {},
@@ -70,14 +81,27 @@ class McpServer {
   }
 
   private onData(chunk: string) {
+    // Sweep-3: input is bounded - a runaway or hostile server cannot grow the
+    // buffer without limit, and any single JSON-RPC line over 1 MiB fails the
+    // server rather than feeding garbage into the parser.
     this.buf += chunk;
+    if (Buffer.byteLength(this.buf, "utf8") > 2 * 1024 * 1024) {
+      this.failServer(new Error(`${this.name}: MCP input buffer exceeded limit`));
+      return;
+    }
     let idx: number;
     while ((idx = this.buf.indexOf("\n")) >= 0) {
-      const line = this.buf.slice(0, idx).trim();
+      const line = this.buf.slice(0, idx);
       this.buf = this.buf.slice(idx + 1);
       if (!line) continue;
+      if (Buffer.byteLength(line, "utf8") > 1024 * 1024) {
+        this.failServer(new Error(`${this.name}: MCP JSON-RPC line exceeded limit`));
+        return;
+      }
+      const trimmed = line.trim();
+      if (!trimmed) continue;
       let msg: { id?: number; result?: unknown; error?: { message?: string } };
-      try { msg = JSON.parse(line) as typeof msg; } catch { continue; }
+      try { msg = JSON.parse(trimmed) as typeof msg; } catch { continue; }
       if (typeof msg.id === "number" && this.pending.has(msg.id)) {
         const p = this.pending.get(msg.id)!;
         clearTimeout(p.timer);
@@ -86,6 +110,23 @@ class McpServer {
         else p.resolve(msg.result);
       }
     }
+  }
+
+  // Settle every outstanding request exactly once, then tear the server down.
+  private rejectPending(reason: Error) {
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(reason);
+      this.pending.delete(id);
+    }
+  }
+
+  private failServer(reason: Error) {
+    this.ready = false;
+    this.rejectPending(reason);
+    const proc = this.proc;
+    this.proc = null;
+    try { proc?.kill(); } catch { /* may already be dead */ }
   }
 
   private send(obj: unknown) {
