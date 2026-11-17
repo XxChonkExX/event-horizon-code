@@ -43,7 +43,7 @@ SQLite `sessions` (id, title, worktree, created, lastActivity), `messages`
 | `GET /api/sessions` | list with `messageCount` + `lastActivity`, newest first |
 | `POST /api/sessions` | create `{title, worktree}` |
 | `PATCH /api/sessions/:id` | rename `{title}` |
-| `DELETE /api/sessions/:id` | delete session + messages + instructions + todos (no orphans) |
+| `DELETE /api/sessions/:id` | delete session + messages + instructions + todos + checkpoints (no orphans) |
 | `POST /api/acp/session/new` | ACP-compatible create (used by the UI) |
 
 Multi-turn context is real: history is loaded on each prompt, so follow-ups

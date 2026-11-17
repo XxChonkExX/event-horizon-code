@@ -156,11 +156,13 @@ walk + regex) run otherwise, so `grep`/`glob` work on a bare machine. Python is
 resolved the same way. Verified: `glob *.json` returns files with no `fd` installed.
 
 ### 6. Tool maturity details
-- Per-tool timeouts surfaced in the UI; long-running bash as a background job.
-- Diffs previewed before `edit` is applied (currently the editor's Save is the
-  preview surface).
-- Todo tool (OpenCode-style) so long tasks track progress visibly.
-- Cost/latency badges per step in the chat transcript.
+- **Implemented**: per-tool execution timeouts in code (15s bash, 8s search,
+  20s machine runner, etc.); the editor's **Save** is the diff preview surface;
+  the `todo` tool persists per-session progress; the chat ledger shows tool
+  steps, outcomes and thinking.
+- **Roadmap (not shipped)**: timeouts surfaced as per-step UI badges, long-running
+  bash as a background job with a job handle, a dedicated diff-preview dialog,
+  cost/latency badges per step. See `docs/ROADMAP.md`.
 
 ## References we borrow from
 

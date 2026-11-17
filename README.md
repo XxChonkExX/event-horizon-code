@@ -92,10 +92,10 @@ Everything else is automatic: `GET /api/engine/models` scans `~/.eventhorizon/mo
 ## Security & privacy posture
 
 - **No telemetry, no analytics, no cloud proxy.** All network calls go to endpoints you configure (Ollama on localhost, BYOK, or none).
-- Local server binds `127.0.0.1`; random port + per-launch password (Basic auth). The GUI never ships secrets to the page; keys live in `.harness/secrets.json` (gitignored).
+- Local server binds `127.0.0.1` with Basic auth; the Electron shell attaches to an existing runtime (or spawns exactly one) and logs the port. The **renderer never receives the API password** — JSON calls go through a main-process proxy, streams use single-use tickets. User keys live in `.harness/secrets.json` (gitignored).
 - **Permission gate** on every tool: `allow` / `ask` / `deny` in `.harness/config.json` (`permissions`). `edit` / `write` / `bash` default to `ask`; the composer's **auto-approve tools** toggle flips them.
 - **Workspace path jail** — tools cannot write outside the workspace; credential files (`.harness/secrets.json`, `.env`) are never agent-readable or agent-writable.
-- **Detonation lane** — untrusted code runs in an isolated microVM (`sbx`), never on the host, and never falls back silently to the host. See `docs/DETONATION.md`, `docs/SECURITY.md`.
+- **Detonation lane** - requires an operator-installed `sbx` microVM; **without it the lane refuses plainly** (never a silent host fallback). Artifact delivery into the guest is not yet implemented and is not claimed — see the implemented/planned table in `docs/DETONATION.md` and `docs/SECURITY.md`.
 - Every tool call, model call, escalation and context recovery is appended to `~/.eventhorizon/audit.jsonl`.
 - Detonated tools (`run_js` with `tier=execute|redteam`) require `sbx`; without it the tool refuses plainly.
 
@@ -143,4 +143,4 @@ Roadmap and UI/UX audits: [`docs/ROADMAP.md`](docs/ROADMAP.md) and
 
 ---
 
-Status: **0.1.0 — beta**. Feature set is complete for daily agentic work; the Windows, Linux and macOS paths all build from source. Rough edges are documented in `docs/`; please file issues.
+Status: **release candidate for v0.0.1-alpha** (hand version bump pending final tag). Windows is the verified packaged target; the local runtime also builds/runs from source on Linux and macOS, but per-platform engine staging in the packer is still roadmap. Rough edges and deferrals are documented in `docs/`; please file issues.

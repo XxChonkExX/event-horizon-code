@@ -22,7 +22,7 @@
 
 ## Data
 
-- SQLite WAL: sessions, messages, todos, engram index, audit pointers.
+- SQLite WAL: sessions, messages, todos, instructions, usage, profiles, checkpoints. The engram store and audit log are separate local files.
 - Git snapshots: per-session worktree under .eventhorizon/worktrees/<id>/
 - Engram store: engrams/index.db + verbatim log files under engrams/. Never compressed away. Ghost ledger for evictions. See AfterImage-Engram docs/EVIDENCE.md for measured recall.
 

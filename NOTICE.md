@@ -26,6 +26,6 @@ Event Horizon Code is an original breakaway project. It does not fork microsoft/
 - Docker Sandbox / sbx — https://docs.docker.com/ai/sandboxes — microVM isolation, private Docker daemon, network policy, credential proxy pattern. Docs incorporated, no Docker code bundled.
 - Tree-sitter — MIT License. https://tree-sitter.github.io — grammars loaded on demand, cached locally.
 
-All trademarks remain property of their owners. "Visual Studio" is a trademark of Microsoft Corporation. This project is not affiliated with, endorsed by, or sponsored by Microsoft Corporation or the OpenCode team.
+All trademarks remain property of their owners. "Visual Studio" is a trademark of Microsoft Corporation. "Event Horizon Code" and its logo are trademarks of XxChonkExX; the MIT license grants no rights to use them for rebranded or resold copies. This project is not affiliated with, endorsed by, or sponsored by Microsoft Corporation or the OpenCode team.
 
 No telemetry, analytics, or cloud proxy is included. All network calls are to endpoints explicitly configured by the user (local Ollama / BYOK providers).
