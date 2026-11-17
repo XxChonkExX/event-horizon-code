@@ -62,7 +62,15 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown) {
 // origin is safe — a hostile page still cannot pass auth.
 function setCors(req: http.IncomingMessage, res: http.ServerResponse) {
   const origin = req.headers.origin;
-  if (origin) {
+  // Only reflect origins we actually serve: local dev (vite), the app itself,
+  // and file:// ("null" origin in some Electron builds). Everything else gets
+  // no CORS headers - the browser blocks the response.
+  const allowed =
+    !origin ||
+    origin.startsWith("http://localhost:") ||
+    origin.startsWith("http://127.0.0.1:") ||
+    origin === "null";
+  if (allowed && origin) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
@@ -76,8 +84,17 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
   if (h.startsWith("Basic ")) {
     try {
       const [, b64] = h.split(" ");
-      const [user, pass] = Buffer.from(b64, "base64").toString("utf8").split(":");
-      return user === "eventhorizon" && crypto.timingSafeEqual(Buffer.from(pass), Buffer.from(password));
+      const decoded = Buffer.from(b64, "base64").toString("utf8");
+      const colon = decoded.indexOf(":");
+      if (colon < 0) return false;
+      const user = decoded.slice(0, colon);
+      const pass = decoded.slice(colon + 1);
+      if (user !== "eventhorizon") return false;
+      // Length check before timingSafeEqual: equal-length inputs only.
+      const a = Buffer.from(pass);
+      const b = Buffer.from(password);
+      if (a.length !== b.length || a.length === 0) return false;
+      return crypto.timingSafeEqual(a, b);
     } catch { return false; }
   }
   if (url) {
@@ -85,7 +102,12 @@ function checkAuth(req: http.IncomingMessage, password: string, url?: URL): bool
     const ticket = url.searchParams.get("ticket") ?? "";
     if (ticket) return consumeEventTicket(ticket);
     const q = url.searchParams.get("auth") ?? "";
-    try { return q.length > 0 && crypto.timingSafeEqual(Buffer.from(q), Buffer.from(password)); } catch { return false; }
+    try {
+      const a = Buffer.from(q);
+      const b = Buffer.from(password);
+      if (a.length !== b.length || a.length === 0) return false;
+      return crypto.timingSafeEqual(a, b);
+    } catch { return false; }
   }
   return false;
 }
@@ -121,8 +143,11 @@ function writeActiveProfile(id: string): void {
 // Auth password never appears in an EventSource URL.
 const eventTickets = new Map<string, number>();
 function issueEventTicket(): string {
+  // Lazy purge so the map cannot grow unbounded over long uptimes.
+  const now = Date.now();
+  if (eventTickets.size > 64) for (const [t, exp] of eventTickets) if (exp <= now) eventTickets.delete(t);
   const t = crypto.randomBytes(24).toString("hex");
-  eventTickets.set(t, Date.now() + 60_000);
+  eventTickets.set(t, now + 60_000);
   return t;
 }
 function consumeEventTicket(t: string): boolean {

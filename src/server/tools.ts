@@ -250,7 +250,29 @@ export async function runTool(
         audit({ tool, note: "refused: credential file access" });
         return { ok: false, error: "refused: commands that read or write credential files (.harness/secrets.json, .env, keys) are not allowed. Ask the user instead.", out: "" };
       }
-      const parsed = cmd.trim().split(/\s+/);
+      const parsed = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((t) => t.replace(/^["']|["']$/g, "")) ?? [];
+      if (parsed.length === 0) return { ok: false, error: "empty command", out: "" };
+      // Optional allowlist from .harness/config.json (tools.bash.allowlist).
+      // Absent = no allowlist beyond the permission gates - the user decides
+      // policy, not a hardcoded list. When present, the FIRST token must match
+      // (basename, case-insensitive, .exe stripped on Windows).
+      {
+        let allow: unknown;
+        try {
+          allow = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8"))?.tools?.bash?.allowlist;
+        } catch { allow = undefined; }
+        if (Array.isArray(allow) && allow.length > 0) {
+          const bin = path.basename(parsed[0]).toLowerCase().replace(/\.exe$/i, "");
+          const okBin = allow.some((entry) => {
+            const e = String(entry).toLowerCase().replace(/\.exe$/i, "");
+            return bin === e || (e.endsWith("*") && bin.startsWith(e.slice(0, -1)));
+          });
+          if (!okBin) {
+            audit({ tool, note: `bash refused: ${bin} outside allowlist` });
+            return { ok: false, error: `bash: executable "${parsed[0]}" is outside tools.bash.allowlist. Approve a broader policy in .harness/config.json or run it in the terminal.`, out: "" };
+          }
+        }
+      }
       return new Promise<ToolResult>((resolve) => {
         execFile(parsed[0], parsed.slice(1), { cwd: worktree, timeout: 15000, maxBuffer: 200000, windowsHide: true }, (err, stdout, stderr) => {
           // Audit notes are privacy-sensitive: keep a short shape fingerprint,

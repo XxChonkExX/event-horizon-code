@@ -283,7 +283,16 @@ export async function runAgentTurn(p: AgentTurnParams): Promise<AgentTurnResult>
             continue;
           }
           // Approval authority is an explicit option, never a model-supplied argument.
-const res = await runTool(tc.name as ToolName, tc.args ?? {}, p.workdir, { userApproved: autoApprove });
+          // Cooperative cancel: honoured between tool calls, not mid-execution -
+          // a started tool runs to completion and its result is recorded before
+          // the run stops (no silent loss of a completed mutation).
+          if (p.isCancelled?.()) {
+            cancelled = true;
+            convo.push({ role: "tool", content: "(run cancelled by request before this tool executed)", name: tc.name, tool_call_id: tc.id });
+            steps.push("X  cancelled between tool calls");
+            break;
+          }
+          const res = await runTool(tc.name as ToolName, tc.args ?? {}, p.workdir, { userApproved: autoApprove });
           const out = (res.ok ? res.out : (res.error ?? "failed")).slice(0, 1500);
           const shortArgs = JSON.stringify(tc.args).slice(0, 100);
           steps.push(`${res.ok ? "OK" : "X "} ${tc.name}(${shortArgs})${res.needsApproval ? " - needs approval" : ""}\n${out.slice(0, 400)}`);

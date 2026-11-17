@@ -174,11 +174,14 @@ export function renameSession(id: string, title: string): void {
 
 export function deleteSession(id: string): void {
   if (db) {
-    db.prepare("DELETE FROM messages WHERE sessionId=?").run(id);
-    db.prepare("DELETE FROM instructions WHERE sessionId=?").run(id);
-    db.prepare("DELETE FROM todos WHERE sessionId=?").run(id);
-    db.prepare("DELETE FROM checkpoints WHERE sessionId=?").run(id);
-    db.prepare("DELETE FROM sessions WHERE id=?").run(id);
+    // Transaction: a crash mid-delete must not leave a half-removed session.
+    db.transaction(() => {
+      db.prepare("DELETE FROM messages WHERE sessionId=?").run(id);
+      db.prepare("DELETE FROM instructions WHERE sessionId=?").run(id);
+      db.prepare("DELETE FROM todos WHERE sessionId=?").run(id);
+      db.prepare("DELETE FROM checkpoints WHERE sessionId=?").run(id);
+      db.prepare("DELETE FROM sessions WHERE id=?").run(id);
+    })();
   } else {
     memMessages.delete(id);
     memInstructions.delete(id);
@@ -208,9 +211,14 @@ const memMessages = new Map<string, StoredMessage[]>();
 
 export function saveMessages(sessionId: string, msgs: StoredMessage[]): void {
   if (db) {
-    db.prepare("DELETE FROM messages WHERE sessionId=?").run(sessionId);
-    const ins = db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) VALUES (?,?,?,?,?,?)");
-    msgs.forEach((m, i) => ins.run(`m_${sessionId}_${i}`, sessionId, i, m.role, m.content, new Date().toISOString()));
+    // Transaction: DELETE + N INSERTs are atomic, so a crash or a concurrent
+    // process (serve + packaged app share this file) cannot leave partial turns.
+    db.transaction(() => {
+      db.prepare("DELETE FROM messages WHERE sessionId=?").run(sessionId);
+      const ins = db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) VALUES (?,?,?,?,?,?)");
+      const now = new Date().toISOString();
+      msgs.forEach((m, i) => ins.run(`m_${sessionId}_${i}`, sessionId, i, m.role, m.content, now));
+    })(msgs);
   } else {
     memMessages.set(sessionId, msgs);
   }
@@ -263,14 +271,18 @@ export function forkSession(fromId: string, opts?: { title?: string; atSeq?: num
   const session: Session = { id, title: opts?.title ?? `${src.title} (fork)`, worktree: src.worktree, created: new Date().toISOString() };
   const at = opts?.atSeq;
   if (db) {
-    db.prepare("INSERT INTO sessions (id,title,worktree,created) VALUES (?,?,?,?)").run(id, session.title, session.worktree, session.created);
-    const now = new Date().toISOString();
-    if (at === undefined) {
-      db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? ORDER BY seq").run(id, now, fromId);
-    } else {
-      db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? AND seq < ? ORDER BY seq").run(id, now, fromId, at);
-    }
-    db.prepare("INSERT INTO instructions (sessionId,key,text,ts) SELECT ?, key, text, ? FROM instructions WHERE sessionId=?").run(id, now, fromId);
+    // Transaction: the fork is one logical unit (session row + message copy +
+    // instructions) - a crash must not leave a fork skeleton behind.
+    db.transaction(() => {
+      db.prepare("INSERT INTO sessions (id,title,worktree,created) VALUES (?,?,?,?)").run(id, session.title, session.worktree, session.created);
+      const now = new Date().toISOString();
+      if (at === undefined) {
+        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? ORDER BY seq").run(id, now, fromId);
+      } else {
+        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? AND seq < ? ORDER BY seq").run(id, now, fromId, at);
+      }
+      db.prepare("INSERT INTO instructions (sessionId,key,text,ts) SELECT ?, key, text, ? FROM instructions WHERE sessionId=?").run(id, now, fromId);
+    })();
   } else {
     memSessions = [...memSessions, session];
     const srcMsgs = memMessages.get(fromId) ?? [];

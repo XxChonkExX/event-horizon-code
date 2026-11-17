@@ -71,3 +71,22 @@ later; do not re-report the items below without new evidence.
 4. Store concurrency: concurrent sessions writing the same SQLite rows.
 5. Fresh eyes on `http.ts` (1100+ lines) — route-by-route review for anything the
   byte-guard does not cover.
+
+---
+
+# Sweep 2 response - Grok 4.6, 7 findings (baseline f1d0c06)
+
+| Finding | Triage | Action |
+|---|---|---|
+| 1. checkAuth length-sensitive | Accepted | Length check before timingSafeEqual, first-colon split (passwords containing ':' now valid), empty-password rejection |
+| 2. bash tool (quotes/allowlist) | Partially accepted | Quoted-argv split adopted; credential regex already matched their proposal; allowlist implemented as config-driven (tools.bash.allowlist in .harness/config.json) rather than hardcoded - policy stays the user's; the permission gate remains the primary boundary. Redirect/pipe note: execFile never interprets shell metacharacters - they arrive as literal argv, which is safer, not less safe |
+| 3. wsguard Windows quirks | Documented, not code-changed | UNC/device/absolute inputs already rejected via path.isAbsolute; case-insensitivity relies on the realpath canonical check; trailing-dot/space names noted as a Windows quirk to watch |
+| 4. agent-loop cancellation | Already existed between steps; extended | Added per-tool-call cancel check - a cancel between tool calls pushes a (cancelled before this tool executed) tool message (keeps the conversation valid) and stops the run before the next execution |
+| 5. store transactions | Accepted | saveMessages, deleteSession, forkSession wrapped in db.transaction (crash-safe; concurrent-process safe on the shared WAL file) |
+| 6. CORS origin reflection | Accepted | Only localhost/127.0.0.1/null origins reflected; everything else gets no CORS headers |
+| 7. monolith split | Deferred | Post-alpha refactor, agreed - the audit itself says to wait until remediation stabilizes |
+| Event ticket purge | Accepted | Expired tickets purged lazily on issue when the map exceeds 64 entries |
+| resolveWorktree fail-closed | Deferred | cwd fallback is load-bearing for session boot; a fail-closed variant lands with the worktree-plumbing refactor |
+| Adversarial tests | Accepted | scripts/test-wsguard.ts - 11 checks incl. live junction escape rejection; wired into npm test |
+
+Verified: npm run typecheck clean; npm test exit=0 (10 stages incl. wsguard 11/11 + smoke).
