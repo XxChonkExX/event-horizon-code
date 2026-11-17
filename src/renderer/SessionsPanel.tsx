@@ -20,7 +20,7 @@ function ago(iso: string | null | undefined): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-export default function SessionsPanel() {
+export default function SessionsPanel(props: { onChanged?: () => void }) {
   const [sessions, setSessions] = createSignal<SessionMeta[]>([]);
   const [expanded, setExpanded] = createSignal<string>("");
   const [checkpoints, setCheckpoints] = createSignal<Checkpoint[]>([]);
@@ -61,6 +61,7 @@ export default function SessionsPanel() {
       if (gone.has(expanded())) setExpanded("");
       setNote(`${ids.length} session(s) deleted`);
       await refresh();
+      props.onChanged?.();
     } catch (e) {
       setNote(`delete failed: ${(e as Error).message ?? e}`);
     } finally { setBusy(false); }
@@ -105,6 +106,7 @@ export default function SessionsPanel() {
         setNote(`Forked -> ${d.sessionId}`);
         openWindow(d.sessionId, sessions().find((x) => x.id === id)?.worktree);
         await refresh();
+      props.onChanged?.();
       } else setNote(d.error ?? "fork failed");
     } finally { setBusy(false); }
   };
@@ -122,6 +124,7 @@ export default function SessionsPanel() {
       if (!res.ok) { const d = (await res.json().catch(() => ({}))) as { error?: string }; setNote(`rename failed: ${d.error ?? `HTTP ${res.status}`}`); }
       setRenaming(null);
       await refresh();
+      props.onChanged?.();
     } finally { setBusy(false); }
   };
 

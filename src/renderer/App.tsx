@@ -107,7 +107,7 @@ export default function App() {
   // Panels row: the eight tools render one at a time (tab bar), not eight
   // half-clipped columns.
   const PANELS: Array<{ id: string; label: string; el: () => JSX.Element }> = [
-    { id: "sessions", label: "Sessions", el: () => <SessionsPanel /> },
+    { id: "sessions", label: "Sessions", el: () => <SessionsPanel onChanged={() => { void refreshSessionTabs(); }} /> },
     { id: "memory", label: "Memory", el: () => <MemoryPanel /> },
     { id: "models", label: "Models", el: () => <ModelManager /> },
     { id: "profiles", label: "Profiles", el: () => <ProfilesPanel /> },
@@ -377,6 +377,7 @@ export default function App() {
         setMessages((m) => [...m, { role: "tool", text: why }]);
         return;
       }
+      toast(`new session ${d.id.slice(0, 10)} — switched THIS window`, "ok");
       openSession(d.id);
     } catch { toast("could not create session - server unreachable", "error"); }
   };

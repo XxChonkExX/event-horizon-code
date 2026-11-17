@@ -123,9 +123,23 @@ This project borrows with gratitude and full attribution (see **NOTICE.md**):
 
 Model weights are never bundled or shipped; community models you choose yourself remain under their licenses.
 
-## License
+## License, trademark & commercial artifacts
 
-MIT © 2026 XxChonkExX / Event Horizon Code contributors.
+MIT © 2026 XxChonkExX / Event Horizon Code contributors. The core workbench,
+agent loop, tools, SOPs, MCP, LSP, and assurance features stay free and open —
+all current features are core, not artificially held back.
+
+**Trademark:** "Event Horizon Code" and its logo are trademarks of XxChonkExX.
+The MIT license grants no trademark rights; forks may not use the name or logo
+to imply endorsement or to rebrand a resold copy. (Registration pending.)
+
+**Commercial artifacts** (sold separately, not required to use the core):
+signed/notarized installers with auto-update, team policy and audit aggregation,
+priority support. The open-core commitment above is the product boundary;
+contributions to the core stay under MIT.
+
+Roadmap and UI/UX audits: [`docs/ROADMAP.md`](docs/ROADMAP.md) and
+[`docs/UIUX-AUDIT.md`](docs/UIUX-AUDIT.md).
 
 ---
 
