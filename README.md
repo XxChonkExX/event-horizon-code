@@ -143,4 +143,4 @@ Roadmap and UI/UX audits: [`docs/ROADMAP.md`](docs/ROADMAP.md) and
 
 ---
 
-Status: **release candidate for v0.0.1-alpha** (hand version bump pending final tag). Windows is the verified packaged target; the local runtime also builds/runs from source on Linux and macOS, but per-platform engine staging in the packer is still roadmap. Rough edges and deferrals are documented in `docs/`; please file issues.
+Status: **v0.0.1 (alpha)** - first release candidate. Windows is the verified packaged target; the local runtime also builds/runs from source on Linux and macOS, but per-platform engine staging in the packer is still roadmap. Rough edges and deferrals are documented in `docs/`; please file issues.

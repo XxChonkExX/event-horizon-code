@@ -3,7 +3,24 @@
 All notable changes to Event Horizon Code. Newest first.
 Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
-## [0.1.0] — scaffold through first operational build
+## [0.0.1] - 2026-11-17 — first alpha release candidate
+
+First tagged alpha. (The `0.1.0` entry below was an internal pre-tag scaffold marker; the release line starts here.)
+
+### Highlights
+- Local-first runtime: attach-first single server, renderer holds no API credential (main-process proxy + single-use event tickets), zero-download model policy.
+- Tools: permission gates with prefix patterns, workspace containment (sibling/symlink/junction/dangling-proof), bounded bodies, approval authority the model cannot self-grant, declarative read-only `run_js` batch.
+- Agent: bounded loop with per-session serialization, cooperative cancel + global operator pause, SOPs with immutable script-node approval, checkpoints/forks, memory/engram, MCP, LSP, TTS.
+- Workbench: Monaco + LSP, PTY, panels, session manager with live bulk delete, right-click file ops and text menu, capability discovery, approvals queue, real worktree in the status bar.
+- Assurance: MIT attribution, RELEASE/ROADMAP/UIUX-AUDIT docs, four independent audit sweeps recorded and remediated, 12-stage `npm test` including an isolated end-to-end smoke, release workflow gated on tests + SHA-verified engine staging.
+
+### Known issues (stated, not hidden)
+- Windows compositor can present a stale frame under heavy GPU load; one click recovers. All in-app triggers found are fixed.
+- `sbx` microVM, whisper STT, AfterImage engram, and `aw` CLI are not bundled — absent capabilities are stated plainly in-app; detonation artifact delivery into the VM is not implemented.
+- Session switching reloads the workbench window; in-place tabs are roadmap.
+- No app icon or code signing yet; Linux/macOS engine staging is roadmap.
+
+## [0.1.0] - scaffold through first operational build
 
 ### Added
 - Electron shell: multi-window, thin main process, preload auth bridge (IPC only).
