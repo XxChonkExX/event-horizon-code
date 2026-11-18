@@ -44,9 +44,10 @@ mac:
     - zip
 
 win:
+  # NSIS only. MSI requires a real .ico (WiX LGHT0094 otherwise); add the msi
+  # target back once an icon is supplied in build/.
   target:
     - nsis
-    - msi
   artifactName: "${productName}-${version}-${arch}.${ext}"
 
 linux:
