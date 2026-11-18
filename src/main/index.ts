@@ -116,6 +116,17 @@ function hardenWindow(win: BrowserWindow, label: string): void {
     console.error(`[ehc] ${label} renderer gone (reason=${details.reason}, code=${details.exitCode}) - reloading window`);
     try { win.webContents.reload(); } catch { /* window may be gone too */ }
   });
+  // A missing renderer build (or an unreachable dev server) used to leave a
+  // blank window with only a console message. State the cause in the window.
+  win.webContents.on("did-fail-load", (_e, errorCode, description, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3 /* ERR_ABORTED */) return;
+    console.error(`[ehc] ${label} failed to load ${validatedURL}: ${errorCode} ${description}`);
+    const hint = validatedURL.startsWith("file:")
+      ? "The renderer build is missing. Run <code>npm run build</code> in the repo and relaunch, or use <code>npm run dev</code> for the live dev server."
+      : "The dev renderer could not be reached. Is <code>npm run dev</code> running?";
+    const html = `<!doctype html><meta charset="utf-8"><body style="background:#0b0b10;color:#d6d6de;font:14px system-ui,sans-serif;padding:48px"><h1 style="color:#22d3ee">Event Horizon Code</h1><h2>Renderer could not load</h2><p>${hint}</p><pre style="color:#8f8f9c;white-space:pre-wrap">${errorCode} ${description}\n${validatedURL}</pre></body>`;
+    try { void win.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`); } catch { /* window gone */ }
+  });
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
