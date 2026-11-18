@@ -28,9 +28,19 @@ asarUnpack:
 
 # Bundled inference engine (chonkllama.cpp chonk-buffer + VulkanVM Chonk Buffer).
 # Populated at packaging time from pinned chonkllama release binaries (SHA-verified).
+# Templates + language packs land next to the executable: chatTemplates.ts and
+# lsp.ts look in <execDir>/resources first and fall back to the process cwd -
+# which is the user's arbitrary cwd in an installed app, so these MUST ship as
+# extraResources for packaged builds to keep tool-calling templates and the LSP.
 extraResources:
   - from: resources/engine
     to: engine
+    filter: ["**/*"]
+  - from: resources/templates
+    to: templates
+    filter: ["**/*"]
+  - from: languages
+    to: languages
     filter: ["**/*"]
 
 mac:

@@ -12,6 +12,7 @@ import { spawn, ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import net from "node:net";
 import { resolveTemplate } from "./chatTemplates";
 import { sensoryStatus } from "./sensory";
 
@@ -139,7 +140,28 @@ export type EngineOverrides = {
   chatTemplate?: string; // override the canonical template selector
 };
 
-export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ ok: boolean; note: string }> {
+// Port-conflict probe for engine start. Windows keeps the Get-NetTCPConnection
+// check (Listen state is precise there); everywhere else a TCP connect is the
+// truth - a listener accepts the connection, ECONNREFUSED means the port is
+// free. This closes the Linux gap where the guard silently no-op'd and a stale
+// llama-server won the port while the new engine died on EADDRINUSE.
+// Exported for the Linux audit tests.
+export async function enginePortBusy(port: number): Promise<boolean> {
+  if (process.platform === "win32") {
+    try {
+      const { execFileSync } = require("node:child_process");
+      const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", `if (Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue) { 'busy' } else { 'free' }`], { timeout: 8000, encoding: "utf8" });
+      return String(out).trim() === "busy";
+    } catch { return false; }
+  }
+  return await new Promise<boolean>((done) => {
+    const s = net.connect({ host: "127.0.0.1", port, timeout: 1500 }, () => { s.destroy(); done(true); });
+    s.on("error", () => done(false));
+    s.on("timeout", () => { s.destroy(); done(false); });
+  });
+}
+
+export async function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ ok: boolean; note: string }> {
   const cfg = readEngineConfig();
   if (cfg.kind === "none") return Promise.resolve({ ok: false, note: "engine disabled in config (kind: none)" });
   if (engineRunning()) return Promise.resolve({ ok: true, note: `already running (pid ${proc?.pid}) on ${engineEndpoint()}` });
@@ -155,20 +177,12 @@ export function startEngine(ggufPath?: string, ov?: EngineOverrides): Promise<{ 
   const heapFraction = ov?.heapFraction ?? cfg.gpu.heapFraction;
   const pool = ov?.pool ?? cfg.gpu.pool;
   const deviceIndex = ov?.deviceIndex !== undefined ? ov.deviceIndex : cfg.gpu.deviceIndex;
+  // Port-conflict guard: a stale llama-server holding the port makes the new
+  // one die with EADDRINUSE while the old one keeps answering. Refuse loudly.
+  if (await enginePortBusy(cfg.port)) {
+    return { ok: false, note: `port ${cfg.port} already in use - stale engine holding it. Kill it (Get-Process llama-server / pkill -f llama-server) or change engine.port.` };
+  }
   return new Promise((resolve) => {
-    // Port-conflict guard: a stale llama-server holding the port makes the new
-    // one die with EADDRINUSE while the old one keeps answering. Refuse loudly.
-    let portBusy = false;
-    if (process.platform === "win32") {
-      try {
-        const { execFileSync } = require("node:child_process");
-        const out = execFileSync("powershell.exe", ["-NoProfile", "-Command", `if (Get-NetTCPConnection -LocalPort ${cfg.port} -State Listen -ErrorAction SilentlyContinue) { 'busy' } else { 'free' }`], { timeout: 8000, encoding: "utf8" });
-        portBusy = String(out).trim() === "busy";
-      } catch { portBusy = false; }
-    }
-    if (portBusy) {
-      return resolve({ ok: false, note: `port ${cfg.port} already in use - stale engine holding it. Kill it (Get-Process llama-server) or change engine.port.` });
-    }
     // Child stdout/stderr -> log file. A long-running server with an undrained
     // pipe buffer will eventually block — never leave it unread.
     const logDir = path.join(require("node:os").homedir(), ".eventhorizon");

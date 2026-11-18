@@ -34,6 +34,7 @@
     "languages:generate": "node scripts/generate-languages.mjs",
     "skills:generate": "node scripts/generate-skills.mjs",
     "runtime:init": "node scripts/runtime-init.mjs",
+    "desktop:install": "node scripts/install-linux-desktop.mjs",
     "serve": "node scripts/run-electron-node.mjs node_modules/tsx/dist/cli.mjs scripts/serve.ts",
     "serve:node": "tsx scripts/serve.ts",
     "postinstall": "electron-builder install-app-deps || echo '[ehc] WARN: native dependency install failed - see docs/RUNTIME.md (store falls back to in-memory; node-pty disabled)'",
