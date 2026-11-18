@@ -9,7 +9,6 @@ import { apiFetch, apiJson, popoutWindow } from "./api";
 type SessionMeta = { id: string; title: string; worktree: string; created: string; lastActivity?: string | null; messageCount: number };
 type Checkpoint = { sessionId: string; seq: number; label: string; ts: string };
 
-const currentSession = new URLSearchParams(location.search).get("session") ?? "default";
 
 function ago(iso: string | null | undefined): string {
   if (!iso) return "never";
@@ -20,7 +19,9 @@ function ago(iso: string | null | undefined): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-export default function SessionsPanel(props: { onChanged?: () => void }) {
+export default function SessionsPanel(props: { onChanged?: () => void; current?: () => string }) {
+  // Live current-session id from App (reactive across in-place switches).
+  const current = (): string => (props.current ? props.current() : "default");
   const [sessions, setSessions] = createSignal<SessionMeta[]>([]);
   const [expanded, setExpanded] = createSignal<string>("");
   const [checkpoints, setCheckpoints] = createSignal<Checkpoint[]>([]);
@@ -36,7 +37,7 @@ export default function SessionsPanel(props: { onChanged?: () => void }) {
   // Feedback is immediate: rows vanish, the note line reports the count.
   const [renaming, setRenaming] = createSignal<{ id: string; value: string } | null>(null);
 
-  const selectable = (): string[] => sessions().filter((s) => s.id !== currentSession).map((s) => s.id);
+  const selectable = (): string[] => sessions().filter((s) => s.id !== current()).map((s) => s.id);
   const allSelected = (): boolean => selectable().length > 0 && selectable().every((id) => selected().has(id));
   const toggleAll = (): void => {
     setSelected(() => (allSelected() ? new Set<string>() : new Set(selectable())));
@@ -68,7 +69,7 @@ export default function SessionsPanel(props: { onChanged?: () => void }) {
   };
 
   const removeSelected = (): void => {
-    const ids = [...selected()].filter((id) => id !== currentSession);
+    const ids = [...selected()].filter((id) => id !== current());
     if (ids.length === 0) return;
     void doDelete(ids);
   };
@@ -138,7 +139,7 @@ export default function SessionsPanel(props: { onChanged?: () => void }) {
       <p class="session-note">{note()}</p>
       <div class="checks">
         <button disabled={busy()} onClick={() => void refresh()}>Refresh</button>
-        <button disabled={busy()} onClick={() => { void fork(currentSession); }}>Fork current</button>
+        <button disabled={busy()} onClick={() => { void fork(current()); }}>Fork current</button>
         <span class="session-check">
           <input type="checkbox" id="s-select-all" checked={allSelected()} onChange={toggleAll} title="Select every session except the current one" />
           <label for="s-select-all">Select all</label>
@@ -154,13 +155,13 @@ export default function SessionsPanel(props: { onChanged?: () => void }) {
       </div>
       <ul class="session-list">
         {sessions().map((s) => (
-          <li classList={{ current: s.id === currentSession }}>
+          <li classList={{ current: s.id === current() }}>
             <div class="session-row">
               <input
                 type="checkbox"
                 checked={selected().has(s.id)}
-                disabled={s.id === currentSession}
-                title={s.id === currentSession ? "The current session cannot be deleted" : "Check to delete in bulk"}
+                disabled={s.id === current()}
+                title={s.id === current() ? "The current session cannot be deleted" : "Check to delete in bulk"}
                 onChange={() => toggleSel(s.id)}
               />
               {renaming()?.id === s.id ? (
@@ -176,7 +177,7 @@ export default function SessionsPanel(props: { onChanged?: () => void }) {
                   <button onClick={() => setRenaming(null)}>Cancel</button>
                 </span>
               ) : (
-                <span class="session-title" title={s.id}>{s.id === currentSession ? "* " : ""}{s.title}</span>
+                <span class="session-title" title={s.id}>{s.id === current() ? "* " : ""}{s.title}</span>
               )}
               <span class="session-meta">{s.messageCount} msg - {ago(s.lastActivity ?? s.created)}</span>
             </div>
@@ -186,7 +187,7 @@ export default function SessionsPanel(props: { onChanged?: () => void }) {
               <button disabled={busy()} onClick={() => void openCheckpoints(s.id)}>{expanded() === s.id ? "Hide turns" : "Turns"}</button>
               <button disabled={busy()} onClick={() => rename(s.id, s.title)}>Rename</button>
               <button
-                disabled={busy() || s.id === currentSession}
+                disabled={busy() || s.id === current()}
                 title="Deletes this session and its history immediately. The current session cannot be deleted from its own window."
                 onClick={() => remove(s.id)}
               >

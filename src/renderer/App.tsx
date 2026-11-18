@@ -25,7 +25,11 @@ import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo, eventStreamTi
 import Toasts, { type Toast } from "./Toasts";
 import ContextMenu from "./ContextMenu";
 
-const session = new URLSearchParams(location.search).get("session") ?? "default";
+const bootSession = new URLSearchParams(location.search).get("session") ?? "default";
+// Mutable: in-place session switching (no window reload) updates this; every
+// closure reads the CURRENT value at call time. sessionSig mirrors it for
+// reactive renders (tab highlight, status bar).
+let session = bootSession;
 const popoutKind = new URLSearchParams(location.search).get("popout");
 // The directory this session's tools/terminal/LSP operate in - from the session
 // row (its `worktree` column), never the session id itself.
@@ -73,6 +77,11 @@ export default function App() {
   const [think, setThink] = createSignal<string>("medium");
   const [open, setOpen] = createSignal<Record<Panel, boolean>>({ sidebar: true, chat: true, terminal: true, panels: true });
   const [shaderIdx, setShaderIdx] = createSignal(0); // default OFF - WebGL is opt-in
+  // Live session id for reactive renders (strip highlight, status bar) and a
+  // version counter that forces session-bound components (Terminal PTY,
+  // Monaco worktree content) to remount on an in-place switch.
+  const [sessionSig, setSessionSig] = createSignal(session);
+  const [sessionVersion, setSessionVersion] = createSignal(0);
   // Operator command surface: global pause + capabilities.
   const [agentsPaused, setAgentsPaused] = createSignal(false);
   const fetchRuntimePause = async (): Promise<void> => {
@@ -133,16 +142,10 @@ export default function App() {
       const list = await apiJson<Array<{ id: string }>>("/api/models");
       setModels(list.map((m) => m.id));
       if (list.length) setModel(list[0].id);
-    } catch { /* server not up yet — picker stays empty */ }
+    } catch { /* server not up yet - picker stays empty */ }
     // Replay this session's history so reopening a window continues the
     // conversation instead of showing an empty pane.
-    try {
-      const h = await apiJson<{ messages: Array<{ role: string; content: string }> }>(`/api/sessions/${encodeURIComponent(session)}/messages`);
-      const msgs = h.messages
-        .filter((m) => m.role !== "system" && m.content?.trim())
-        .map((m) => ({ role: (m.role === "user" || m.role === "tool" ? m.role : "assistant") as ChatMsg["role"], text: m.content }));
-      if (msgs.length) setMessages(msgs);
-    } catch { /* fresh session */ }
+    await loadSessionState(session);
     void openEventStream();
 
     // Child components (chat, panels) raise toasts through this event so they
@@ -154,6 +157,35 @@ export default function App() {
     window.addEventListener("ehc-toast", onToast);
     onCleanup(() => window.removeEventListener("ehc-toast", onToast));
   });
+
+  // (Re)load everything that is per-session: history, live streams. Called on
+  // boot and on every in-place switch.
+  const loadSessionState = async (id: string): Promise<void> => {
+    setMessages([]);
+    setLiveText("");
+    setLiveThink("");
+    try {
+      const h = await apiJson<{ messages: Array<{ role: string; content: string }> }>(`/api/sessions/${encodeURIComponent(id)}/messages`);
+      const msgs = h.messages
+        .filter((m) => m.role !== "system" && m.content?.trim())
+        .map((m) => ({ role: (m.role === "user" || m.role === "tool" ? m.role : "assistant") as ChatMsg["role"], text: m.content }));
+      if (msgs.length) setMessages(msgs);
+    } catch { /* fresh session */ }
+    es?.close();
+    void openEventStream();
+  };
+
+  // In-place switch: no window reload. Session-bound components (Terminal PTY,
+  // Monaco worktree content) remount via the sessionVersion keyed wrapper.
+  const switchSession = (id: string): void => {
+    if (id === session) return;
+    session = id;
+    setSessionSig(id);
+    history.replaceState(null, "", `/?session=${encodeURIComponent(id)}`);
+    void refreshSessionTabs();
+    void loadSessionState(id);
+    setSessionVersion((v) => v + 1);
+  };
 
   // SSE: live tokens and tool progress for this worktree. Reconnects a few
   // times if the runtime restarts; gives up quietly after that.
@@ -347,9 +379,9 @@ export default function App() {
 
   const openSession = (id: string): void => {
     if (id === session) return;
-    // Switch this window to the chosen session (full reload - the app keys its
-    // state off the ?session= query).
-    window.location.assign(`/?session=${encodeURIComponent(id)}`);
+    // In-place switch: no reload. Terminal PTY and Monaco content remount via
+    // the sessionVersion keyed wrapper.
+    switchSession(id);
   };
 
   onMount(() => { void refreshSessionTabs(); });
@@ -378,7 +410,8 @@ export default function App() {
         return;
       }
       toast(`new session ${d.id.slice(0, 10)} — switched THIS window`, "ok");
-      openSession(d.id);
+      toast(`new session ${d.id.slice(0, 10)} - switched THIS window`, "ok");
+      switchSession(d.id);
     } catch { toast("could not create session - server unreachable", "error"); }
   };
 
@@ -426,9 +459,9 @@ export default function App() {
               {(t) => (
                 <div
                   class="chat-tab"
-                  classList={{ "chat-tab-on": t.id === session }}
+                  classList={{ "chat-tab-on": t.id === sessionSig() }}
                   role="tab"
-                  aria-selected={t.id === session}
+                  aria-selected={t.id === sessionSig()}
                   title={`${t.title} (${t.messageCount} messages) - window #${t.id.slice(0, 10)}`}
                   onClick={() => openSession(t.id)}
                 >
@@ -464,7 +497,9 @@ export default function App() {
 
       <section class="main-area">
         <Tabs files={openFiles} active={activeFile} onSelect={setActiveFile} onClose={closeFile} />
-        <MonacoMount file={activeFile()} worktree={wt()} />
+        <Show keyed when={sessionVersion()}>
+          <MonacoMount file={activeFile()} worktree={wt()} />
+        </Show>
         <Show when={open().panels}>
           <div class="panels">
             <div class="panel-tabs" role="tablist">
@@ -501,12 +536,14 @@ export default function App() {
               <span>Terminal</span>
               <button title="Pop out to window" onClick={() => void popoutWindow("terminal", session, wt())}>⧉</button>
             </div>
-            <Terminal worktree={wt()} />
+            <Show keyed when={sessionVersion()}>
+              <Terminal worktree={wt()} />
+            </Show>
           </div>
         </footer>
       </Show>
 
-      <StatusBar session={session} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} paused={agentsPaused} onPause={toggleAgentsPaused} />
+      <StatusBar session={sessionSig()} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} paused={agentsPaused} onPause={toggleAgentsPaused} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
       <ContextMenu />
       <Show when={devPreview}>
