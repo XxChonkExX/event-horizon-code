@@ -1,5 +1,6 @@
 appId: com.eventhorizon.code
 productName: Event Horizon Code
+icon: build/icon.png
 directories:
   output: dist
   buildResources: build
@@ -58,6 +59,8 @@ win:
   # target back once an icon is supplied in build/.
   target:
     - nsis
+    - msi
+  icon: build/icon.png
   artifactName: "${productName}-${version}-${arch}.${ext}"
 
 linux:

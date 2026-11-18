@@ -184,7 +184,7 @@ app.whenReady().then(async () => {
     if (typeof sessionId !== "string" || sessionId.length > 128) return null;
     const win = new BrowserWindow({
       width: 980, height: 720,
-      title: `Event Horizon — ${kind}`,
+      title: `Event Horizon - ${kind}`,
       backgroundColor: WINDOW_BACKGROUND,
       autoHideMenuBar: true,
       show: false,
@@ -194,6 +194,10 @@ app.whenReady().then(async () => {
         preload: path.join(__dirname, "../preload/index.js"),
       }
     });
+    // Dev-mode window/taskbar icon (packaged builds get theirs from the
+    // electron-builder icon config baked into the exe).
+    const devIcon = path.resolve(__dirname, "../../build/icon.png");
+    if (fs.existsSync(devIcon)) win.setIcon(devIcon);
     const query = `popout=${encodeURIComponent(kind)}&session=${encodeURIComponent(sessionId ?? "default")}${worktree ? `&wt=${encodeURIComponent(worktree)}` : ""}`;
     const devUrl = process.env.ELECTRON_RENDERER_URL;
     if (devUrl) void win.loadURL(`${devUrl}/?${query}`);
@@ -355,6 +359,11 @@ app.whenReady().then(async () => {
       height: Math.min(900, wa.height),
       backgroundColor: WINDOW_BACKGROUND,
       autoHideMenuBar: true,
+      // Dev-mode window/taskbar icon; packaged builds get theirs baked into the
+      // exe by electron-builder from build/icon.png.
+      ...(fs.existsSync(path.resolve(__dirname, "../../build/icon.png"))
+        ? { icon: path.resolve(__dirname, "../../build/icon.png") }
+        : {}),
       show: false,
       webPreferences: {
         contextIsolation: true, nodeIntegration: false,

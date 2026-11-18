@@ -56,7 +56,7 @@ npm run pack:dir     # electron-vite build + engine staging + electron-builder -
 
 - Produces `dist/win-unpacked/` — this folder IS the release candidate.
 - Run `dist/win-unpacked/Event Horizon Code.exe` and walk the RC checklist below.
-- Windows installer (optional per release): `npm run pack` → `dist/*.exe` NSIS installer. MSI is intentionally not configured — WiX requires a real `.ico` (`LGHT0094` on `Icon:EventHorizonCodeIcon.exe` otherwise); add the `msi` target back once artwork exists in `build/`.
+- Windows installer (optional per release): `npm run pack` → `dist/*.exe` NSIS installer + MSI. Icon artwork lives at `build/icon.png` (256px) — electron-builder bakes it into the exe/installer and synthesizes the Windows .ico from it. MSI is intentionally not configured — WiX requires a real `.ico` (`LGHT0094` on `Icon:EventHorizonCodeIcon.exe` otherwise); add the `msi` target back once artwork exists in `build/`.
 - **Path-with-spaces note**: if the checkout lives under a path containing spaces, `@electron/rebuild` warns while rebuilding `better-sqlite3`; the build still completes (prebuilt binaries are used). Build from a space-free path if a native rebuild ever actually fails.
 - Verified working 2026-11-16: engine staged (10 files, SHA-verified, chonkllama `eda0e233a`), RC launched from `win-unpacked`, spawned its own runtime, health green, sessions loaded from the shared store.
 - Cosmetic warnings to expect (not failures): default Electron icon (no icon set yet), no code-signing certificate, dynamic-import notice for `renderer/api.ts`.
