@@ -3,6 +3,12 @@
 All notable changes to Event Horizon Code. Newest first.
 Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
+## [0.0.2] - 2026-11-18 — alpha patch
+
+- Linux/Wayland: renderer-load failures now show an in-window error page with the exact cause and fix instead of a blank window.
+- Windows packaging: NSIS installer only; MSI target removed until real icon artwork exists (WiX `LGHT0094`).
+- Trademark filing checklist added (`docs/TRADEMARK.md`); MIT core and commercial-artifact policy documented in README.
+
 ## [0.0.1] - 2026-11-17 — first alpha release candidate
 
 First tagged alpha. (The `0.1.0` entry below was an internal pre-tag scaffold marker; the release line starts here.)

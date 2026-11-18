@@ -164,7 +164,7 @@ async function capabilitiesSnapshot(): Promise<unknown> {
     Promise.resolve(readAgentWatchConfig().enabled),
   ]);
   const payload = {
-    runtime: { version: "0.0.1", ready: true },
+    runtime: { version: "0.0.2", ready: true },
     capabilities: {
       localInference: Boolean((engine as { healthy?: boolean }).healthy),
       ollama,
@@ -247,7 +247,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       if (!checkAuth(req, opts.password, url)) {
         return sendJson(res, 401, { healthy: false, reason: "unauthorized — Basic auth required (user: eventhorizon, password printed at boot or EH_PASS)" });
       }
-      return sendJson(res, 200, { healthy: true, version: "0.0.1" });
+      return sendJson(res, 200, { healthy: true, version: "0.0.2" });
     }
 
     if (!checkAuth(req, opts.password, url)) return sendJson(res, 401, { error: "unauthorized" });

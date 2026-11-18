@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("eventhorizon", {
-  version: "0.0.1",
+  version: "0.0.2",
   getRuntime: () => ipcRenderer.invoke("runtime:info") as Promise<{ baseUrl: string; port: number } | null>,
   pickFolder: () => ipcRenderer.invoke("dialog:pickFolder") as Promise<string | null>,
   popoutWindow: (kind: string, sessionId: string, worktree?: string) => ipcRenderer.invoke("window:popout", kind, sessionId, worktree) as Promise<number>,
