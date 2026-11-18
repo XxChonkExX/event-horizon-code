@@ -125,13 +125,30 @@ function hardenWindow(win: BrowserWindow, label: string): void {
       ? "The renderer build is missing. Run <code>npm run build</code> in the repo and relaunch, or use <code>npm run dev</code> for the live dev server."
       : "The dev renderer could not be reached. Is <code>npm run dev</code> running?";
     const html = `<!doctype html><meta charset="utf-8"><body style="background:#0b0b10;color:#d6d6de;font:14px system-ui,sans-serif;padding:48px"><h1 style="color:#22d3ee">Event Horizon Code</h1><h2>Renderer could not load</h2><p>${hint}</p><pre style="color:#8f8f9c;white-space:pre-wrap">${errorCode} ${description}\n${validatedURL}</pre></body>`;
-    try { void win.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`); } catch { /* window gone */ }
+    // The window is created show:false and shown on ready-to-show - which never
+    // fires when the first load fails (no first frame is ever presented). Show
+    // the window here or the error page above renders into a window that stays
+    // invisible: exactly the "curl works, but there is no app" mystery class.
+    try {
+      void win.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      if (!win.isDestroyed() && !win.isVisible()) win.show();
+    } catch { /* window gone */ }
   });
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
 app.whenReady().then(async () => {
+  // Linux: Electron 42 boots happily with no display - the runtime runs, tools
+  // work over curl, and no window can ever exist, with zero warnings (found on
+  // a Wayland session where a daemon-spawned shell carried no DISPLAY /
+  // WAYLAND_DISPLAY). That silent headless zombie breaks the stated-plainly
+  // rule: refuse and say how to run headless for real.
+  if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+    console.error("[ehc] no display server found (DISPLAY and WAYLAND_DISPLAY are unset) - the workbench cannot open a window. Launch from inside your graphical session (DISPLAY=:0 or WAYLAND_DISPLAY=wayland-0), or run the headless runtime with `npm run serve`.");
+    app.exit(1);
+    return;
+  }
   runtime = await resolveRuntime();
   ipcMain.handle("runtime:info", (e) => {
     if (!isTrustedRenderer(e)) throw new Error("Untrusted IPC sender");

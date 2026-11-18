@@ -57,6 +57,13 @@ npm run build               # main 28kB + preload 0.13kB + renderer 29kB
 npm run pack                # installers: dmg / nsis+msi / AppImage+deb+rpm
 ```
 
+Linux: the workbench needs a display. Launched with neither `DISPLAY` nor
+`WAYLAND_DISPLAY` set (e.g. from a daemon-spawned shell), the app exits with a
+plain message instead of running as a silent server-only zombie — use
+`npm run serve` for headless. If a window opens showing "Renderer could not
+load", the renderer build is missing (`npm run build`) or the dev server is
+not running (`npm run dev`); the page names the cause and the fix.
+
 ## Smoke check (headless)
 
 ```bash
