@@ -134,6 +134,18 @@ function hardenWindow(win: BrowserWindow, label: string): void {
       if (!win.isDestroyed() && !win.isVisible()) win.show();
     } catch { /* window gone */ }
   });
+  // Electron#48859: on native Wayland, ready-to-show can fail to fire even
+  // when the renderer loads fine (upstream Chromium GPU-timing bug,
+  // inconsistent; windows stay hidden forever with the process fully alive).
+  // The established app-level workaround (FreeTube#8294, chaiNNer#3351) is to
+  // reveal on did-finish-load when ready-to-show has not already done it.
+  // First-wins via the isVisible guard; failed loads are covered above.
+  win.webContents.once("did-finish-load", () => {
+    if (process.platform !== "win32" && !win.isDestroyed() && !win.isVisible()) {
+      console.warn(`[ehc] ${label}: ready-to-show did not fire (Electron#48859) - revealing on did-finish-load`);
+      win.show();
+    }
+  });
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
