@@ -62,7 +62,9 @@ npm install
 I electron_dev=1 npm run dev    # Windows PowerShell: $env:EH_PASS="dev123"; npm run dev
 ```
 
-First run: Electron opens the workbench. Pick a model (see below), and say *"summarise what this repository is"* — the agent will inspect the workspace itself.
+First run: Electron opens the workbench. Pick a model (see below), and say *"summarise what this repository is"* - the agent will inspect the workspace itself.
+
+**Desktop/Start Menu shortcuts (Windows):** `npm run desktop:install` creates a Desktop and a Start Menu shortcut with the event-horizon artwork (`--uninstall` removes them). Taskbar pinning is one right-click away - Windows restricts scriptable pinning.
 
 **Headless runtime (for scripts/CI):**
 ```bash
