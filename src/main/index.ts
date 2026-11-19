@@ -10,6 +10,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { startLocalServer } from "../server/index";
 import { contained } from "../server/wsguard";
+import { audit } from "../server/audit";
 
 type Runtime = { baseUrl: string; password: string; port: number };
 let runtime: Runtime | null = null;
@@ -115,28 +116,41 @@ const WINDOW_BACKGROUND = "#0b0b10";
 // Sweep-3 EH: privileged IPC must only ever answer OUR renderer. A compromised
 // or future-untrusted frame gets nothing - most importantly not runtime:info,
 // which carries the local API password.
+// Sweep-5 EH: privileged IPC must only ever answer OUR renderer. A compromised
+// or future-untrusted frame gets nothing - most importantly not runtime:info,
+// which carries the local API password.
 function isTrustedRenderer(e: Electron.IpcMainInvokeEvent): boolean {
+  const reject = (why: string): boolean => {
+    console.error(`[ehc] IPC rejected (${why}) frame=${e.senderFrame?.url ?? "(none)"}`);
+    audit({ tool: "ipc.reject", note: `${why} | ${String(e.senderFrame?.url ?? "").slice(0, 160)}` });
+    return false;
+  };
   const frame = e.senderFrame;
-  if (!frame || frame !== e.sender.mainFrame) return false; // reject subframes
+  if (!frame) return reject("no senderFrame");
+  if (frame !== e.sender.mainFrame) return reject("subframe");
   let url: URL;
-  try { url = new URL(frame.url); } catch { return false; }
+  try { url = new URL(frame.url); } catch { return reject("unparseable frame url"); }
   if (url.protocol === "file:") {
     // Packaged build: the frame must be our own bundled index.html.
     try {
       const actual = path.resolve(fileURLToPath(url));
       const expected = path.resolve(path.join(__dirname, "../renderer/index.html"));
-      return process.platform === "win32"
+      const match = process.platform === "win32"
         ? actual.toLowerCase() === expected.toLowerCase()
         : actual === expected;
-    } catch { return false; }
+      if (!match) return reject(`file path mismatch: ${actual.slice(0, 120)} vs ${expected.slice(0, 120)}`);
+      return true;
+    } catch (err) { return reject(`file url conversion failed: ${String(err).slice(0, 80)}`); }
   }
   // Development build: only the configured vite origin, root path.
   const configured = process.env.ELECTRON_RENDERER_URL;
-  if (!configured) return false;
+  if (!configured) return reject("no ELECTRON_RENDERER_URL in dev");
   try {
     const expected = new URL(configured);
-    return url.origin === expected.origin && (url.pathname === "/" || url.pathname === "");
-  } catch { return false; }
+    if (url.origin !== expected.origin) return reject(`origin mismatch: ${url.origin}`);
+    if (url.pathname !== "/" && url.pathname !== "") return reject(`pathname mismatch: ${url.pathname}`);
+    return true;
+  } catch { return reject("bad ELECTRON_RENDERER_URL"); }
 }
 
 function hardenWindow(win: BrowserWindow, label: string): void {
