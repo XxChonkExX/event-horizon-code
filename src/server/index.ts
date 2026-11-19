@@ -16,9 +16,14 @@ import { audit } from "./audit";
 import { initStore } from "./store";
 import { broadcast } from "./sse";
 
-export async function startLocalServer(opts: { port: number; password: string; fatalOnPortConflict?: boolean }) {
+export async function startLocalServer(opts: { port: number; password: string; fatalOnPortConflict?: boolean; workspaceRoot?: string }) {
   // Start minimal HTTP (127.0.0.1, Basic auth). Light, training-friendly.
   const storeMode = initStore();
+  // Sweep-back (packaged-app workspace): the embedded runtime runs with cwd = the install directory, so every tool/terminal/LSP path would resolve inside Program Files. A real workspace root is required - main resolves it (env override or a per-user default) and the server anchors ALL fallbacks there.
+  if (opts.workspaceRoot) {
+    fs.mkdirSync(opts.workspaceRoot, { recursive: true });
+    process.chdir(opts.workspaceRoot);
+  }
   const httpServer = startHttpServer(opts);
   // Wait for the socket so callers (and the descriptor below) can trust it.
   await new Promise<void>((resolve, reject) => {

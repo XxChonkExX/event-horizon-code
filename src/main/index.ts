@@ -18,6 +18,23 @@ let runtime: Runtime | null = null;
 // a descriptor left by a previous window), reuse it instead of forking a
 // second server on a random port. Two servers on one SQLite file made "works
 // via curl, not in the app" a recurring mystery.
+// The workspace the agent operates in. Priority: EH_WORKSPACE env (explicit),
+// then a per-user documents folder for packaged installs (never the install
+// directory - tools/terminal/LSP paths resolving inside Program Files was the
+// packaged-app ENOENT bug). Dev builds keep the repo as the workspace.
+function resolveWorkspaceRoot(): string {
+  if (process.env.EH_WORKSPACE) {
+    fs.mkdirSync(process.env.EH_WORKSPACE, { recursive: true });
+    return path.resolve(process.env.EH_WORKSPACE);
+  }
+  if (app.isPackaged) {
+    const ws = path.join(app.getPath("documents"), "Event Horizon Code");
+    fs.mkdirSync(ws, { recursive: true });
+    return ws;
+  }
+  return process.cwd();
+}
+
 async function resolveRuntime(): Promise<Runtime> {
   const descriptorPath = path.join(os.homedir(), ".eventhorizon", "runtime.json");
   try {
@@ -36,11 +53,14 @@ async function resolveRuntime(): Promise<Runtime> {
     }
   } catch { /* stale or missing descriptor: spawn our own */ }
 
+  const workspaceRoot = resolveWorkspaceRoot();
+  console.log(`[ehc] workspace root: ${workspaceRoot}`);
+  process.chdir(workspaceRoot);
   for (let attempt = 0; attempt < 5; attempt++) {
     const port = 8800 + Math.floor(Math.random() * 800);
     const password = crypto.randomBytes(24).toString("hex");
     try {
-      await startLocalServer({ port, password });
+      await startLocalServer({ port, password, workspaceRoot });
       console.log(`[ehc] spawned embedded runtime on port ${port}`);
       return { baseUrl: `http://127.0.0.1:${port}`, password, port };
     } catch (e) {
