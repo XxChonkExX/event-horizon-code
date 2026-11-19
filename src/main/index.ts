@@ -130,6 +130,10 @@ function isTrustedRenderer(e: Electron.IpcMainInvokeEvent): boolean {
   if (frame !== e.sender.mainFrame) return reject("subframe");
   let url: URL;
   try { url = new URL(frame.url); } catch { return reject("unparseable frame url"); }
+  // Normalize: strip query/hash so a stray search string can never break the
+  // path comparison (the in-place switch URL carries ?session=...).
+  url.search = "";
+  url.hash = "";
   if (url.protocol === "file:") {
     // Packaged build: the frame must be our own bundled index.html.
     try {

@@ -181,7 +181,12 @@ export default function App() {
     if (id === session) return;
     session = id;
     setSessionSig(id);
-    history.replaceState(null, "", `/?session=${encodeURIComponent(id)}`);
+    // Swap ONLY the query: on file: protocol a path-relative replaceState
+    // ("/?session=...") rewrites the URL down to the drive root, which broke
+    // every subsequent IPC trust check (sweep: "C:\ vs full path" mismatch).
+    const u = new URL(location.href);
+    u.search = `?session=${encodeURIComponent(id)}`;
+    history.replaceState(null, "", u);
     void refreshSessionTabs();
     void loadSessionState(id);
     setSessionVersion((v) => v + 1);
