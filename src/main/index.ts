@@ -28,8 +28,22 @@ function resolveWorkspaceRoot(): string {
     return path.resolve(process.env.EH_WORKSPACE);
   }
   if (app.isPackaged) {
-    const ws = path.join(app.getPath("documents"), "Event Horizon Code");
-    fs.mkdirSync(ws, { recursive: true });
+    // Operator's persisted choice wins; first run asks via folder picker.
+    const choicePath = path.join(app.getPath("userData"), "workspace.json");
+    try {
+      const d = JSON.parse(fs.readFileSync(choicePath, "utf8")) as { workspace?: string };
+      if (d.workspace && fs.existsSync(d.workspace)) return path.resolve(d.workspace);
+    } catch { /* no saved choice yet */ }
+    const def = path.join(app.getPath("documents"), "Event Horizon Code");
+    fs.mkdirSync(def, { recursive: true });
+    const r = dialog.showOpenDialogSync({
+      title: "Event Horizon Code - choose your workspace",
+      message: "Pick the folder this Event Horizon install should operate in (agent files, worktrees, terminal cwd).",
+      defaultPath: def,
+      properties: ["openDirectory", "createDirectory"],
+    });
+    const ws = r?.[0] && fs.existsSync(r[0]) ? path.resolve(r[0]) : def;
+    fs.writeFileSync(choicePath, JSON.stringify({ workspace: ws, savedAt: new Date().toISOString() }, null, 2));
     return ws;
   }
   return process.cwd();
