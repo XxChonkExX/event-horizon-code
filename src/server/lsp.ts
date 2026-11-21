@@ -203,8 +203,23 @@ export type OpenResult = { ok: boolean; lang?: string; spawned?: boolean; error?
 export class LspManager {
   private servers = new Map<string, Map<string, ServerEntry>>(); // worktree -> lang -> entry
   private packsCache: LanguagePack[] | null = null;
-  private lastDiagnostics = new Map<string, { uri: string; diagnostics: unknown[]; lang: string }>(); // file uri -> latest
-  private diagWaiters: Array<{ uri: string; resolve: (d: unknown[]) => void }> = [];
+  private lastDiagnostics = new Map<string, { uri: string; diagnostics: unknown[]; lang: string }>(); // diagKey -> latest
+  private diagWaiters: Array<{ key: string; resolve: (d: unknown[]) => void }> = [];
+
+  // Diagnostics map key. The server's pushed URI and our pathToFileURL form do
+  // not agree on Windows: typescript-language-server sends
+  // "file:///c%3A/Users/..." (lowercase drive, encoded colon) while we compute
+  // "file:///C:/Users/...". Keying by raw URI made every Windows lookup miss -
+  // hover/definition (request/response) worked while diagnostics (push-based)
+  // were silently dead. Key by resolved native path instead; Linux forms
+  // already agree, so normalization is a no-op there.
+  private diagKey(uriOrPath: string): string {
+    const p = uriOrPath.startsWith("file:") ? (safeUriToPath(uriOrPath) ?? uriOrPath) : uriOrPath;
+    try {
+      const abs = path.resolve(p);
+      return process.platform === "win32" ? abs.toLowerCase() : abs;
+    } catch { return uriOrPath; }
+  }
 
   constructor(private packsOverride?: LanguagePack[]) {}
 
@@ -300,21 +315,36 @@ export class LspManager {
     }
   }
 
-  // Diagnostics for a file, waiting briefly for the server to publish.
-  async diagnosticsFor(worktree: string, filePath: string, timeoutMs = 4000): Promise<{ ok: boolean; diagnostics?: unknown[]; error?: string }> {
+  // Diagnostics for a file: pull first (LSP 3.17 - servers like a future
+  // typescript-language-server may implement textDocument/diagnostic), then
+  // fall back to waiting for a push. If the server implements NEITHER (tls
+  // v6.1.0 as shipped: capability declared, pull answered "Unhandled method",
+  // push never fires), the empty result says so rather than hanging.
+  async diagnosticsFor(worktree: string, filePath: string, timeoutMs = 4000): Promise<{ ok: boolean; diagnostics?: unknown[]; error?: string; note?: string }> {
     const pack = resolveLanguageForFile(filePath, this.languagePacks());
     if (!pack) return { ok: false, error: "no language pack for file" };
     const entry = this.servers.get(worktree)?.get(pack.id);
     if (!entry) return { ok: false, error: `${filePath} is not open` };
     const uri = pathToFileURL(path.resolve(worktree, filePath)).toString();
-    const have = this.lastDiagnostics.get(uri);
+    const key = this.diagKey(uri);
+    const have = this.lastDiagnostics.get(key);
     if (have) return { ok: true, diagnostics: have.diagnostics };
+    // Pull (best effort): a MethodNotFound/unhandled reply lands here and we
+    // fall through to the push waiter below.
+    try {
+      const report = await entry.conn.request("textDocument/diagnostic", { textDocument: { uri } }, Math.min(timeoutMs, 3000));
+      const items = (report as { kind?: string; items?: unknown[] } | null)?.items;
+      if (Array.isArray(items)) {
+        this.lastDiagnostics.set(key, { uri, diagnostics: items, lang: pack.id });
+        return { ok: true, diagnostics: items };
+      }
+    } catch { /* pull unsupported - push-based server */ }
     const got = await new Promise<unknown[]>((resolve) => {
       let done = false;
-      this.diagWaiters.push({ uri, resolve: (d) => { if (!done) { done = true; resolve(d); } } });
-      setTimeout(() => { if (!done) { done = true; resolve(this.lastDiagnostics.get(uri)?.diagnostics ?? []); } }, timeoutMs);
+      this.diagWaiters.push({ key, resolve: (d) => { if (!done) { done = true; resolve(d); } } });
+      setTimeout(() => { if (!done) { done = true; resolve(this.lastDiagnostics.get(key)?.diagnostics ?? []); } }, timeoutMs);
     });
-    return { ok: true, diagnostics: got };
+    return { ok: true, diagnostics: got, ...(got.length === 0 ? { note: "server published no diagnostics within the wait window (hover/definition still work; this server may not implement diagnostics)" } : {}) };
   }
 
   // ---- server lifecycle ----
@@ -373,7 +403,20 @@ export class LspManager {
       rootPath: entry.worktree,
       workspaceFolders: [{ uri: entry.rootUri, name: path.basename(entry.worktree) }],
       capabilities: {
-        textDocument: { synchronization: { didSave: true } },
+        textDocument: {
+          synchronization: { didSave: true },
+          // Required for typescript-language-server >= 6: without the
+          // publishDiagnostics capability it sets diagnosticsSupport=false and
+          // silently drops every tsserver diag event - hover/definition worked
+          // while diagnostics stayed empty forever (found by live probe:
+          // no publishDiagnostics frame is ever sent, and
+          // textDocument/diagnostic is "Unhandled method" - push-only server).
+          publishDiagnostics: {
+            relatedInformation: true,
+            versionSupport: true,
+            tagSupport: { valueSet: [1, 2] }, // Unnecessary (1), Deprecated (2)
+          },
+        },
         workspace: { configuration: true, workspaceFolders: true },
       },
     }, 20_000);
@@ -387,10 +430,11 @@ export class LspManager {
       const p = params as { uri?: string; diagnostics?: unknown[] };
       const uri = p.uri ?? "";
       const diagnostics = Array.isArray(p.diagnostics) ? p.diagnostics : [];
-      this.lastDiagnostics.set(uri, { uri, diagnostics, lang: entry.lang });
+      const key = this.diagKey(uri);
+      this.lastDiagnostics.set(key, { uri, diagnostics, lang: entry.lang });
       // Flush anything waiting on diagnostics for this file.
       this.diagWaiters = this.diagWaiters.filter((w) => {
-        if (w.uri !== uri) return true;
+        if (w.key !== key) return true;
         w.resolve(diagnostics);
         return false;
       });

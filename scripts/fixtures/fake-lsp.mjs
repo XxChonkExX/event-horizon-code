@@ -5,12 +5,20 @@
 //     initialize and records the client's reply in a marker file
 //   - publishes diagnostics on didOpen and didChange
 // Marker file path comes from FAKE_LSP_MARKER (used by scripts/test-lsp.ts).
+//
+// FAKE_LSP_MODE selects the diagnostics behavior:
+//   "push" (default): pushes on didOpen/didChange, using a WINDOWS-MANGLED URI
+//     (file:///c%3A/... lowercase drive, encoded colon) exactly like real
+//     typescript-language-server - exercises the client's URI normalization.
+//   "pull": never pushes; answers textDocument/diagnostic with a full report -
+//     exercises the client's LSP 3.17 pull path.
 
 import fs from "node:fs";
 
 let buffer = Buffer.alloc(0);
 let shutdown = false;
 const marker = process.env.FAKE_LSP_MARKER ?? "";
+const mode = process.env.FAKE_LSP_MODE ?? "push";
 
 function send(msg) {
   const body = Buffer.from(JSON.stringify(msg), "utf8");
@@ -20,9 +28,14 @@ function send(msg) {
 
 function reply(id, result) { send({ jsonrpc: "2.0", id, result }); }
 function notify(method, params) { send({ jsonrpc: "2.0", method, params }); }
+// Real Windows servers (typescript-language-server) percent-encode the drive
+// colon and lowercase it; simulate that so URI-keying bugs surface on any OS.
+function mangleUri(uri) {
+  return mode === "push" ? uri.replace(/^file:\/\/\/([A-Za-z]):/, (_m, d) => `file:///${d.toLowerCase()}%3A`) : uri;
+}
 function publish(uri, message) {
   notify("textDocument/publishDiagnostics", {
-    uri,
+    uri: mangleUri(uri),
     diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message, source: "fake-lsp" }],
   });
 }
@@ -50,10 +63,14 @@ function handle(msg) {
       process.exit(0);
       break;
     case "textDocument/didOpen":
-      publish(params.textDocument.uri, `fake: opened ${params.textDocument.uri} (${params.textDocument.text.length} chars)`);
+      if (mode === "push") publish(params.textDocument.uri, `fake: opened ${params.textDocument.uri} (${params.textDocument.text.length} chars)`);
       break;
     case "textDocument/didChange":
-      publish(params.textDocument.uri, `fake: changed v${params.textDocument.version} (${params.contentChanges[0]?.text.length ?? 0} chars)`);
+      if (mode === "push") publish(params.textDocument.uri, `fake: changed v${params.textDocument.version} (${params.contentChanges[0]?.text.length ?? 0} chars)`);
+      break;
+    case "textDocument/diagnostic":
+      if (mode === "pull") reply(id, { kind: "full", items: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, severity: 1, message: "fake: pulled", source: "fake-lsp" }] });
+      else reply(id, { __lspError: { code: -32601, message: "Unhandled method textDocument/diagnostic" } });
       break;
     case "textDocument/hover":
       reply(id, { contents: { kind: "plaintext", value: "fake hover" } });

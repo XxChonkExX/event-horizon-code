@@ -92,9 +92,14 @@ async function main(): Promise<void> {
   await until(() => fs.existsSync(marker), 8000, "server request response marker");
   check("server->client request answered", fs.existsSync(marker), "fixture never saw our reply");
 
-  // 6. diagnostics query for an open file
-  const diag = await mgr.diagnosticsFor(tmp, fileRel, 3000);
+  // 6. diagnostics query for an open file. The fixture pushes a WINDOWS-MANGLED
+  // URI (file:///c%3A/... like real typescript-language-server), so a non-empty
+  // result here proves the URI-keying normalization: without it every lookup
+  // missed on Windows (hover/definition worked, diagnostics silently dead).
+  // By this point the v2 change has published, so expect its content.
+  const diag = await mgr.diagnosticsFor(tmp, fileRel, 6000);
   check("diagnosticsFor ok", diag.ok === true && Array.isArray(diag.diagnostics));
+  check("diagnosticsFor finds pushed diagnostics across URI forms", JSON.stringify(diag.diagnostics ?? []).includes("fake: changed v2"), JSON.stringify(diag.diagnostics ?? []).slice(0, 120));
 
   // 7. status + graceful shutdown
   const status = mgr.status();
@@ -106,6 +111,25 @@ async function main(): Promise<void> {
   // 8. unknown extension states plainly
   const unknown = await mgr.openDocument(tmp, "notes.unknownext", "x");
   check("unknown extension refused", unknown.ok === false && !!unknown.error);
+
+  // 9. pull-mode server (LSP 3.17 textDocument/diagnostic): diagnosticsFor
+  // pulls a full report even though the server never pushes.
+  process.env.FAKE_LSP_MODE = "pull";
+  const tmp2 = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-lsp-pull-"));
+  fs.mkdirSync(path.join(tmp2, "src"), { recursive: true });
+  fs.writeFileSync(path.join(tmp2, "src", "main.fake"), "let y = 2;\n");
+  const mgr2 = new LspManager([pack]);
+  try {
+    const open2 = await mgr2.openDocument(tmp2, "src/main.fake", "let y = 2;\n", 1);
+    check("pull-mode open ok", open2.ok === true, open2.error ?? "");
+    const pulled = await mgr2.diagnosticsFor(tmp2, "src/main.fake", 6000);
+    check("pull-mode diagnostics pulled", pulled.ok === true && JSON.stringify(pulled.diagnostics ?? []).includes("fake: pulled"), JSON.stringify(pulled.diagnostics ?? []).slice(0, 120));
+  } finally {
+    mgr2.killAllSync();
+    await until(() => mgr2.status().length === 0, 6000, "pull-mode server exit");
+    try { fs.rmSync(tmp2, { recursive: true, force: true }); } catch { /* Windows handle lag - temp dir */ }
+  }
+  delete process.env.FAKE_LSP_MODE;
 
   console.log(failures === 0 ? "[ehc] lsp smoke test: ALL PASS" : `[ehc] lsp smoke test: ${failures} FAILURE(S)`);
   mgr.killAllSync();

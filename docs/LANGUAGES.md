@@ -49,6 +49,12 @@ Total packs: 31
 
 Each window (1 task = 1 window = 1 git worktree) gets its own environment so language servers never share `PATH`, virtualenvs, or target dirs. Closing a window does not kill the work; reconnect on relaunch. Max 6 LSP servers active at once; idle servers exit after 5 min.
 
+## Diagnostics behavior notes (verified live, 2026-11-21)
+
+- EHC declares the `textDocument.publishDiagnostics` client capability at initialize and normalizes pushed URIs before keying (real servers send `file:///c%3A/...` while we compute `file:///C:/...`; keying by raw URI made Windows lookups miss silently - hover/definition worked while diagnostics stayed empty).
+- `GET/POST /api/lsp/diagnostics` pulls first (LSP 3.17 `textDocument/diagnostic`), then falls back to waiting for a push, and states plainly when neither produced anything within the window.
+- **Known upstream gap: typescript-language-server v6.1.0 publishes no diagnostics at all** - it implements neither push nor pull (`Unhandled method textDocument/diagnostic`), even with the capability declared and a real project loaded. Hover, definition, and completion are unaffected (tsserver semantics work). If TS diagnostics matter to you, pin `typescript-language-server@4.x` (last line with working push diagnostics) or watch upstream v6. The fake-server smoke test locks both the URI normalization and the pull path, so any server that does the right thing lights up without EHC changes.
+
 ## Toolchain Doctor
 
 Checklist per pack comes from `languages/*/language.json` `toolchain.check`. Honors rustup, pyenv, uv, nvm, mise, asdf, SDKMAN. Reports present/missing without installing.
