@@ -14,11 +14,19 @@ import { isUnclean } from "./detonate";
 import { startHttpServer } from "./http";
 import { audit } from "./audit";
 import { initStore } from "./store";
+import { markStaleRunsInterrupted } from "./agentrun";
 import { broadcast } from "./sse";
 
 export async function startLocalServer(opts: { port: number; password: string; fatalOnPortConflict?: boolean; workspaceRoot?: string }) {
   // Start minimal HTTP (127.0.0.1, Basic auth). Light, training-friendly.
   const storeMode = initStore();
+  // Durable-run recovery (Phase 1): any run left mid-flight by a previous
+  // process is marked `interrupted` with a timeline event. The conversation
+  // survived; the work stopped - stated, never silently dropped.
+  try {
+    const stale = markStaleRunsInterrupted();
+    if (stale.length) audit({ tool: "agentrun.recover", note: `${stale.length} run(s) interrupted by restart: ${stale.map((r) => r.id).join(",")}` });
+  } catch { /* best-effort - recovery must not block boot */ }
   // Sweep-back (packaged-app workspace): the embedded runtime runs with cwd = the install directory, so every tool/terminal/LSP path would resolve inside Program Files. A real workspace root is required - main resolves it (env override or a per-user default) and the server anchors ALL fallbacks there.
   if (opts.workspaceRoot) {
     fs.mkdirSync(opts.workspaceRoot, { recursive: true });

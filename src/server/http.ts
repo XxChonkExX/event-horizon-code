@@ -38,6 +38,7 @@ import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { listVoices, speak, ttsDoctor } from "./tts";
+import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun } from "./agentrun";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -621,6 +622,27 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "GET" && url.pathname === "/api/todos") {
       const sid = url.searchParams.get("sessionId") ?? "";
       return sendJson(res, 200, listTodos(sid));
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/runs") {
+      const sid = url.searchParams.get("sessionId") ?? undefined;
+      return sendJson(res, 200, listAgentRuns(sid || undefined));
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/runs/") && url.pathname.endsWith("/timeline")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/runs/".length, -"/timeline".length));
+      const t = runTimeline(id);
+      if (!t.run) return sendJson(res, 404, { error: `unknown run ${id}` });
+      return sendJson(res, 200, t);
+    }
+
+    if (req.method === "POST" && url.pathname.startsWith("/api/runs/") && url.pathname.endsWith("/cancel")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/runs/".length, -"/cancel".length));
+      const r = cancelAgentRun(id, "operator");
+      // Cooperative cancellation: the prompt loop checks between steps.
+      if (r.ok && r.run) cancelledSessions.add(r.run.sessionId);
+      audit({ tool: "agentrun.cancel", note: `${id} ok=${r.ok}${r.error ? ` ${r.error}` : ""}` });
+      return sendJson(res, r.ok ? 200 : 400, r);
     }
 
     if (req.method === "POST" && url.pathname === "/api/todos") {

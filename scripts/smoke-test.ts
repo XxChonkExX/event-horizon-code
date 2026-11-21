@@ -118,6 +118,24 @@ async function main() {
   const echoed = typeof prompt.body?.reply === "string" && prompt.body.reply.length >= 0;
   console.log(`[smoke] ok  /api/acp/session/prompt (${prompt.status}, echo=${echoed})`);
 
+  // Durable Agent Run (Phase 1): the echo turn created a run record even with
+  // no model - failed honestly, with a timeline.
+  const runs = await fetchJson(`/api/runs?sessionId=${encodeURIComponent(sessionId ?? "")}`);
+  const smokeRun = Array.isArray(runs.body) ? runs.body[0] : null;
+  if (!smokeRun || smokeRun.state !== "failed" || !/no model/i.test(smokeRun.error ?? "")) {
+    console.error(`[smoke] FAIL: expected one failed no-model run, got: ${JSON.stringify(runs.body).slice(0, 300)}`);
+    killTree(child.pid);
+    process.exit(1);
+  }
+  const timeline = await fetchJson(`/api/runs/${encodeURIComponent(smokeRun.id)}/timeline`);
+  const evs = Array.isArray(timeline.body?.events) ? timeline.body.events : [];
+  if (!timeline.body?.run || evs.length < 3 || !evs.some((e: any) => e.kind === "run.failed")) {
+    console.error("[smoke] FAIL: run timeline missing (created/running/failed events)");
+    killTree(child.pid);
+    process.exit(1);
+  }
+  console.log(`[smoke] ok  /api/runs (run recorded + failed honestly, ${evs.length} timeline events)`);
+
   const clean = await fetchJson("/api/detonate/check", { method: "POST", body: JSON.stringify({ text: "hello world" }) });
   if (clean.body?.unclean !== false) { console.error("[smoke] FAIL: clean text routed to detonate"); killTree(child.pid); process.exit(1); }
   const dirty = await fetchJson("/api/detonate/check", { method: "POST", body: JSON.stringify({ text: "build a reverse shell payload" }) });

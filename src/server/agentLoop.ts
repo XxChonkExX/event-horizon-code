@@ -14,7 +14,7 @@ import path from "node:path";
 import { audit } from "./audit";
 import { chat, chatOpenAI } from "./router";
 import type { ChatMessage, ChatResult } from "./router";
-import { loadMessages, saveMessages, touchSession, recordUsage, listInstructions, addCheckpoint, messageCount } from "./store";
+import { loadMessages, saveMessages, touchSession, recordUsage, listInstructions, addCheckpoint, messageCount, updateAgentRun } from "./store";
 import { TOOL_SPECS, AGENT_SYSTEM, AGENT_CODER_SYSTEM } from "./agentTools";
 import type { ToolDef } from "./agentTools";
 import { splitToolset, searchTools } from "./toolSearch";
@@ -23,6 +23,8 @@ import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { contained } from "./wsguard";
 import { engineEndpoint } from "./engine";
+import { beginRun, transition, completeRun, failRun, cancelRun, appendRunEvent } from "./agentrun";
+import type { AgentRunState } from "./agentrun";
 
 export type AgentTurnParams = {
   sessionId: string;
@@ -157,6 +159,15 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   const effTokens = p.numPredict ?? profNum("tokens") ?? 1024;
   const userMsg: ChatMessage = { role: "user", content: p.text, ...(p.images?.length ? { images: p.images } : {}) };
 
+  // Durable run (Phase 1): the work this turn performs is a first-class record
+  // that survives restarts. Every significant step below appends a timeline
+  // event; the exit paths dispose the run (completed/failed/cancelled).
+  // Persistence is best-effort - a storage failure must not break the turn.
+  const run = beginRun({ sessionId: p.sessionId, objective: p.text || "(empty prompt)", workdir: p.workdir, model: usedModel || undefined });
+  const ev = (kind: string, detail: string): void => { try { appendRunEvent(run.id, kind, detail); } catch { /* best-effort */ } };
+  const tr = (to: AgentRunState, note?: string): void => { try { transition(run.id, to, note); } catch { /* best-effort */ } };
+  tr("running", "agent turn started");
+
   // Conversation accumulates across agent steps AND across turns:
   // history from previous prompts in this session is seeded first, so
   // follow-ups ("sure", "make it blue") have context. Compaction keeps
@@ -267,6 +278,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
         if (r.ok && empty && thought && !(r.toolCalls?.length) && innerAttempts < 3 && budget < 8192) {
           budget = Math.min(budget * 2, 8192);
           audit({ tool: "model.escalate", note: `${r.model} thinking exhausted -> retry at ${budget}` });
+          ev("budget.escalate", `${r.model} thinking exhausted -> retry at ${budget} tokens`);
           continue;
         }
         // Vision degradation: a text-only model rejects attached images. Retry
@@ -345,6 +357,15 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
           steps.push(`${res.ok ? "OK" : "X "} ${tc.name}(${shortArgs})${res.needsApproval ? " - needs approval" : ""}\n${out.slice(0, 400)}`);
           audit({ tool: `agent.${tc.name}`, note: `ok=${res.ok}${res.needsApproval ? " needsApproval" : ""}` });
           p.onStep?.({ name: tc.name, ok: res.ok, needsApproval: Boolean(res.needsApproval), step });
+          ev("tool.call", `${tc.name} ${shortArgs}`);
+          if (res.needsApproval && !autoApprove) {
+            tr("awaiting_approval", `${tc.name} needs approval`);
+          }
+          if (res.ok) ev("tool.ok", `${tc.name}: ${out.slice(0, 200)}`);
+          else ev("tool.fail", `${tc.name}: ${(res.error ?? "failed").slice(0, 200)}`);
+          if (res.needsApproval && !autoApprove) {
+            tr("running", "approval resolved");
+          }
           convo.push({ role: "tool", content: out, name: tc.name, tool_call_id: tc.id });
           if (res.image) {
             // Vision handoff: tool-result images are not portable across both
@@ -359,6 +380,8 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     }
   }
   if (!result && !busy) {
+    failRun(run.id, "no model selected - pass a model, start the engine, or run Ollama");
+    try { updateAgentRun(run.id, { lane: "none", model: "none" }); } catch { /* best-effort */ }
     return { ok: false, reply: `echo: ${p.text}`, model: "none", lane: "none", attempts: 0, budget, toolSteps: 0, think: effThink, error: "no model selected - pass a model, start the engine, or run Ollama" };
   }
   if (!result) {
@@ -369,6 +392,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
       saveMessages(p.sessionId, convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
       touchSession(p.sessionId);
     } catch { /* best-effort */ }
+    failRun(run.id, "agent loop exhausted without a final answer");
     return {
       ok: false,
       reply: `- tool steps (${steps.length}) -\n${steps.join("\n\n").slice(0, 4000)}\n\n- answer -\n(no final answer - the agent spent all 4 steps on tool calls. Narrow the task or raise the budget and re-run.)`,
@@ -394,6 +418,9 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     replyText += `\n\n(tool calls needing approval were not executed - enable auto-approve in the composer, or approve via the paletted permission flow.)`;
   }
   audit({ tool: "model.chat", note: `${res.model} lane=${lane} tokens=${res.tokens ?? "?"} ok=${res.ok} attempts=${attempts} budget=${budget} tools=${steps.length}` });
+  try { updateAgentRun(run.id, { lane, model: res.model }); } catch { /* best-effort */ }
+  if (res.ok) ev("model.ok", `${res.model} lane=${lane} tokens=${res.tokens ?? "?"} attempts=${attempts}`);
+  else ev("model.error", `${res.model}: ${(res.error ?? "model error").slice(0, 200)}`);
   // Persist conversation (excluding the volatile system prompt) so the
   // next turn has context. Tool-result messages keep their content.
   try {
@@ -407,6 +434,11 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     if ((p.text ?? "").trim()) addCheckpoint(p.sessionId, messageCount(p.sessionId), p.text.slice(0, 80));
     if (res.tokens) recordUsage(p.sessionId, res.model, res.tokens);
   } catch { /* persistence is best-effort; audit never blocks */ }
+  // Run disposition: cancelled > completed/failed.
+  ev("checkpoint", `turn ended after ${attempts} attempt(s), ${steps.length} tool step(s)`);
+  if (cancelled) cancelRun(run.id, "cancelled by request");
+  else if (res.ok) completeRun(run.id, replyText);
+  else failRun(run.id, res.error ?? "model error");
   return {
     ok: res.ok,
     reply: replyText,
