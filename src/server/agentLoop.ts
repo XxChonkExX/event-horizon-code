@@ -53,6 +53,10 @@ export type AgentTurnResult = {
   reply: string;
   thinking?: string;
   model: string;
+  // What actually served this turn: "engine" (bundled sidecar), "openai"
+  // (BYOK), "router" (model-id ladder: Ollama/openai-compatible), or "none".
+  // The params' provider field is only the requester's hint.
+  lane: "engine" | "openai" | "router" | "none";
   tokens?: number;
   attempts: number;
   budget: number;
@@ -202,11 +206,15 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   const { advertised } = splitToolset(allTools);
 
   // One model call on whichever lane applies, with the agent tool set.
+  // lane is recorded in the audit and returned - "provider" in the prompt
+  // params is only the requester's hint, not what actually served the turn.
+  let lane: "engine" | "openai" | "router" | "none" = "none";
   const callModel = async (budget: number, nudge: boolean): Promise<ChatResult> => {
     const msgs = nudge
       ? [...convo, { role: "system" as const, content: "Stop deliberating. Use your final answer or a tool call now." }]
       : convo;
     if (p.provider === "openai") {
+      lane = "openai";
       const secret = readSecret("openai");
       if (!secret?.apiKey || !secret.baseUrl) {
         return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
@@ -215,11 +223,13 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     }
     if (engineUp) {
       // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
+      lane = "engine";
       return chatOpenAI(usedModel || "engine", msgs, { baseUrl: engineUp, apiKey: "local", think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, onDelta: p.onDelta });
     }
     if (usedModel) {
       // Keep the model warm during a conversation: agent loops make
       // several calls per prompt and a cold reload costs minutes.
+      lane = "router";
       return chat(usedModel, msgs, { think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, keepAlive: "5m", onDelta: p.onDelta });
     }
     return { ok: false, content: "", model: "none", error: "no model selected" };
@@ -349,7 +359,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     }
   }
   if (!result && !busy) {
-    return { ok: false, reply: `echo: ${p.text}`, model: "none", attempts: 0, budget, toolSteps: 0, think: effThink, error: "no model selected - pass a model, start the engine, or run Ollama" };
+    return { ok: false, reply: `echo: ${p.text}`, model: "none", lane: "none", attempts: 0, budget, toolSteps: 0, think: effThink, error: "no model selected - pass a model, start the engine, or run Ollama" };
   }
   if (!result) {
     // The loop spent every step on tool calls without reaching a final answer.
@@ -363,6 +373,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
       ok: false,
       reply: `- tool steps (${steps.length}) -\n${steps.join("\n\n").slice(0, 4000)}\n\n- answer -\n(no final answer - the agent spent all 4 steps on tool calls. Narrow the task or raise the budget and re-run.)`,
       model: usedModel || "none",
+      lane,
       attempts, budget, toolSteps: steps.length, think: effThink,
       error: "agent loop exhausted without a final answer",
     };
@@ -382,7 +393,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   if (!autoApprove && steps.some((s) => s.includes("needs approval"))) {
     replyText += `\n\n(tool calls needing approval were not executed - enable auto-approve in the composer, or approve via the paletted permission flow.)`;
   }
-  audit({ tool: "model.chat", note: `${res.model} tokens=${res.tokens ?? "?"} ok=${res.ok} attempts=${attempts} budget=${budget} tools=${steps.length}` });
+  audit({ tool: "model.chat", note: `${res.model} lane=${lane} tokens=${res.tokens ?? "?"} ok=${res.ok} attempts=${attempts} budget=${budget} tools=${steps.length}` });
   // Persist conversation (excluding the volatile system prompt) so the
   // next turn has context. Tool-result messages keep their content.
   try {
@@ -401,6 +412,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     reply: replyText,
     thinking: res.thinking,
     model: res.model,
+    lane,
     tokens: res.tokens,
     attempts,
     budget,

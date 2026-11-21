@@ -120,6 +120,94 @@ export function detectTemplate(modelNameOrPath: string): TemplateEntry | null {
   return null;
 }
 
+// ---- GGUF metadata fallback ----
+//
+// Filenames do not always name the family (Ollama stores models as content-hash
+// blobs: "sha256-370c28..."), and "auto" then resolves nothing, so tool calling
+// depends on whatever the GGUF happens to embed. Reading the GGUF's general.*
+// metadata keys and matching the SAME family regexes against them fixes
+// detection without any new dependencies.
+//
+// GGUF header: magic u32 "GGUF", version u32, tensor_count u64, kv_count u64,
+// then key-value pairs (key = u64 len + bytes; value = u32 type + payload).
+// We walk only the metadata section and stop early: general.* keys are written
+// first by every converter, before the large tokenizer arrays, and a bounded
+// read keeps a huge vocab from being walked byte-by-byte.
+
+const GGUF_MAGIC = 0x46554747; // "GGUF" little-endian
+const GGUF_META_KEYS = ["general.name", "general.basename", "general.architecture", "general.finetune", "general.size_label"];
+const GGUF_SCAN_CAP = 2 * 1024 * 1024; // metadata lives well inside this
+const GGUF_ARRAY_BAIL = 4096; // a big array means we reached tokenizer territory
+
+// Read the header + metadata of a GGUF, returning the general.* string values
+// found. Returns [] for anything unreadable (not a GGUF, truncated) — callers
+// treat that as "no metadata", never an error.
+export function ggufGeneralStrings(p: string): string[] {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(p, "r");
+    const head = Buffer.alloc(24);
+    if (fs.readSync(fd, head, 0, 24, 0) < 24) return [];
+    if (head.readUInt32LE(0) !== GGUF_MAGIC) return [];
+    const kvCount = Number(head.readBigUInt64LE(16));
+    const chunk = Buffer.alloc(Math.min(GGUF_SCAN_CAP, fs.fstatSync(fd).size - 24));
+    if (fs.readSync(fd, chunk, 0, chunk.length, 24) < 1) return [];
+    let off = 0;
+    const str = (): string => {
+      if (off + 8 > chunk.length) return "";
+      const len = Number(chunk.readBigUInt64LE(off)); off += 8;
+      if (len > chunk.length - off) return "";
+      const s = chunk.toString("utf8", off, off + len); off += len;
+      return s;
+    };
+    const skipValue = (t: number): boolean => {
+      switch (t) {
+        case 0: case 1: case 7: off += 1; return true;
+        case 2: case 3: off += 2; return true;
+        case 4: case 5: case 6: off += 4; return true;
+        case 10: case 11: case 12: off += 8; return true;
+        case 8: return str().length >= 0;
+        case 9: {
+          if (off + 12 > chunk.length) return false;
+          const et = chunk.readUInt32LE(off); off += 4;
+          const n = Number(chunk.readBigUInt64LE(off)); off += 8;
+          if (n > GGUF_ARRAY_BAIL) return false; // tokenizer-scale: stop the scan
+          for (let i = 0; i < n; i++) if (!skipValue(et)) return false;
+          return true;
+        }
+        default: return false;
+      }
+    };
+    const found: string[] = [];
+    const n = Math.min(kvCount, 256);
+    for (let i = 0; i < n; i++) {
+      const key = str();
+      if (off + 4 > chunk.length) break;
+      const t = chunk.readUInt32LE(off); off += 4;
+      if (GGUF_META_KEYS.includes(key) && t === 8) {
+        const mark = off;
+        const v = str();
+        off = mark; // fall through: skipValue below must still advance past the value
+        if (v) found.push(v);
+      }
+      const mark = off;
+      if (!skipValue(t)) break;
+      if (off <= mark) break; // no forward progress
+    }
+    return found;
+  } catch { return []; }
+  finally { if (fd !== null) { try { fs.closeSync(fd); } catch { /* ignore */ } } }
+}
+
+// Family detection for a GGUF file: filename first, then embedded metadata.
+export function detectTemplateFromGguf(p: string): TemplateEntry | null {
+  const byName = detectTemplate(p);
+  if (byName) return byName;
+  const meta = ggufGeneralStrings(p);
+  if (!meta.length) return null;
+  return detectTemplate(meta.join(" "));
+}
+
 export type ResolvedTemplate = { path: string; file: string; id: string | null; tools: boolean; source: string };
 
 // Resolve a selector into a concrete template file.
@@ -153,8 +241,12 @@ export function resolveTemplate(selector: string | undefined, modelNameOrPath = 
     if (sel.toLowerCase().endsWith(".jinja")) { const r = asFile(sel, null, true, "file"); if (r) return r; }
   }
 
-  // Auto: detect from the model name.
-  const entry = detectTemplate(modelNameOrPath);
+  // Auto: detect from the model name, then (for real GGUF files whose name
+  // carries no family - Ollama content-hash blobs) from embedded metadata.
+  let entry = detectTemplate(modelNameOrPath);
+  if (!entry && modelNameOrPath && /\.gguf$/i.test(modelNameOrPath) && fs.existsSync(modelNameOrPath)) {
+    entry = detectTemplateFromGguf(modelNameOrPath);
+  }
   if (entry) { const r = asFile(entry.file, entry.id, entry.tools, "auto"); if (r) return r; }
   return null;
 }
