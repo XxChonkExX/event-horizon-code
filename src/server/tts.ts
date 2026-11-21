@@ -181,17 +181,17 @@ export function ttsDoctor(): {
 
   // The TTS GGUF requirement is stated on EVERY install path - a binary alone
   // is not a working engine, and fresh installs must not be told otherwise.
-  const GGUF_HINT = "engine: a TTS GGUF is still required (e.g. Pocket TTS / kyutai/pocket-tts CC BY 4.0, or ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF Apache-2.0). Drop the gguf into ~/.eventhorizon/models or set tts.engineModel.";
+  const GGUF_HINT = "engine: a TTS GGUF is still required. Ready-made: EryriLabs/pocket-tts-GGUF (CC BY 4.0, model+mmproj pair, ~200 MB) - `curl -L -o %USERPROFILE%\\.eventhorizon\\models\\pocket-tts-en.gguf https://huggingface.co/EryriLabs/pocket-tts-GGUF/resolve/main/pocket-tts-en.gguf` and same for mmproj-pocket-tts-en.gguf. Larger/multilingual: ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF (Apache-2.0), e.g. `llama-tts -hf ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF -p \"hi\" --output out.wav`. Or convert kyutai/pocket-tts languages/<lang> yourself with llama.cpp's convert_hf_to_gguf.py (model + --mmproj). Drop the gguf(s) into ~/.eventhorizon/models or set tts.engineModel.";
   if (!eng.bin) {
     install.push("engine: llama-tts was not found next to llama-server - use a chonkllama build that includes tools/tts.");
     install.push(GGUF_HINT);
   } else if (!eng.model) {
-    install.push("engine: llama-tts is present; add a TTS GGUF. Smallest: Pocket TTS (kyutai/pocket-tts, CC BY 4.0) - convert languages/<lang> with llama.cpp's convert_hf_to_gguf.py (model + --mmproj). Larger/multilingual: ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF (Apache-2.0), e.g. `llama-tts -hf ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF -p \"hi\" --output out.wav`. Drop the gguf into ~/.eventhorizon/models or set tts.engineModel.");
+    install.push("engine: llama-tts is present; add a TTS GGUF. Smallest ready-made: EryriLabs/pocket-tts-GGUF (CC BY 4.0, ~200 MB, model + mmproj pair). Larger/multilingual: ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF (Apache-2.0), e.g. `llama-tts -hf ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF -p \"hi\" --output out.wav`. Or convert kyutai/pocket-tts languages/<lang> with llama.cpp's convert_hf_to_gguf.py (model + --mmproj). Drop the gguf(s) into ~/.eventhorizon/models or set tts.engineModel.");
   } else {
     install.push(`engine: ready (${path.basename(eng.model)}${eng.mmproj ? ` + ${path.basename(eng.mmproj)}` : ""}).`);
   }
 
-  install.push(`Voices: drop wav/mp3 recordings into ${voicesDir()} - each one becomes a selectable voice (engine adapter clones it).`);
+  install.push(`Voices: drop wav/mp3 recordings into ${voicesDir()} - each one becomes a selectable voice (engine adapter clones it). Pocket TTS speaks near-silence WITHOUT a speaker reference, so keep at least one recording there.`);
   install.push("piper (optional): see GET /api/sensory/doctor.");
   install.push("BYOK (optional): point tts at a cloud endpoint you already pay for; no telemetry.");
   install.push("House rule: nothing is downloaded automatically. These are instructions, not actions.");
