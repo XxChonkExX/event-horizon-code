@@ -15,4 +15,7 @@ contextBridge.exposeInMainWorld("eventhorizon", {
   apiProxy: (req: { method?: string; path?: string; body?: unknown }) => ipcRenderer.invoke("api:proxy", req) as Promise<{ status: number; body: unknown }>,
   eventTicket: () => ipcRenderer.invoke("events:ticket") as Promise<string>,
   fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => ipcRenderer.invoke("fs:op", op, root) as Promise<{ ok: boolean; error?: string }>,
+  onContextMenu: (cb: (p: { x: number; y: number }) => void) => {
+    ipcRenderer.on("context:menu", (_e, p: { x: number; y: number }) => cb(p));
+  },
 });

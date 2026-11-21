@@ -96,6 +96,20 @@ function TermBody(props: { serverId: string; active: () => string }) {
     ro.observe(ref);
     onCleanup(() => ro.disconnect());
 
+    // Terminal right-click (classic terminal UX): copy the selection, or paste
+    // when nothing is selected. Paste flows through the PTY input path (the
+    // same channel keystrokes use). Prevent default so neither Electron's
+    // (absent) menu nor the in-page composer menu fires over the terminal.
+    ref.addEventListener("contextmenu", (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const sel = term.hasSelection() ? term.getSelection() : "";
+      if (sel) { void navigator.clipboard.writeText(sel).catch(() => {}); return; }
+      void navigator.clipboard.readText()
+        .then((text) => { if (text) void apiFetch(`/api/terminal/${props.serverId}/input`, { method: "POST", body: JSON.stringify({ data: text }) }); })
+        .catch(() => { /* clipboard unavailable - stated by the empty no-op */ });
+    });
+
     void (async () => {
       try {
         const id = props.serverId;

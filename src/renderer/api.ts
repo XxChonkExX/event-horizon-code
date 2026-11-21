@@ -19,6 +19,7 @@ declare global {
       apiProxy: (req: { method?: string; path?: string; body?: unknown }) => Promise<{ status: number; body: unknown }>;
       eventTicket: () => Promise<string>;
       fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => Promise<{ ok: boolean; error?: string }>;
+    onContextMenu: (cb: (p: { x: number; y: number }) => void) => void;
     };
   }
 }
@@ -53,6 +54,18 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 export async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await apiFetch(path, init);
   return (await res.json()) as T;
+}
+
+// Main-driven right-click relay (context menu refactor): main forwards every
+// right-click (webContents "context-menu" event) with viewport coordinates.
+// Subscribe in the component that owns the in-page menu. Browser/dev contexts
+// without the preload bridge simply never call back (the DOM listener covers
+// them); the unsubscribe is a no-op because the listener lives with the window.
+export function onContextMenu(cb: (p: { x: number; y: number }) => void): () => void {
+  if (typeof window !== "undefined" && window.eventhorizon?.onContextMenu) {
+    window.eventhorizon.onContextMenu(cb);
+  }
+  return () => {};
 }
 
 // EH-010 + sweep-5: the ticket is minted in MAIN (credential stays there).

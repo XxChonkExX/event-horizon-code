@@ -4,7 +4,7 @@
 // positioned element stays in the page's own painting pipeline.
 
 import { createSignal, For, Show, onMount, onCleanup } from "solid-js";
-import { editAction } from "./api";
+import { editAction, onContextMenu } from "./api";
 
 export type CtxItem = { label: string; action: () => void; danger?: boolean; disabled?: boolean };
 
@@ -51,10 +51,26 @@ export default function ContextMenu() {
     window.addEventListener("contextmenu", onCtx);
     window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey);
+    // Main-driven relay (context menu refactor): Electron delivers right-clicks
+    // here ALWAYS (main webContents event), even where the renderer's DOM
+    // contextmenu event proved unreliable in packaged builds. Re-dispatch a
+    // synthetic DOM event at the exact coordinates so the SAME proven logic
+    // above runs. Deduped: when the DOM event also fires, this is a no-op
+    // (same coords inside the 120ms window).
+    let lastRelay = 0;
+    const off = onContextMenu((p: { x: number; y: number }) => {
+      const now = Date.now();
+      if (now - lastRelay < 120) return;
+      lastRelay = now;
+      const el = document.elementFromPoint(p.x, p.y) as HTMLElement | null;
+      const target = el ?? document.body;
+      target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: p.x, clientY: p.y, button: 2 }));
+    });
     onCleanup(() => {
       window.removeEventListener("contextmenu", onCtx);
       window.removeEventListener("mousedown", onDown, true);
       window.removeEventListener("keydown", onKey);
+      off();
     });
   });
 

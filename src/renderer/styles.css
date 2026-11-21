@@ -29,7 +29,12 @@ body {
 
 /* Layering: the shader canvas is position:fixed z-index 0 — raised content must
    sit above it explicitly or positioned siblings paint over everything. */
-.workbench > :not(canvas) {
+  /* EXCEPTION (trap of the month, Nov 21): .ctx-menu and .toast-stack are position:fixed
+     overlays whose own rules lose to this selector's specificity (0,1,1 > 0,1,0) -
+     demoting them to relative made the right-click menu render invisibly at its DOM
+     slot and the toast stack displace the terminal layout. ANY new fixed-position
+     overlay MUST be added to this :not() chain. */
+  .workbench > :not(canvas):not(.ctx-menu):not(.toast-stack) {
   position: relative;
   z-index: 1;
 }
@@ -400,11 +405,14 @@ aside.chat h3 { margin: 10px 12px 4px; color: var(--accent2); }
 .cap-thinking { color: var(--ok); border-color: rgba(52,211,153,0.4); background: rgba(52,211,153,0.07); }
 .cap-audio { color: var(--warn); border-color: rgba(251,191,36,0.4); background: rgba(251,191,36,0.07); }
 /* toasts */
-.toast-stack {
-  position: fixed; right: 14px; top: 48px; z-index: 90;
-  display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
-  max-width: min(420px, 92vw);
-}
+  .toast-stack {
+    /* Top-center, always in the viewport (was bottom-right, which landed
+       off-screen on displaced windows and let errors go unseen while the
+       layout still shifted). z-index above the context menu. */
+    position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 300;
+    display: flex; flex-direction: column; gap: 8px; align-items: stretch;
+    width: min(480px, 92vw);
+  }
 .toast {
   display: flex; align-items: center; gap: 9px; max-width: 420px;
   background: rgba(30, 30, 38, 0.97); border: 1px solid var(--border);

@@ -158,6 +158,15 @@ function isTrustedRenderer(e: Electron.IpcMainInvokeEvent): boolean {
 }
 
 function hardenWindow(win: BrowserWindow, label: string): void {
+  // Right-click relay (context menu refactor): the renderer's DOM contextmenu
+  // event proved unreliable in packaged builds - the in-page menu worked in a
+  // plain browser (same bundle) but never appeared in the installed app.
+  // Electron ALWAYS delivers this main-process event, so forward the exact
+  // coordinates and let the renderer re-dispatch a synthetic DOM event at that
+  // point, driving the proven in-page menu path (composer, file tree).
+  win.webContents.on("context-menu", (_e, props) => {
+    try { win.webContents.send("context:menu", { x: props.x, y: props.y }); } catch { /* window gone */ }
+  });
   // Sweep-3: the renderer must never navigate away from our own content, and
   // it must not open arbitrary popups (window.open is denied - pop-outs go
   // through the explicit window:popout IPC).
