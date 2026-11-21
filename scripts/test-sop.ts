@@ -11,6 +11,7 @@ import path from "node:path";
 // sopsDir() reads EH_SOPS_DIR at call time, so setting it before any startRun
 // call is enough - no dynamic import needed.
 import { startRun, approveRun, cancelRun, getRun, listSops } from "../src/server/sop";
+import { execFileSync } from "node:child_process";
 
 process.env.EH_SOPS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-sops-"));
 
@@ -157,6 +158,32 @@ async function main(): Promise<void> {
   check("run records the task", getRun(id11)!.task === "Fix the flaky login test", getRun(id11)!.task ?? "(none)");
   const persisted = JSON.parse(fs.readFileSync(path.join(process.env.EH_SOPS_DIR!, "runs", `${id11}.json`), "utf8")) as { task?: string };
   check("task persisted with the run record", persisted.task === "Fix the flaky login test");
+
+  // 12. Phase 4 durability: a run persisted by a PREVIOUS process (the child
+  // starts a gated run, waits for approval, exits = restart) hydrates back
+  // into a fresh Map, and its gate approval completes it across the restart.
+  const hydrDir = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-sops-hydrate-"));
+  const tsxCli = path.join("node_modules", "tsx", "dist", "cli.mjs");
+  const childOut = execFileSync(process.execPath, [tsxCli, path.join("scripts", "fixtures", "sop-hydrate-child.ts")], {
+    env: { ...process.env, EH_SOPS_DIR: hydrDir },
+    encoding: "utf8",
+    timeout: 60000,
+  });
+  const hydrId = childOut.trim().split("\n").filter(Boolean).at(-1) ?? "";
+  // Point the store at the child's SOP dir so sopsDir()/runsDir() resolve there
+  // (read at call time) - the parent hydrates the child's records from disk.
+  const prevDir = process.env.EH_SOPS_DIR;
+  process.env.EH_SOPS_DIR = hydrDir;
+  const before = getRun(hydrId);
+  check("hydrated run found across process restart", Boolean(before && before.id === hydrId), JSON.stringify(before)?.slice(0, 140));
+  check("hydrated waiting run keeps its gate", before?.status === "waiting" && Boolean(before.pendingCommand), `${before?.status}/${before?.pendingCommand ?? ""}`);
+  const hApprove = await approveRun(hydrId, { approved: true });
+  check("hydrated gate approval accepted", hApprove.ok === true, hApprove.error ?? "");
+  const after = getRun(hydrId);
+  check("hydrated run completes after approval", after?.status === "done", `${after?.status}/${after?.error ?? ""}`);
+  check("post-restart script executed", after?.history.some((h) => h.output.includes("after-restart-ok")) === true);
+  if (prevDir) process.env.EH_SOPS_DIR = prevDir;
+  fs.rmSync(hydrDir, { recursive: true, force: true });
 
   console.log(failures === 0 ? "[ehc] sop workflow tests: ALL PASS" : `[ehc] sop workflow tests: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

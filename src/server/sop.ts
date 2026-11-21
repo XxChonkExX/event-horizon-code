@@ -77,6 +77,33 @@ export type SopRun = {
 
 const runs = new Map<string, SopRun>();
 const cancelledRuns = new Set<string>();
+// Phase 4 durability: runs persisted by PREVIOUS processes (persistRun writes
+// every touch to .harness/sops/runs/<id>.json) are loaded back into the Map on
+// first access. A run left `running` by a restart had a node mid-flight - its
+// outcome is unknown, so it becomes honestly `failed`. A run left `waiting`
+// (gate / pending-command approval) hydrates AS WAITING: the approval snapshot
+// is in the record, so approveRun continues it from currentNode after the
+// restart. Without hydration, records existed on disk but were invisible.
+let hydratedDir: string | null = null;
+function hydrateRuns(): void {
+  const dir = runsDir();
+  if (hydratedDir === dir) return; // already hydrated this run store
+  hydratedDir = dir;
+  let files: string[] = [];
+  try { files = fs.readdirSync(dir); } catch { return; }
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      const run = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")) as SopRun;
+      if (!run?.id || runs.has(run.id)) continue;
+      if (run.status === "running") {
+        run.status = "failed";
+        run.error = "interrupted by runtime restart";
+      }
+      runs.set(run.id, run);
+    } catch { /* malformed record - skipped */ }
+  }
+}
 const REWORK_LIMIT = 12;
 const MAX_AGENT_OUTPUT = 4000;
 
@@ -374,6 +401,7 @@ export async function approveRun(id: string, decision: { approved?: boolean; sen
 }
 
 export function cancelRun(id: string): { ok: boolean; run?: SopRun; error?: string } {
+  hydrateRuns();
   const run = runs.get(id);
   if (!run) return { ok: false, error: `no such run: ${id}` };
   cancelledRuns.add(id);
@@ -386,5 +414,5 @@ export function cancelRun(id: string): { ok: boolean; run?: SopRun; error?: stri
   return { ok: true, run };
 }
 
-export function getRun(id: string): SopRun | null { return runs.get(id) ?? null; }
-export function listRuns(): SopRun[] { return Array.from(runs.values()).sort((a, b) => b.started.localeCompare(a.started)); }
+export function getRun(id: string): SopRun | null { hydrateRuns(); return runs.get(id) ?? null; }
+export function listRuns(): SopRun[] { hydrateRuns(); return Array.from(runs.values()).sort((a, b) => b.started.localeCompare(a.started)); }

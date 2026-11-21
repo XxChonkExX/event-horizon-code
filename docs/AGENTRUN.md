@@ -107,5 +107,9 @@ via the HTTP API.
    in-flight action). Verified in the built renderer against a live API with
    seeded fixture runs (screenshot + DOM assertions: all three dispositions
    render, Resume renders only on interrupted runs, zero console errors).
-4. SOP runs migrate from their in-memory Map onto this store (their gates map
-   to `awaiting_approval`).
+4. **(done)** SOP runs hydrate from their persisted records: a run left
+   `running` by a restart becomes honestly `failed`; a run left `waiting`
+   (gate / pending-command approval) hydrates AS WAITING — its approval
+   snapshot survives, so `approveRun` continues it from `currentNode` after
+   the restart (proven cross-process in `sop:test`: child starts + exits,
+   parent hydrates, approves, run completes).
