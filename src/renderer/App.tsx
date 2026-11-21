@@ -10,6 +10,7 @@ import AgentWatchPanel from "./AgentWatchPanel";
 import ModelManager from "./ModelManager";
 import ProfilesPanel from "./ProfilesPanel";
 import SessionsPanel from "./SessionsPanel";
+import RunsPanel from "./RunsPanel";
 import MemoryPanel from "./MemoryPanel";
 import SensoryPanel from "./SensoryPanel";
 import FileTree from "./FileTree";
@@ -117,6 +118,7 @@ export default function App() {
   // half-clipped columns.
   const PANELS: Array<{ id: string; label: string; el: () => JSX.Element }> = [
     { id: "sessions", label: "Sessions", el: () => <SessionsPanel onChanged={() => { void refreshSessionTabs(); }} /> },
+    { id: "runs", label: "Runs", el: () => <RunsPanel /> },
     { id: "memory", label: "Memory", el: () => <MemoryPanel /> },
     { id: "models", label: "Models", el: () => <ModelManager /> },
     { id: "profiles", label: "Profiles", el: () => <ProfilesPanel /> },

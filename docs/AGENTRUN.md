@@ -101,7 +101,11 @@ via the HTTP API.
    run (the loop owns the `interrupted -> running` transition — single
    ownership, no double-transition races). The session/prompt path passes
    `runId` through for ACP clients.
-3. Execution timeline UI: a panel reading `/api/runs/:id/timeline` (SSE-ready —
-   `agentrun.state` audit entries already streamable).
+3. **(done)** Execution timeline UI: `RunsPanel` (panels row, "Runs" tab) —
+   polls `/api/runs` every 4s, renders state-colored runs with model/lane,
+   click-to-open timeline, and Cancel / Resume buttons (resume gated, single
+   in-flight action). Verified in the built renderer against a live API with
+   seeded fixture runs (screenshot + DOM assertions: all three dispositions
+   render, Resume renders only on interrupted runs, zero console errors).
 4. SOP runs migrate from their in-memory Map onto this store (their gates map
    to `awaiting_approval`).
