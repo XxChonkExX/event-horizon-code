@@ -223,7 +223,12 @@ export async function startEngine(ggufPath?: string, ov?: EngineOverrides): Prom
     const tplNote = tpl ? ` [template ${tpl.id ?? tpl.file}${tpl.tools ? "" : " (no tools)"}]` : " [embedded template]";
     const note = `engine starting (pid ${child.pid}) on http://127.0.0.1:${cfg.port} - model ${path.basename(model)}${tplNote} - log ${logPath}`;
     child.on("exit", (code) => {
-      proc = null;
+      // Only unregister OURSELVES: a stopped predecessor's exit event can
+      // arrive after a successor spawned (Windows teardown lag), and
+      // nulling unconditionally orphaned the live engine - the server then
+      // reported running:false for a healthy sidecar and skipped the engine
+      // lane entirely (agent turns fell through to Ollama).
+      if (proc === child) proc = null;
       logStream.end();
       void code;
     });
