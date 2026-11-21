@@ -117,3 +117,30 @@ export function cancelRun(runId: string, by = "operator"): { ok: boolean; run?: 
   if (r.ok) appendRunEvent(runId, "run.cancelled", `cancelled by ${by}`);
   return r;
 }
+
+// ---- Phase 2: resume ----
+
+// Validate an interrupted run for resume and build the recovery prompt: the
+// objective plus a digest of the timeline (what already happened), so the
+// model continues from the record rather than starting blind. NO transition
+// happens here - the agent loop owns `interrupted -> running` when it takes
+// over with p.runId (single ownership, no double-transition races).
+export function resumeRun(runId: string): { ok: boolean; run?: AgentRun; resumeText?: string; error?: string } {
+  const run = getAgentRun(runId);
+  if (!run) return { ok: false, error: `unknown run ${runId}` };
+  if (run.state !== "interrupted") return { ok: false, error: `run ${runId} is ${run.state} - only interrupted runs can be resumed` };
+  const events = listRunEvents(runId);
+  const digest = events
+    .slice(-14)
+    .map((e) => `- ${e.kind}: ${e.detail.slice(0, 160)}`)
+    .join("\n");
+  const resumeText = [
+    `Resume the interrupted task. Objective: ${run.objective}`,
+    "",
+    "Progress so far (run timeline, oldest last):",
+    digest || "(no events recorded)",
+    "",
+    "Continue from where it stopped and finish the objective. Do not repeat steps the timeline shows already succeeded.",
+  ].join("\n");
+  return { ok: true, run, resumeText };
+}

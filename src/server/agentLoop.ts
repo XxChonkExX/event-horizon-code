@@ -23,8 +23,8 @@ import { runTool } from "./tools";
 import type { ToolName } from "./tools";
 import { contained } from "./wsguard";
 import { engineEndpoint } from "./engine";
-import { beginRun, transition, completeRun, failRun, cancelRun, appendRunEvent } from "./agentrun";
-import type { AgentRunState } from "./agentrun";
+import { beginRun, transition, completeRun, failRun, cancelRun, appendRunEvent, getAgentRun } from "./agentrun";
+import type { AgentRunState, AgentRun } from "./agentrun";
 
 export type AgentTurnParams = {
   sessionId: string;
@@ -37,7 +37,11 @@ export type AgentTurnParams = {
   provider?: string;
   images?: string[];
   autoApprove?: boolean;
-  agent?: string;        // "default" | "coder"
+  agent?: string;
+  // Phase 2 resume: continue an existing interrupted run instead of creating a
+  // new one. The run must be in `interrupted` state (resumeRun validates the
+  // HTTP path; the loop double-checks).
+  runId?: string;        // "default" | "coder"
   profileId?: string;
   // SOP agent nodes prepend role/step framing to the system prompt.
   extraSystem?: string;
@@ -163,10 +167,27 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   // that survives restarts. Every significant step below appends a timeline
   // event; the exit paths dispose the run (completed/failed/cancelled).
   // Persistence is best-effort - a storage failure must not break the turn.
-  const run = beginRun({ sessionId: p.sessionId, objective: p.text || "(empty prompt)", workdir: p.workdir, model: usedModel || undefined });
+  // Phase 2: an explicit p.runId CONTINUES an existing interrupted run
+  // (validated by resumeRun upstream) instead of creating a new one.
   const ev = (kind: string, detail: string): void => { try { appendRunEvent(run.id, kind, detail); } catch { /* best-effort */ } };
   const tr = (to: AgentRunState, note?: string): void => { try { transition(run.id, to, note); } catch { /* best-effort */ } };
-  tr("running", "agent turn started");
+  let run: AgentRun;
+  if (p.runId) {
+    const existing = getAgentRun(p.runId);
+    if (!existing) {
+      return { ok: false, reply: `echo: ${p.text}`, model: "none", lane: "none", attempts: 0, budget: 0, toolSteps: 0, think: effThink, error: `unknown run ${p.runId}` };
+    }
+    if (existing.state !== "interrupted") {
+      return { ok: false, reply: `echo: ${p.text}`, model: "none", lane: "none", attempts: 0, budget: 0, toolSteps: 0, think: effThink, error: `run ${p.runId} is ${existing.state} - only interrupted runs can be resumed` };
+    }
+    run = existing;
+    tr("running", "resumed");
+    ev("run.resumed", `turn continues run ${run.id}`);
+  } else {
+    run = beginRun({ sessionId: p.sessionId, objective: p.text || "(empty prompt)", workdir: p.workdir, model: usedModel || undefined });
+    ev("run.created", `objective: ${run.objective}`);
+    tr("running", "agent turn started");
+  }
 
   // Conversation accumulates across agent steps AND across turns:
   // history from previous prompts in this session is seeded first, so

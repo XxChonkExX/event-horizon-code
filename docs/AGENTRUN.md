@@ -76,6 +76,7 @@ silently dropped. Terminal runs are untouched.
 | `GET /api/runs?sessionId=` | list runs (newest first, 200 cap) |
 | `GET /api/runs/:id/timeline` | run + ordered event timeline |
 | `POST /api/runs/:id/cancel` | transition to `cancelled` + cooperative cancel of the turn's session |
+| `POST /api/runs/:id/resume` | validate + rebuild the recovery prompt (objective + timeline digest), then re-drive the loop with `runId` |
 
 `POST /api/acp/session/prompt` creates and drives runs implicitly — chat needs
 no run bookkeeping to keep working.
@@ -92,10 +93,14 @@ via the HTTP API.
 
 ## Phases
 
-1. **(this)** durable record + validated state machine + timeline + boot
+1. **(done)** durable record + validated state machine + timeline + boot
    recovery + cancel API + loop wiring.
-2. Resume execution: `interrupted` runs re-enter `running` with a replay of the
-   timeline (objective + history already persisted; the model call restarts).
+2. **(done)** resume execution: `POST /api/runs/:id/resume` validates the
+   interrupted state and builds the recovery prompt (objective + timeline
+   digest); `runAgentTurn` takes an optional `runId` to CONTINUE the existing
+   run (the loop owns the `interrupted -> running` transition — single
+   ownership, no double-transition races). The session/prompt path passes
+   `runId` through for ACP clients.
 3. Execution timeline UI: a panel reading `/api/runs/:id/timeline` (SSE-ready —
    `agentrun.state` audit entries already streamable).
 4. SOP runs migrate from their in-memory Map onto this store (their gates map

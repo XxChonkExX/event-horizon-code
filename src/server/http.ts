@@ -38,7 +38,7 @@ import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { listVoices, speak, ttsDoctor } from "./tts";
-import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun } from "./agentrun";
+import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } from "./agentrun";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -645,6 +645,37 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       return sendJson(res, r.ok ? 200 : 400, r);
     }
 
+    if (req.method === "POST" && url.pathname.startsWith("/api/runs/") && url.pathname.endsWith("/resume")) {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const body = JSON.parse(raw || "{}") as { autoApprove?: boolean };
+          const id = decodeURIComponent(url.pathname.slice("/api/runs/".length, -"/resume".length));
+          const r = resumeRun(id);
+          if (!r.ok || !r.run || !r.resumeText) {
+            audit({ tool: "agentrun.resume", note: `${id} refused: ${r.error ?? "?"}` });
+            return sendJson(res, 400, { ok: false, error: r.error ?? "cannot resume" });
+          }
+          audit({ tool: "agentrun.resume", note: `${id} resumed` });
+          // Long-running like session/prompt: the loop re-executes the
+          // objective with the timeline digest as context.
+          const turn = await runAgentTurn({
+            sessionId: r.run.sessionId,
+            text: r.resumeText,
+            workdir: r.run.workdir,
+            runId: r.run.id,
+            autoApprove: body.autoApprove === true,
+          });
+          broadcast(r.run.workdir, "session/update", turn);
+          return sendJson(res, 200, turn);
+        } catch (e) {
+          return sendJson(res, 400, { ok: false, error: String((e as Error).message ?? e).slice(0, 200) });
+        }
+      });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/api/todos") {
       let raw = "";
       req.on("data", (c) => { raw += c; });
@@ -751,7 +782,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
-            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string; agent?: string };
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string; agent?: string; runId?: string };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img${params.autoApprove ? ":auto" : ""}` });
             // Sweep-3 finding 9: autoApprove here is the OPERATOR channel - it
             // originates from the renderer's "auto-approve tools" checkbox and
@@ -783,6 +814,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               images: params.images,
               autoApprove: params.autoApprove === true || sessionModes.get(sessionId) === "auto",
               agent: params.agent,
+              runId: params.runId,
               profileId: params.profileId ?? process.env.EH_PROFILE,
               isCancelled: () => cancelledSessions.has(sessionId),
               // Live tokens over SSE: the renderer paints them as they arrive,

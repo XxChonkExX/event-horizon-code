@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { initStore, closeStore, getAgentRun, listAgentRuns, listRunEvents } from "../src/server/store";
-import { beginRun, transition, completeRun, failRun, cancelRun, runTimeline, markStaleRunsInterrupted, canTransition } from "../src/server/agentrun";
+import { beginRun, transition, completeRun, failRun, cancelRun, runTimeline, markStaleRunsInterrupted, canTransition, resumeRun } from "../src/server/agentrun";
 import { runAgentTurn } from "../src/server/agentLoop";
 
 let failures = 0;
@@ -84,6 +84,27 @@ async function main(): Promise<void> {
   check("cancel ok", cancelRun(r4.id).ok);
   check("double cancel refused", !cancelRun(r4.id).ok);
   check("cancelled is terminal", getAgentRun(r4.id)?.state === "cancelled");
+
+  // 8. Phase 2 resume: interrupted -> running with a timeline-digest prompt
+  const r5 = beginRun({ sessionId: "ses_res", objective: "finish the migration script", workdir: process.cwd() });
+  transition(r5.id, "running");
+  transition(r5.id, "interrupted", "runtime restarted");
+  const nonResume = resumeRun(r4.id);
+  check("resume refused for terminal run", !nonResume.ok && /cancelled/.test(nonResume.error ?? ""));
+  const res = resumeRun(r5.id);
+  check("resume validates interrupted state (no transition here)", res.ok && res.run?.state === "interrupted");
+  check("resume prompt carries the objective", Boolean(res.resumeText?.includes("finish the migration script")));
+  check("resume prompt carries timeline digest", Boolean(res.resumeText?.includes("run.created") || res.resumeText?.includes("state.change")));
+
+  // 9. loop resume integration: drive the interrupted run with p.runId (no model)
+  const turn2 = await runAgentTurn({ sessionId: r5.sessionId, text: res.resumeText!, workdir: r5.workdir, runId: r5.id });
+  check("resume turn fails honestly without a model", turn2.ok === false && /no model/i.test(turn2.error ?? ""));
+  const r5after = getAgentRun(r5.id);
+  check("resumed run now failed with reason", r5after?.state === "failed" && /no model/i.test(r5after?.error ?? ""));
+  check("resume timeline shows interrupted->running->failed", listRunEvents(r5.id).some((e) => e.kind === "state.change" && e.detail.includes("interrupted -> running")) && listRunEvents(r5.id).some((e) => e.kind === "run.resumed") && listRunEvents(r5.id).some((e) => e.kind === "run.failed"));
+  // loop double-check: resuming a non-interrupted run is refused
+  const turn3 = await runAgentTurn({ sessionId: "ses_x", text: "x", workdir: process.cwd(), runId: r5.id });
+  check("loop refuses resume of failed run", turn3.ok === false && /only interrupted runs/.test(turn3.error ?? ""));
 
   console.log(failures === 0 ? "[ehc] durable run tests: ALL PASS" : `[ehc] durable run tests: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
