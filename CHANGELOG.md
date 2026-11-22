@@ -3,6 +3,18 @@
 All notable changes to Event Horizon Code. Newest first.
 Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
+## [0.0.3c] - 2026-11-22 - follow-up audit hardening (assurance truthfulness)
+
+Remediation of the 0.0.3b follow-up audit (P0 security correctness + P1 containment):
+
+- **Seatbelt tree lifecycle is truthful**: the macOS runner no longer asserts `treeTerminated: true` without verification - the child spawns detached (own process group, group-kill on timeout) and a pgrep confirmation by unique artifact marker decides the flag on EVERY path; failure to verify reports false.
+- **DNS rebinding closed**: webfetch connections are pinned to the validated addresses via an undici dispatcher whose lookup returns only pre-approved IPs - validation and connection cannot resolve differently; redirect hops each get their own pinned agent.
+- **Reserved-address table completed**: full special-purpose IPv4/IPv6 coverage (IANA, TEST-NETs, benchmarking, multicast, reserved, broadcast, documentation prefix).
+- **Filesystem snapshot honesty**: an incomplete baseline (5000-file / size caps) refuses detonation; an incomplete post-scan fails the diff - never a silent pass.
+- **WSL guest node resolution fixed**: the pipeline now execs the discovered `$NODE_BIN` (the hardcoded `/usr/bin/node` contradicted the dynamic lookup - a distro with node elsewhere failed despite a working install).
+- **Streaming output budgets**: runner output is capped while streaming (BoundedOut); exceeding the budget terminates the run instead of accumulating unbounded memory.
+- Regression tests: expanded reserved-range cases, snapshot honesty, output-budget termination.
+
 ## [0.0.3b] - 2026-11-22 - detonation sandbox hardening + cross-platform coverage
 
 - **Detonation lane: real OS-level isolation, one backend per platform.** Windows: WSL2 namespace runner (mount+pid+net namespaces, host drives detached, privilege drop). Linux (incl. Arch/Omarchy): bubblewrap - unprivileged, full filesystem isolation (only the delivered artifact dir and the runtime visible), no network. macOS: Seatbelt (network denied, writes confined - Apple deprecates sandbox-exec; best-effort, stated). Artifact delivered into a private guest copy on every backend; the host temp dir never executes. Process-tree termination confirmed by pgrep on every completion path, timeout included. Network isolation verified from inside the guest.

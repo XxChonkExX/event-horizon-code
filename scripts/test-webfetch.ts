@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   console.log("[ehc] webfetch ssrf + bounds tests");
 
   // 1. private-address classifier
-  const priv = ["127.0.0.1", "10.1.2.3", "192.168.1.5", "172.16.0.9", "172.31.255.1", "169.254.169.254", "100.64.0.7", "0.0.0.0", "::1", "fe80::1", "fd00::5", "::ffff:127.0.0.1"];
+  const priv = ["127.0.0.1", "10.1.2.3", "192.168.1.5", "172.16.0.9", "172.31.255.1", "169.254.169.254", "100.64.0.7", "0.0.0.0", "198.18.0.5", "198.51.100.9", "203.0.113.7", "192.0.2.4", "192.0.0.2", "224.0.0.1", "240.1.2.3", "::1", "fe80::1", "fd00::5", "ff02::1", "2001:db8::1", "::ffff:127.0.0.1"];
   for (const ip of priv) check(`private classifier flags ${ip}`, isPrivateAddress(ip) === true);
   const pub = ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"];
   for (const ip of pub) check(`public classifier passes ${ip}`, isPrivateAddress(ip) === false);

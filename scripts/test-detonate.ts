@@ -11,7 +11,7 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { runTool } from "../src/server/tools";
-import { scanUncleanScript, isUnclean, quarantineBaseline, quarantineDiff } from "../src/server/detonate";
+import { scanUncleanScript, isUnclean, quarantineBaseline, quarantineDiff, fsSnapshot, fsDiff } from "../src/server/detonate";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -181,6 +181,12 @@ async function main(): Promise<void> {
     check("process tree terminated", /tree=terminated/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
     check("host quarantine clean after execution", !/quarantine/.test(exec1.out) && !/fs snapshot/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
 
+    // output budget: a flooding artifact must be TERMINATED at the byte cap,
+    // not merely truncated after accumulating everything.
+    const flood = [`const s = "x".repeat(70000);`, `for (let i = 0; i < 40; i++) console.log(s);`].join("\n");
+    const execFlood = await runTool("run_js", { code: flood, tier: "execute", timeoutMs: 15000 }, detWorktree, { userApproved: true, sessionId: "ses_det_e2e" });
+    check("output budget terminates the flood", /budget exceeded/i.test(execFlood.out) || /KILLED/.test(execFlood.out), execFlood.out.split("\n")[0]?.slice(0, 160) ?? "");
+
     // process-tree kill: an artifact that never exits + a background grandchild
     const sleeper = [
       `import { spawn } from "node:child_process";`,
@@ -193,6 +199,28 @@ async function main(): Promise<void> {
   } finally {
     try { fs.rmSync(detWorktree, { recursive: true, force: true }); } catch { /* temp */ }
   }
+  }
+
+  // 12. filesystem snapshot honesty (external audit): caps refuse execution,
+  // and an incomplete post-scan fails the diff - never a silent pass.
+  const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-snap-"));
+  try {
+    for (let i = 0; i < 5001; i++) fs.writeFileSync(path.join(snapDir, `f${i}.txt`), "x");
+    const over = fsSnapshot(snapDir);
+    check("snapshot over file cap is incomplete (refuses)", over.ok === false && over.truncated === true);
+    const small = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-snap-ok-"));
+    fs.writeFileSync(path.join(small, "a.txt"), "a");
+    fs.writeFileSync(path.join(small, "b.txt"), "b");
+    const baseOk = fsSnapshot(small);
+    check("snapshot under caps is complete", baseOk.ok === true);
+    fs.writeFileSync(path.join(small, "c.txt"), "c");
+    const d = fsDiff(small, baseOk);
+    check("fs snapshot diff detects created file", d.ok === false && d.changed.some((c) => c.includes("c.txt")));
+    fs.rmSync(small, { recursive: true, force: true });
+    const dBad = fsDiff(snapDir, over); // baseline was incomplete -> honest failure
+    check("incomplete baseline yields honest diff failure", dBad.ok === false);
+  } finally {
+    try { fs.rmSync(snapDir, { recursive: true, force: true }); } catch { /* temp */ }
   }
 
   console.log(failures === 0 ? "[ehc] detonate gate tests: ALL PASS" : `[ehc] detonate gate tests: ${failures} FAILURE(S)`);

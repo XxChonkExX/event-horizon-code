@@ -76,11 +76,11 @@ export function scanUncleanScript(code: string): string[] {
 export function buildDetonatePlan(worktree: string, tier: DetonateTier, artifactPath?: string): DetonatePolicy & { args: string[]; env: Record<string, string>; steps: string[] } {
   const name = path.basename(worktree);
   const steps = tier === "review"
-    ? ["1. Static triage in microVM (no exec yet)", "2. engram_search for reference records", "3. Operator approves before execute"]
+    ? ["1. Static triage in the sandbox guest (no exec yet)", "2. engram_search for reference records", "3. Operator approves before execute"]
     : tier === "execute"
-    // Sweep-5 honesty: artifact DELIVERY into the VM is not implemented yet -
-    // these steps describe the intended pipeline, not demonstrated behavior.
-    ? ["1. INTENDED: deliver artifact into the VM (delivery not yet implemented)", "2. INTENDED: run in the VM harness", "3. INTENDED: capture output, cap size", "4. INTENDED: kill VM, diff host before/after"]
+    // Delivered and verified: private guest copy, isolated namespaces,
+    // output budget, tree-kill + host diff.
+    ? ["1. Deliver artifact into the private guest copy", "2. Run inside the platform sandbox (WSL2 namespaces / bubblewrap / Seatbelt)", "3. Capture output under a byte budget (overflow terminates)", "4. Kill the run, confirm the tree is gone (pgrep)", "5. Diff host git + fs-snapshot before/after; quarantine failure fails the run"]
     : ["1. Full red-team lane (BlackICE class-targeted behavior)", "2. Engram injection + arithmetic ledger verify", "3. All tool output treated as untrusted, human re-review required"];
 
   const args = tier === "execute" || tier === "redteam"
@@ -241,6 +241,7 @@ export function fsSnapshot(worktree: string): { ok: boolean; entries: Map<string
 
 export function fsDiff(worktree: string, snap: { entries: Map<string, string> }): { ok: boolean; changed: string[] } {
   const now = fsSnapshot(worktree);
+  if (!now.ok) return { ok: false, changed: ["filesystem snapshot incomplete - post-run scan exceeded the limits"] }; // never silently pass
   const changed: string[] = [];
   for (const [f, h] of snap.entries) {
     const cur = now.entries.get(f);
@@ -307,24 +308,44 @@ function wslPathToLinux(p: string): Promise<string> {
 
 // stdin-scripted wsl execution: the script arrives on /bin/bash -s stdin, so
 // nothing survives (or dies to) Windows argv quoting.
-function runWslScript(distro: string | undefined, script: string, timeoutMs: number): Promise<{ code: number | null; out: string }> {
+// Streaming output budget (external audit P1): output is captured as a byte
+// count + capped buffer - a hostile artifact printing gigabytes can no longer
+// accumulate unbounded memory before the final truncation. Exceeding the
+// budget terminates the run (killed=true).
+class BoundedOut {
+  private buf = "";
+  private bytes = 0;
+  public overflowed = false;
+  constructor(private readonly cap: number) {}
+  push(chunk: Buffer): void {
+    this.bytes += chunk.byteLength;
+    if (this.buf.length < this.cap) {
+      const room = this.cap - this.buf.length;
+      this.buf += chunk.toString("utf8", 0, Math.max(0, room));
+    }
+    if (this.bytes > this.cap) this.overflowed = true;
+  }
+  text(): string { return this.buf; }
+}
+
+function runWslScript(distro: string | undefined, script: string, timeoutMs: number, capBytes = 200_000): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve) => {
     const args = distro ? ["-d", distro, "-u", "root", "--", "/bin/bash", "-s"] : ["-u", "root", "--", "/bin/bash", "-s"];
     const child = nodeSpawn("wsl", args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-    let out = "";
+    const out = new BoundedOut(capBytes);
     let settled = false;
+    let overflowKilled = false;
     const done = (code: number | null): void => {
       if (settled) return;
       settled = true;
-      resolve({ code, out });
+      resolve({ code: overflowKilled ? null : code, out: out.text() + (overflowKilled ? "\n[ehc] output budget exceeded - run terminated" : "") });
     };
-    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-    child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.stdout?.on("data", (d: Buffer) => { out.push(d); if (out.overflowed && !overflowKilled) { overflowKilled = true; try { child.kill("SIGKILL"); } catch { /* gone */ } } });
+    child.stderr?.on("data", (d: Buffer) => { out.push(d); if (out.overflowed && !overflowKilled) { overflowKilled = true; try { child.kill("SIGKILL"); } catch { /* gone */ } } });
     const timer = setTimeout(() => {
       if (settled) return;
-      settled = true;
       try { child.kill("SIGKILL"); } catch { /* already gone */ }
-      resolve({ code: null, out: out + "\n[ehc] wsl runner timed out" });
+      done(null);
     }, timeoutMs);
     child.on("close", (code) => { clearTimeout(timer); done(code); });
     child.on("error", () => { clearTimeout(timer); done(-1); });
@@ -332,23 +353,23 @@ function runWslScript(distro: string | undefined, script: string, timeoutMs: num
   });
 }
 
-function runLocalScript(script: string, timeoutMs: number): Promise<{ code: number | null; out: string }> {
+function runLocalScript(script: string, timeoutMs: number, capBytes = 200_000): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve) => {
     const child = nodeSpawn("/bin/bash", ["-s"], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-    let out = "";
+    const out = new BoundedOut(capBytes);
     let settled = false;
+    let overflowKilled = false;
     const done = (code: number | null): void => {
       if (settled) return;
       settled = true;
-      resolve({ code, out });
+      resolve({ code: overflowKilled ? null : code, out: out.text() + (overflowKilled ? "\n[ehc] output budget exceeded - run terminated" : "") });
     };
-    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-    child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.stdout?.on("data", (d: Buffer) => { out.push(d); if (out.overflowed && !overflowKilled) { overflowKilled = true; try { child.kill("SIGKILL"); } catch { /* gone */ } } });
+    child.stderr?.on("data", (d: Buffer) => { out.push(d); if (out.overflowed && !overflowKilled) { overflowKilled = true; try { child.kill("SIGKILL"); } catch { /* gone */ } } });
     const timer = setTimeout(() => {
       if (settled) return;
-      settled = true;
       try { child.kill("SIGKILL"); } catch { /* already gone */ }
-      resolve({ code: null, out: out + "\n[ehc] runner timed out" });
+      done(null);
     }, timeoutMs);
     child.on("close", (code) => { clearTimeout(timer); done(code); });
     child.on("error", () => { clearTimeout(timer); done(-1); });
@@ -370,8 +391,7 @@ function guestPipeline(opts: { runId: string; artifactLinuxPath: string; guestUi
     // anywhere (/usr/bin, /usr/local/bin, nvm paths). Never hardcoded.
     "NODE_BIN=$(command -v node 2>/dev/null || true)",
     "export NODE_BIN",
-    "[ -n \"$NODE_BIN\" ] || { echo \"guest node missing - install node inside the isolation guest\"; exit 92; }",
-    `command -v /usr/bin/node >/dev/null 2>&1 || { echo "guest node missing - install: wsl -u root apt-get install -y nodejs"; exit 92; }`,
+    "[ -n \"$NODE_BIN\" ] && [ -x \"$NODE_BIN\" ] || { echo \"guest node missing - install node inside the isolation guest\"; exit 92; }",
     `unshare --mount --pid --fork --mount-proc --net /bin/sh -c '`,
     ...(opts.hideHostFs ? [
       "  mount --make-rprivate / 2>/dev/null || true",
@@ -383,7 +403,7 @@ function guestPipeline(opts: { runId: string; artifactLinuxPath: string; guestUi
     "  echo netns_ifaces=$(ip -o link show 2>/dev/null | grep -vc \": lo\")",
     "  echo uid_in_ns=$(id -u)",
     `  cd ${dir}`,
-    `  exec setpriv --reuid=${opts.guestUid} --regid=${opts.guestUid} --init-groups env -i PATH=/usr/bin:/bin HOME=${dir} /usr/bin/node ${dir}/${opts.artifactName}`,
+    `  exec setpriv --reuid=${opts.guestUid} --regid=${opts.guestUid} --init-groups env -i PATH=/usr/bin:/bin HOME=${dir} \"$NODE_BIN\" ${dir}/${opts.artifactName}`,
     "'",
   ];
   return lines.join("\n");
@@ -523,18 +543,19 @@ export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; 
       });
     return new Promise<NamespacedResult>((resolve) => {
       const child = nodeSpawn("bwrap", args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-      let out = "";
+      const out = new BoundedOut(plan.maxOutputBytes);
+      let overflowKilled = false;
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         try { child.kill("SIGKILL"); } catch { /* already gone */ }
         result.code = null;
         result.killed = true;
-        result.out = out.slice(0, plan.maxOutputBytes);
+        result.out = out.text();
         setTimeout(() => { void confirmTree().then(() => resolve(result)); }, 400);
       }, plan.timeoutMs + 2000);
-      child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-      child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+      child.stdout?.on("data", (d: Buffer) => { out.push(d); if (out.overflowed && !overflowKilled) { overflowKilled = true; result.killed = true; try { child.kill("SIGKILL"); } catch { /* gone */ } } });
+      child.stderr?.on("data", (d: Buffer) => { out.push(d); if (out.overflowed && !overflowKilled) { overflowKilled = true; result.killed = true; try { child.kill("SIGKILL"); } catch { /* gone */ } } });
       child.on("error", () => {
         if (settled) return;
         settled = true;
@@ -547,7 +568,7 @@ export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; 
         settled = true;
         clearTimeout(timer);
         result.code = code;
-        result.out = out.slice(0, plan.maxOutputBytes);
+        result.out = out.text();
         // tree confirmation: bwrap --die-with-parent + --unshare-all (pid ns)
         // reap the whole tree; confirm via pgrep on the unique guest work path.
         void confirmTree().then(() => resolve(result));
@@ -590,29 +611,50 @@ export async function runSeatbeltDetonate(plan: DetonatePolicy & { args: string[
   });
   const tmpDir = path.dirname(plan.artifactPath ?? "/tmp");
   const profile = buildSeatbeltProfile(tmpDir);
+  // Descendant marker for tree confirmation: the artifact's unique name rides
+  // the process table, so pgrep proves whether ANY process (main or forked
+  // descendant) survived - never an assumed true.
+  const marker = path.basename(plan.artifactPath ?? "") || `det-${Date.now().toString(36)}`;
   const result: NamespacedResult = {
     code: null, out: "", killed: false, backend: "seatbelt",
-    delivered: true, networkVerified: true, hostFsHidden: false, treeTerminated: true, guestLog: "",
+    delivered: true, networkVerified: true, hostFsHidden: false, treeTerminated: false, guestLog: "",
   };
+  // Confirm survivors by the unique marker; failure to verify reports
+  // treeTerminated=false (stated), never a fabricated pass.
+  const confirmTree = (): Promise<boolean> =>
+    new Promise((res) => {
+      const pg = nodeSpawn("/usr/bin/pgrep", ["-f", marker], { stdio: ["ignore", "pipe", "ignore"] });
+      let o = "";
+      pg.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
+      pg.on("close", (code) => res(code === 1 && !o.trim())); // exit 1 + empty = no survivors
+      pg.on("error", () => res(false)); // cannot verify
+    });
   let settled = false;
   return new Promise<NamespacedResult>((resolve) => {
-    const child = nodeSpawn("/usr/bin/sandbox-exec", ["-p", profile, nodePath, plan.artifactPath ?? ""], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
+    // detached on POSIX: the child leads its own process group, so a timeout
+    // kills the WHOLE tree (-pid targets the group), not just the leader.
+    const child = nodeSpawn("/usr/bin/sandbox-exec", ["-p", profile, nodePath, plan.artifactPath ?? ""], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+    const out = new BoundedOut(plan.maxOutputBytes);
+    let overflowKilled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      try {
+        if (process.platform !== "win32") process.kill(-child.pid!, "SIGKILL"); // group kill
+        else child.kill("SIGKILL");
+      } catch { /* already gone */ }
       result.code = null;
       result.killed = true;
-      result.out = out.slice(0, plan.maxOutputBytes);
-      resolve(result);
+      result.out = out.text();
+      void confirmTree().then((gone) => { result.treeTerminated = gone; resolve(result); });
     }, plan.timeoutMs + 2000);
-    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-    child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.stdout?.on("data", (d: Buffer) => { out.push(d); if (out.overflowed && !overflowKilled) { overflowKilled = true; result.killed = true; try { child.kill("SIGKILL"); } catch { /* gone */ } } });
+    child.stderr?.on("data", (d: Buffer) => { out.push(d); if (out.overflowed && !overflowKilled) { overflowKilled = true; result.killed = true; try { child.kill("SIGKILL"); } catch { /* gone */ } } });
     child.on("error", () => {
       if (settled) return;
       settled = true;
       result.out = "sandbox-exec could not start";
+      result.treeTerminated = false;
       resolve(result);
     });
     child.on("close", (code) => {
@@ -620,8 +662,8 @@ export async function runSeatbeltDetonate(plan: DetonatePolicy & { args: string[
       settled = true;
       clearTimeout(timer);
       result.code = code;
-      result.out = out.slice(0, plan.maxOutputBytes);
-      resolve(result);
+      result.out = out.text();
+      void confirmTree().then((gone) => { result.treeTerminated = gone; resolve(result); });
     });
   });
 }
@@ -686,8 +728,8 @@ export async function runNamespacedDetonate(plan: DetonatePolicy & { args: strin
   // Windows argv quoting survives into Linux, so the script rides stdin).
   const script = guestPipeline({ runId, artifactLinuxPath, guestUid, hideHostFs: opts.mode === "wsl", artifactName });
   const run = opts.mode === "wsl"
-    ? await runWslScript(opts.distro, script, plan.timeoutMs + 2000)
-    : await runLocalScript(script, plan.timeoutMs + 2000);
+    ? await runWslScript(opts.distro, script, plan.timeoutMs + 2000, plan.maxOutputBytes)
+    : await runLocalScript(script, plan.timeoutMs + 2000, plan.maxOutputBytes);
   const guestLog = run.out;
   result.guestLog = guestLog;
   result.delivered = /delivered=1/.test(guestLog);

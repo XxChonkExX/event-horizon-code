@@ -6,6 +6,13 @@
 > end-to-end CI verification (`detonate:test` runs real artifacts on Linux
 > runners). Remaining polish items: config split, SECURITY.md keychain claim,
 > TOCTOU note, module splitting. Release tags: 0.0.3a -> 0.0.3b.
+>
+> Follow-up audit (0.0.3b) remediated in 0.0.3c: Seatbelt tree lifecycle is
+> truthful (pgrep-confirmed on every path, group-kill on timeout), DNS
+> rebinding closed (undici connection pinning to validated addresses +
+> full reserved-range table), filesystem snapshot incompleteness refuses
+> execution, WSL guest node resolution uses the discovered binary, and
+> runner output is budget-capped with termination on overflow.
 
 Source-level pre-release audit received 2026-11-22. Overall verdict 7.7/10
 pre-release; "make 0.0.3 the reliability and security consolidation milestone."

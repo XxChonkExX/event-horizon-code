@@ -29,7 +29,7 @@
     "test": "npm run typecheck && npm run wsguard:test && npm run acpsec:test && npm run webfetch:test && npm run templates:test && npm run lsp:test && npm run detonate:test && npm run toolsearch:test && npm run sop:test && npm run sessions:test && npm run runs:test && npm run memory:test && npm run sensory:test && npm run tts:test && npm run engram:test && npm run test:integration",
     "wsguard:test": "tsx scripts/test-wsguard.ts",
     "acpsec:test": "tsx scripts/test-acp-security.ts",
-  "webfetch:test": "tsx scripts/test-webfetch.ts",
+    "webfetch:test": "tsx scripts/test-webfetch.ts",
     "templates:test": "tsx scripts/test-templates.ts",
     "test:integration": "tsx scripts/smoke-test.ts",
     "engram:test": "node scripts/check-engram.mjs",
@@ -59,7 +59,8 @@
     "@xterm/xterm": "^6.0.0",
     "better-sqlite3": "^13.0.3",
     "monaco-editor": "^0.52.0",
-    "solid-js": "^1.9.0"
+    "solid-js": "^1.9.0",
+    "undici": "^8.13.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",

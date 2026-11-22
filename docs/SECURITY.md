@@ -6,7 +6,7 @@
 - Permission gate runs before execution, per tool pattern, per workspace, per agent mode.
 - MCP servers run as subprocesses with env allowlist. Treat tool output as untrusted (prompt injection).
 - Local server: 127.0.0.1 only, per-launch random password, Basic auth. No LAN exposure by default.
-- Secrets: OS keychain preferred, encrypted file fallback. Never logged.
+- Secrets: stored in `.harness/secrets.json` (gitignored, workspace-local) with file permissions kept minimal; the credential denylist keeps agent tools from reading credential files. A future keychain integration remains an open item - do not treat the current file store as OS-keychain-grade. Never logged.
 - CSP in renderer. contextIsolation true, nodeIntegration false. No remote content in windows.
 
 ## Build

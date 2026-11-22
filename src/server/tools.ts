@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, exec } from "node:child_process";
+import { fetch as ufetch, Agent } from "undici";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
 import { contained } from "./wsguard";
 
@@ -39,15 +40,45 @@ import dnsPromises from "node:dns/promises";
 // webfetch with auto-approval must never become a pivot into the operator's
 // network: loopback, private ranges, CGNAT, link-local, cloud metadata, and
 // local naming are refused; every resolved address for a hostname is checked;
-// every redirect hop is re-validated by the caller. Exported for tests.
+// every redirect hop is re-validated. DNS rebinding defense (0.0.3b follow-up):
+// connections are PINNED to the validated addresses via an undici dispatcher -
+// validation and connection cannot resolve differently.
 
 function isPrivateAddress(ip: string): boolean {
   const v = ip.toLowerCase().replace(/^::ffff:/, ""); // IPv4-mapped IPv6
-  if (/^127\./.test(v) || v === "::1" || /^0\./.test(v)) return true;
-  if (/^10\./.test(v) || /^192\.168\./.test(v) || /^169\.254\./.test(v)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(v)) return true; // 172.16/12
-  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(v)) return true; // 100.64/10 CGNAT
-  if (/^fe[89ab]/.test(v) || /^f[cd]/.test(v)) return true; // IPv6 link-local / ULA
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v)) {
+    const parts = v.split(".").map((x) => Number(x));
+    const n = ((parts[0]! << 24) | (parts[1]! << 16) | (parts[2]! << 8) | parts[3]!) >>> 0;
+    // Full special-purpose table: RFC1918 + loopback + link-local (metadata)
+    // + CGNAT + benchmarking + documentation + reserved/multicast/broadcast.
+    const reserved: Array<[number, number]> = [
+      [0x00000000 >>> 0, 8],   // 0.0.0.0/8 "this network"
+      [0x0a000000 >>> 0, 8],   // 10/8
+      [0x64400000 >>> 0, 10],  // 100.64/10 CGNAT
+      [0x7f000000 >>> 0, 8],   // 127/8 loopback
+      [0xa9fe0000 >>> 0, 16],  // 169.254/16 link-local (cloud metadata)
+      [0xac100000 >>> 0, 12],  // 172.16/12
+      [0xc0000000 >>> 0, 24],  // 192.0.0.0/24 IANA
+      [0xc0000200 >>> 0, 24],  // 192.0.2.0/24 TEST-NET-1
+      [0xc0a80000 >>> 0, 16],  // 192.168/16
+      [0xc6120000 >>> 0, 15],  // 198.18/15 benchmarking
+      [0xc6336400 >>> 0, 24],  // 198.51.100.0/24 TEST-NET-2
+      [0xcb007100 >>> 0, 24],  // 203.0.113.0/24 TEST-NET-3
+      [0xe0000000 >>> 0, 4],   // 224/4 multicast
+      [0xf0000000 >>> 0, 4],   // 240/4 reserved
+      [0xffffffff >>> 0, 32],  // broadcast
+    ];
+    return reserved.some(([net, bits]) => {
+      const mask = bits === 32 ? 0xffffffff : (0xffffffff << (32 - bits)) >>> 0;
+      return (n & mask) === (net & mask);
+    });
+  }
+  // IPv6 special-purpose ranges
+  if (v === "::" || v === "::1") return true;
+  if (/^f[cd]/.test(v)) return true;          // fc00::/7 ULA
+  if (/^fe[89ab]/.test(v)) return true;       // fe80::/10 link-local
+  if (/^ff/.test(v)) return true;             // ff00::/8 multicast
+  if (/^2001:0?db8:/.test(v)) return true;    // documentation prefix
   return false;
 }
 export { isPrivateAddress };
@@ -58,25 +89,48 @@ function isBlockedFetchHost(host: string): boolean {
 }
 
 export async function assertFetchableUrl(raw: string): Promise<URL> {
+  const { url } = await resolveValidatedUrl(raw);
+  return url;
+}
+
+// Validated resolution for the pinning layer: returns the URL and the exact
+// addresses approved for it. The webfetch connection is pinned to these
+// (undici dispatcher) so DNS cannot swap a public answer for a private one
+// between validation and connect (DNS rebinding, external audit P1).
+export async function resolveValidatedUrl(raw: string): Promise<{ url: URL; ips: string[] }> {
   const u = new URL(raw);
   if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("http(s) url required");
   if (isBlockedFetchHost(u.hostname)) throw new Error(`refused: ${u.hostname} is a private/metadata host`);
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname)) {
     if (isPrivateAddress(u.hostname)) throw new Error(`refused: ${u.hostname} is a private/reserved address`);
-    return u;
+    return { url: u, ips: [u.hostname] };
   }
   if (u.hostname.includes(":")) {
     // bare IPv6 literal (URL keeps the brackets: "[::1]")
     const bare = u.hostname.replace(/^\[/, "").replace(/\]$/, "");
     if (isPrivateAddress(bare)) throw new Error(`refused: ${u.hostname} is a private/reserved address`);
-    return u;
+    return { url: u, ips: [bare] };
   }
   const addrs = await dnsPromises.lookup(u.hostname, { all: true });
   if (!addrs.length) throw new Error(`dns: no address for ${u.hostname}`);
-  for (const a of addrs) {
-    if (isPrivateAddress(a.address)) throw new Error(`refused: ${u.hostname} resolves to a private/reserved address (${a.address})`);
+  const ips = addrs.map((a) => a.address);
+  for (const ip of ips) {
+    if (isPrivateAddress(ip)) throw new Error(`refused: ${u.hostname} resolves to a private/reserved address (${ip})`);
   }
-  return u;
+  return { url: u, ips };
+}
+
+// Connection pin: an undici Agent whose lookup returns ONLY the validated
+// addresses for this hop - the socket cannot connect elsewhere.
+function pinnedAgent(ips: string[]): Agent {
+  return new Agent({
+    connect: {
+      lookup(_hostname, _opts, callback) {
+        const ip = ips[Math.floor(Math.random() * ips.length)]!;
+        callback(null, ip, ip.includes(":") ? 6 : 4);
+      },
+    },
+  });
 }
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
@@ -617,8 +671,14 @@ export async function runTool(
           return { ok: false, error: "unable to establish the quarantine baseline (git status unavailable) - refusing to detonate without the change detector", out: "" };
         }
         // Filesystem snapshot layer (external audit): git is blind to ignored
-        // files - the snapshot covers them. Captured BEFORE execution too.
+        // files - the snapshot covers them. Captured BEFORE execution too,
+        // and an INCOMPLETE baseline refuses the run (an integrity check that
+        // cannot see the whole worktree is not a check).
         const fsPre = fsSnapshot(worktree);
+        if (!fsPre.ok) {
+          audit({ tool, note: "detonate refused: filesystem baseline incomplete (file/size caps)" });
+          return { ok: false, error: "filesystem baseline incomplete - the worktree exceeds the snapshot limits (5000 files / 8MB per file / 256MB total). Refusing to detonate without full visibility.", out: "" };
+        }
         // Backend selection (external audit remediation): detection-driven per
         // platform, with per-mechanic verification on the result. `backend:
         // "sbx"` in config still forces the legacy sbx runner explicitly.
@@ -761,25 +821,25 @@ export async function runTool(
       // literal IPs and EVERY resolved address are validated, and every
       // redirect hop is re-validated. The body is read with a byte cap.
       const url = String(args.url ?? "").trim();
-      let target: URL;
-      try { target = await assertFetchableUrl(url); } catch (e) {
+      let first: { url: URL; ips: string[] };
+      try { first = await resolveValidatedUrl(url); } catch (e) {
         audit({ tool, note: `ssrf refused: ${String((e as Error).message ?? e).slice(0, 100)}` });
         return { ok: false, error: String((e as Error).message ?? e), out: "" };
       }
       let text = "";
       try {
-        let current = target;
+        let current = first;
         for (let hop = 0; hop < 4; hop++) {
-          const res = await fetch(current, { redirect: "manual", headers: { "user-agent": "EventHorizonCode/0.1 (local coding agent)" }, signal: AbortSignal.timeout(15000) });
+          // Pinned dispatcher per hop: validation and connection cannot diverge.
+          const res = await ufetch(current.url, { dispatcher: pinnedAgent(current.ips), redirect: "manual", headers: { "user-agent": "EventHorizonCode/0.1 (local coding agent)" }, signal: AbortSignal.timeout(15000) });
           if (res.status >= 300 && res.status < 400) {
             const loc = res.headers.get("location");
             if (!loc) break;
-            const next = new URL(loc, current);
-            try { await assertFetchableUrl(next.toString()); } catch (e) {
+            const next = new URL(loc, current.url);
+            try { current = await resolveValidatedUrl(next.toString()); } catch (e) {
               audit({ tool, note: `redirect refused -> ${next.hostname}` });
               return { ok: false, error: `refused: redirect target ${next.hostname} is not a public address`, out: "" };
             }
-            current = next;
             continue;
           }
           // Bounded body read: stop at the cap instead of downloading whole.
