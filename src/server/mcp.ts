@@ -69,14 +69,29 @@ class McpServer {
     this.ready = false;
     this.rejectPending(new Error(`${this.name}: ${err.message}`));
   });
-    const init = await this.request("initialize", {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
-      clientInfo: { name: "event-horizon-code", version: "0.1.0" },
-    }, timeoutMs);
+    const init = await (async () => {
+      try {
+        return await this.request("initialize", {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "event-horizon-code", version: "0.1.0" },
+        }, timeoutMs);
+      } catch (e) {
+        // External audit: an init failure must TEAR THE CHILD DOWN. The spawn
+        // previously survived unregistered, and a retry leaked a second process.
+        this.failServer(e instanceof Error ? e : new Error(String(e)));
+        throw e;
+      }
+    })();
     if (!init) throw new Error(`${this.name}: initialize failed`);
     this.notify("notifications/initialized", {});
-    const listed = (await this.request("tools/list", {}, timeoutMs)) as { tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> } | null;
+    let listed: { tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> } | null;
+    try {
+      listed = (await this.request("tools/list", {}, timeoutMs)) as { tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> } | null;
+    } catch (e) {
+      this.failServer(e instanceof Error ? e : new Error(String(e)));
+      throw e;
+    }
     this.tools = (listed?.tools ?? []).map((t) => ({
       type: "function" as const,
       function: {

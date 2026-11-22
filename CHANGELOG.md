@@ -3,7 +3,14 @@
 All notable changes to Event Horizon Code. Newest first.
 Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
-## [0.0.2] - 2026-11-18 — alpha patch
+## [0.0.3a] - 2026-11-21 - second public alpha (durable work + security consolidation)
+
+- Durable Agent Run (Phase 1-4): runs are first-class SQLite entities with a validated state machine and append-only timeline; restarts mark in-flight runs `interrupted`; `POST /api/runs/:id/resume` re-drives the loop with the objective + timeline digest; Runs panel in the workbench; SOP gates survive restarts.
+- Security consolidation from the external source audit: detonation quarantine baseline now captured BEFORE execution (P0); webfetch SSRF guard (private ranges/redirect hops/bounded reads); tool-call protocol persisted (no orphaned tool responses); tool-call budget (24/turn); bounded read/edit; credential denylist extended (.ssh, cloud credentials, .npmrc, docker config, private-key formats); MCP init failures tear the child down; SOP agent nodes receive earlier-node context; session worktree restored across restarts; audit log uses sha256 (was reversible base64).
+- Right-click refactor: main-process context-menu relay + shader-layering exemptions (menu and toasts now always render on-screen); terminal right-click copy/paste; toasts top-center.
+- Engine + LSP: engine registration survives stop/start cycles; LSP diagnostics (capability + URI normalization + pull-first); GGUF template auto-detection from embedded metadata.
+
+## [0.0.2] - 2026-11-18 - alpha patch
 
 - Linux/Wayland: renderer-load failures now show an in-window error page with the exact cause and fix instead of a blank window.
 - Windows packaging: NSIS installer only; MSI target removed until real icon artwork exists (WiX `LGHT0094`).

@@ -15,6 +15,7 @@ import { audit } from "./audit";
 import { chat, chatOpenAI } from "./router";
 import type { ChatMessage, ChatResult } from "./router";
 import { loadMessages, saveMessages, touchSession, recordUsage, listInstructions, addCheckpoint, messageCount, updateAgentRun } from "./store";
+import type { StoredMessage } from "./store";
 import { TOOL_SPECS, AGENT_SYSTEM, AGENT_CODER_SYSTEM } from "./agentTools";
 import type { ToolDef } from "./agentTools";
 import { splitToolset, searchTools } from "./toolSearch";
@@ -163,6 +164,27 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   const effTokens = p.numPredict ?? profNum("tokens") ?? 1024;
   const userMsg: ChatMessage = { role: "user", content: p.text, ...(p.images?.length ? { images: p.images } : {}) };
 
+  // Protocol-faithful persistence (external audit Finding A): tool_calls /
+  // tool_call_id / name ride through the store, so a reloaded conversation
+  // replays as valid OpenAI protocol instead of orphaned tool responses.
+  const toStored = (m: ChatMessage): StoredMessage => ({
+    role: m.role,
+    content: m.content,
+    ...(Array.isArray(m.tool_calls) ? { toolCalls: JSON.stringify(m.tool_calls) } : {}),
+    ...(m.tool_call_id ? { toolCallId: m.tool_call_id, toolName: (m as { name?: string }).name } : {}),
+  });
+  const toChat = (m: StoredMessage): ChatMessage => {
+    const base: ChatMessage = { role: m.role as ChatMessage["role"], content: m.content };
+    try {
+      if (m.toolCalls) base.tool_calls = JSON.parse(m.toolCalls) as unknown[];
+    } catch { /* corrupted row - degrade to content-only */ }
+    if (m.toolCallId) { base.tool_call_id = m.toolCallId; base.name = m.toolName; }
+    return base;
+  };
+  const persistConvo = (): void => {
+    saveMessages(p.sessionId, convo.slice(1).map(toStored));
+  };
+
   // Durable run (Phase 1): the work this turn performs is a first-class record
   // that survives restarts. Every significant step below appends a timeline
   // event; the exit paths dispose the run (completed/failed/cancelled).
@@ -195,7 +217,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   // long sessions bounded. Content-only persistence (tool_calls dropped).
   const HISTORY_CAP = 60_000; // ~15k tokens of prior conversation
   const histRaw = loadMessages(p.sessionId);
-  let hist: ChatMessage[] = histRaw.map((m) => ({ role: m.role as ChatMessage["role"], content: m.content }));
+  let hist: ChatMessage[] = histRaw.map(toChat);
   if (JSON.stringify(hist).length > HISTORY_CAP && hist.length > 8) {
     // Compact: keep the most recent turns verbatim, summarize the rest
     // with the same model (cheap call, no tools) or a deterministic digest.
@@ -273,6 +295,11 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   let attempts = 0;
   let loadRetried = false;
   let cancelled = false;
+// External audit Finding C: four reasoning iterations must not implicitly mean
+// an unlimited number of operations. One model response can carry many tool
+// calls - this budget bounds the total work a single turn may perform.
+const MAX_TOOL_CALLS_PER_TURN = 24;
+let totalToolCalls = 0;
   const steps: string[] = [];
   if (busy) {
     // Agent loop: model may call tools; we execute (respecting the
@@ -342,6 +369,13 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
       if (r.toolCalls?.length) {
         convo.push({ role: "assistant", content: r.content ?? "", tool_calls: r.toolCalls });
         for (const tc of r.toolCalls) {
+          if (totalToolCalls >= MAX_TOOL_CALLS_PER_TURN) {
+            steps.push("X tool-call budget exhausted (24 tool calls in one turn)");
+            ev("budget.tool", "tool-call budget exhausted");
+            result = { ok: false, content: "", model: r.model, error: "tool-call budget exhausted (24 tool calls in one turn) - narrow the task or continue in a new turn" };
+            break;
+          }
+          totalToolCalls++;
           if (tc.name === "tool_search") {
             // Deferred loading: return matching full schemas AND load
             // them into the advertised set for the next step, so the
@@ -394,6 +428,9 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
             convo.push({ role: "user", content: "(image attached from the tool result above - analyze it for the task)", images: [res.image] });
           }
         }
+        // Budget exhaustion must exit the WHOLE turn, not just this response's
+        // call list (external audit Finding C: distinct failed disposition).
+        if (result) break;
         continue; // let the model react to tool results
       }
       result = r;
@@ -406,11 +443,23 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     return { ok: false, reply: `echo: ${p.text}`, model: "none", lane: "none", attempts: 0, budget, toolSteps: 0, think: effThink, error: "no model selected - pass a model, start the engine, or run Ollama" };
   }
   if (!result) {
+    // Cancellation boundary (external audit, Finding B): a cancel that arrives
+    // while the FINAL step's tool executes used to fall through to the
+    // exhaustion path and record a failed run. Disposition follows the
+    // operator: cancelled, never failed.
+    if (cancelled) {
+      cancelRun(run.id, "cancelled by request");
+      try {
+        persistConvo();
+        touchSession(p.sessionId);
+      } catch { /* best-effort */ }
+      return { ok: false, reply: "(cancelled by request - run stopped between agent steps)", model: usedModel || "none", lane, attempts, budget, toolSteps: steps.length, think: effThink, cancelled: true, error: "cancelled by request" };
+    }
     // The loop spent every step on tool calls without reaching a final answer.
     // The conversation (tool results included) is still persisted so the next
     // turn can pick up where this one stopped.
     try {
-      saveMessages(p.sessionId, convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
+      persistConvo();
       touchSession(p.sessionId);
     } catch { /* best-effort */ }
     failRun(run.id, "agent loop exhausted without a final answer");
@@ -449,7 +498,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     // it here: without this, replayed history (and the next turn's context) is
     // missing every answer - only the user's request and the tool results.
     if ((res.content ?? "").trim()) convo.push({ role: "assistant", content: res.content });
-    saveMessages(p.sessionId, convo.slice(1).map((m) => ({ role: m.role, content: m.content })));
+    persistConvo();
     touchSession(p.sessionId);
     // Per-turn checkpoint (OpenCode-style): every prompt is a fork/revert point.
     if ((p.text ?? "").trim()) addCheckpoint(p.sessionId, messageCount(p.sessionId), p.text.slice(0, 80));

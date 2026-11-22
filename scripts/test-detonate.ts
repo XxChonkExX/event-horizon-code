@@ -8,8 +8,10 @@
 
 import path from "node:path";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
 import { runTool } from "../src/server/tools";
-import { scanUncleanScript, isUnclean } from "../src/server/detonate";
+import { scanUncleanScript, isUnclean, quarantineBaseline, quarantineDiff } from "../src/server/detonate";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -93,6 +95,44 @@ async function main(): Promise<void> {
   check("bash cat .env refused", catEnv.ok === false && /credential/i.test(catEnv.error ?? ""), catEnv.error ?? "");
   const envExample = await runTool("read", { path: ".env.example" }, worktree, { userApproved: true });
   check(".env.example stays readable (template, not secret)", envExample.ok === true || !/credential/i.test(envExample.error ?? ""), envExample.error ?? "(missing file is fine)");
+
+  // 9. extended credential denylist (external audit): .ssh keys, cloud
+  // credentials, npm/docker auth, private-key formats.
+  for (const p of [".ssh/id_ed25519", ".aws/credentials", ".npmrc", ".docker/config.json", "server.key", "cert.pem"]) {
+    const r = await runTool("read", { path: p }, worktree, { userApproved: true });
+    check(`credential denylist refuses ${p}`, r.ok === false && /credential/i.test(r.error ?? ""), r.error ?? "");
+  }
+
+  // 10. quarantine ordering (external audit P0): the baseline MUST be captured
+  // BEFORE execution. In a temp git repo: baseline -> tracked-file change ->
+  // diff DETECTS. The old buggy order (baseline after execution) would have
+  // folded the change INTO the baseline and seen nothing.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-quarantine-"));
+  try {
+    const git = (args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+    git(["init", "-q"]); git(["config", "user.email", "t@t"]); git(["config", "user.name", "t"]);
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "original\n");
+    git(["add", "."]); git(["commit", "-q", "-m", "init"]);
+    const baseline = quarantineBaseline(repo);
+    check("baseline established", baseline.ok === true);
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "CHANGED BY DETONATION\n");
+    const q = quarantineDiff(repo, baseline);
+    check("baseline-before-change detects the change", q.ok === false && q.changed.length > 0, JSON.stringify(q.changed));
+    // The buggy order, demonstrated: a baseline captured AFTER the change
+    // sees nothing - exactly why the ordering fix is mandatory.
+    const buggyBaseline = quarantineBaseline(repo);
+    const qBuggy = quarantineDiff(repo, buggyBaseline);
+    check("post-change baseline is blind (documents the old defect)", qBuggy.ok === true);
+    // Documented limitation (external audit): git status does not see
+    // git-ignored files. The change detector is a change detector, not a
+    // filesystem-integrity monitor - disposal/isolation remains the boundary.
+    fs.writeFileSync(path.join(repo, ".gitignore"), "ignored.txt\n");
+    fs.writeFileSync(path.join(repo, "ignored.txt"), "secret\n");
+    const qIgnored = quarantineDiff(repo, baseline);
+    check("ignored-file changes are outside git-quarantine coverage (documented)", qIgnored.changed.every((c) => !c.includes("ignored.txt")), JSON.stringify(qIgnored.changed));
+  } finally {
+    try { fs.rmSync(repo, { recursive: true, force: true }); } catch { /* temp */ }
+  }
 
   console.log(failures === 0 ? "[ehc] detonate gate tests: ALL PASS" : `[ehc] detonate gate tests: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

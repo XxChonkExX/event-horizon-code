@@ -65,6 +65,26 @@ async function main(): Promise<void> {
   deleteSession("ses_src");
   check("deleting the original keeps the full fork", full ? listSessionsWithMeta().some((s) => s.id === full.id) && messageCount(full.id) === 1 : false);
 
+  // Tool-call protocol persistence (external audit Finding A): tool_calls /
+  // tool_call_id / name must survive a save/load roundtrip AND a fork, or the
+  // replayed conversation contains orphaned tool responses that some
+  // providers reject. (Persistence across a full reopen is proven in
+  // runs:test; this suite asserts the metadata roundtrip itself.)
+  createSession({ id: "ses_proto", title: "proto", worktree: process.cwd(), created: new Date().toISOString() });
+  saveMessages("ses_proto", [
+    { role: "user", content: "run the import" },
+    { role: "assistant", content: "", toolCalls: JSON.stringify([{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }]) },
+    { role: "tool", content: "file contents here", toolCallId: "call_1", toolName: "read" },
+    { role: "assistant", content: "done" },
+  ]);
+  const proto = loadMessages("ses_proto");
+  check("assistant tool_calls survive reopen", proto.some((m) => m.role === "assistant" && (m.toolCalls ?? "").includes("call_1")));
+  const toolRow = proto.find((m) => m.role === "tool");
+  check("tool result keeps tool_call_id + name", Boolean(toolRow && toolRow.toolCallId === "call_1" && toolRow.toolName === "read"));
+  const protoFork = forkSession("ses_proto");
+  const forked = protoFork ? loadMessages(protoFork.id) : [];
+  check("fork preserves tool-call protocol", forked.some((m) => (m.toolCalls ?? "").includes("call_1")) && forked.some((m) => m.role === "tool" && m.toolCallId === "call_1"));
+
   console.log(failures === 0 ? "[ehc] session tests: ALL PASS" : `[ehc] session tests: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 }

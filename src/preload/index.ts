@@ -3,9 +3,10 @@
 // Runtime credentials pass over IPC only — never in URL/DOM.
 
 import { contextBridge, ipcRenderer } from "electron";
+import { APP_VERSION } from "../shared/version";
 
 contextBridge.exposeInMainWorld("eventhorizon", {
-  version: "0.0.2",
+  version: APP_VERSION,
   getRuntime: () => ipcRenderer.invoke("runtime:info") as Promise<{ baseUrl: string; port: number } | null>,
   pickFolder: () => ipcRenderer.invoke("dialog:pickFolder") as Promise<string | null>,
   popoutWindow: (kind: string, sessionId: string, worktree?: string) => ipcRenderer.invoke("window:popout", kind, sessionId, worktree) as Promise<number>,

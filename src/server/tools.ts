@@ -33,6 +33,51 @@ import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
 import { buildDetonatePlan, runDetonate, quarantineBaseline, quarantineDiff, scanUncleanScript, type DetonateTier } from "./detonate";
 import { isMcpTool, callMcpTool } from "./mcp";
+import dnsPromises from "node:dns/promises";
+
+// ---- SSRF guard (external audit) ----
+// webfetch with auto-approval must never become a pivot into the operator's
+// network: loopback, private ranges, CGNAT, link-local, cloud metadata, and
+// local naming are refused; every resolved address for a hostname is checked;
+// every redirect hop is re-validated by the caller. Exported for tests.
+
+function isPrivateAddress(ip: string): boolean {
+  const v = ip.toLowerCase().replace(/^::ffff:/, ""); // IPv4-mapped IPv6
+  if (/^127\./.test(v) || v === "::1" || /^0\./.test(v)) return true;
+  if (/^10\./.test(v) || /^192\.168\./.test(v) || /^169\.254\./.test(v)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(v)) return true; // 172.16/12
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(v)) return true; // 100.64/10 CGNAT
+  if (/^fe[89ab]/.test(v) || /^f[cd]/.test(v)) return true; // IPv6 link-local / ULA
+  return false;
+}
+export { isPrivateAddress };
+
+function isBlockedFetchHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal") || h.endsWith(".home.arpa");
+}
+
+export async function assertFetchableUrl(raw: string): Promise<URL> {
+  const u = new URL(raw);
+  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("http(s) url required");
+  if (isBlockedFetchHost(u.hostname)) throw new Error(`refused: ${u.hostname} is a private/metadata host`);
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname)) {
+    if (isPrivateAddress(u.hostname)) throw new Error(`refused: ${u.hostname} is a private/reserved address`);
+    return u;
+  }
+  if (u.hostname.includes(":")) {
+    // bare IPv6 literal (URL keeps the brackets: "[::1]")
+    const bare = u.hostname.replace(/^\[/, "").replace(/\]$/, "");
+    if (isPrivateAddress(bare)) throw new Error(`refused: ${u.hostname} is a private/reserved address`);
+    return u;
+  }
+  const addrs = await dnsPromises.lookup(u.hostname, { all: true });
+  if (!addrs.length) throw new Error(`dns: no address for ${u.hostname}`);
+  for (const a of addrs) {
+    if (isPrivateAddress(a.address)) throw new Error(`refused: ${u.hostname} resolves to a private/reserved address (${a.address})`);
+  }
+  return u;
+}
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean; image?: string };
@@ -128,7 +173,7 @@ function walkFiles(root: string, maxFiles = 2000): string[] {
 // constraint in its tool descriptions and can ask the user to relocate files).
 // Credential files are refused outright: an agent (especially in automated
 // mode) must never read or write BYOK keys or env files.
-const CREDENTIAL_FILES = /(^|[\\/])(\.harness[\\/]secrets\.json|\.env(\..+)?|credentials?\.(json|ya?ml)|id_rsa|\.netrc)$/i;
+const CREDENTIAL_FILES = /(^|[\\/])(\.harness[\\/]secrets\.json|\.env(\..+)?|credentials?\.(json|ya?ml)|id_rsa|id_ed25519|id_ecdsa|\.netrc|\.npmrc|\.aws[\\/]credentials|\.docker[\\/]config\.json|\.ssh[\\/][^\\/]+)|\.(pem|key|p12|pfx)$/i;
 
 function isCredentialPath(rel: string): boolean {
   const norm = rel.replace(/\\/g, "/").toLowerCase();
@@ -137,6 +182,12 @@ function isCredentialPath(rel: string): boolean {
   if (norm.includes(".harness/secrets.json")) return true;
   // .env / .env.local / .env.production hold real values.
   if (/(^|\/)\.env(\..+)?$/.test(norm)) return true;
+  // External audit: the denylist missed .ssh keys, cloud credentials, npm/docker
+  // auth, and common private-key formats. Fail-safe: refusal with a stated
+  // reason (operator can always edit these by hand). Boundary note: literal
+  // matching cannot stop an interpreter constructing a path dynamically -
+  // arbitrary-interpreter isolation is the real fix (detonation lane).
+  if (/(^|\/)\.ssh\/.+/.test(norm)) return true;
   return CREDENTIAL_FILES.test(norm);
 }
 
@@ -248,6 +299,14 @@ export async function runTool(
     if (tool === "read") {
       const sp = safePath(worktree, String(args.path ?? ""));
       if (!sp.ok) return { ok: false, error: sp.error, out: "" };
+      // Bounded read (external audit): regular files only, and the size is
+      // capped BEFORE the read - a multi-GB file must not enter memory just
+      // because the OUTPUT is truncated afterwards.
+      let st: fs.Stats;
+      try { st = fs.statSync(sp.abs!); } catch { return { ok: false, error: "unreadable target", out: "" }; }
+      if (!st.isFile()) return { ok: false, error: "not a regular file - read is for files (use ls/glob for structure)", out: "" };
+      const READ_CAP = 2_000_000;
+      if (st.size > READ_CAP) return { ok: false, error: `file too large to read: ${st.size} bytes (cap ${READ_CAP}). Use grep/glob to target sections, or read a narrower file.`, out: "" };
       const text = fs.readFileSync(sp.abs!, "utf8");
       audit({ tool, note: String(args.path ?? "") });
       return { ok: true, out: text.slice(0, 100000) };
@@ -255,6 +314,13 @@ export async function runTool(
     if (tool === "edit") {
       const sp = safePath(worktree, String(args.path ?? ""));
       if (!sp.ok) return { ok: false, error: sp.error, out: "" };
+      // Bounded edit (external audit): regular files only, capped size before
+      // the full-content read that string replacement requires.
+      let st: fs.Stats;
+      try { st = fs.statSync(sp.abs!); } catch { return { ok: false, error: "unreadable target", out: "" }; }
+      if (!st.isFile()) return { ok: false, error: "not a regular file", out: "" };
+      const EDIT_CAP = 2_000_000;
+      if (st.size > EDIT_CAP) return { ok: false, error: `file too large to edit: ${st.size} bytes (cap ${EDIT_CAP}). Edit in targeted chunks via bash-approved tooling instead.`, out: "" };
       const oldText = fs.readFileSync(sp.abs!, "utf8");
       const newText = String(args.newText ?? "");
       audit({ tool, note: String(args.path ?? "") });
@@ -530,6 +596,17 @@ export async function runTool(
         plan.maxOutputBytes = det.maxOutputBytes ?? plan.maxOutputBytes;
         plan.artifactPath = artifact;
         audit({ tool, note: `detonate tier=${tier}` });
+        // P0 (external audit): the quarantine baseline MUST precede execution.
+        // The previous order captured it after runDetonate, so changes made
+        // during detonation were already inside the baseline and the diff
+        // could not see them. Also refuse honestly when no baseline can be
+        // established - detonating without the change detector is exactly the
+        // failure the lane exists to catch.
+        const baseline = quarantineBaseline(worktree);
+        if (!baseline.ok) {
+          audit({ tool, note: "detonate refused: no quarantine baseline" });
+          return { ok: false, error: "unable to establish the quarantine baseline (git status unavailable) - refusing to detonate without the change detector", out: "" };
+        }
         let r: Awaited<ReturnType<typeof runDetonate>>;
         try {
           r = await runDetonate(plan);
@@ -541,8 +618,6 @@ export async function runTool(
         if (r.missing) {
           return { ok: false, error: "the detonation lane needs sbx (microVM), which is not installed. Install sbx, or run with tier=review in the clean sandbox.", out: r.out };
         }
-        // Sweep-5: capture the pre-execution status - detonation verification compares after vs before, so pre-existing dirty files cannot fake a pass or a fail.
-        const baseline = quarantineBaseline(worktree);
         const q = quarantineDiff(worktree, baseline);
         const head = `detonation lane (${tier}) exit=${r.code}${r.killed ? " KILLED: timeout" : ""}` +
           (q.ok ? "" : ` | quarantine: host changed (${q.changed.slice(0, 3).join(", ")})`);
@@ -621,10 +696,57 @@ export async function runTool(
     }
     if (tool === "webfetch") {
       // Fetch a URL as text, capped. Untrusted content — the agent is told to treat it as data.
+      // SSRF guard (external audit): an auto-approved webfetch must not reach
+      // loopback, private ranges, link-local, or cloud-metadata endpoints -
+      // literal IPs and EVERY resolved address are validated, and every
+      // redirect hop is re-validated. The body is read with a byte cap.
       const url = String(args.url ?? "").trim();
-      if (!/^https?:\/\//i.test(url)) return { ok: false, error: "http(s) url required", out: "" };
-      const res = await fetch(url, { headers: { "user-agent": "EventHorizonCode/0.1 (local coding agent)" }, signal: AbortSignal.timeout(15000) });
-      const text = await res.text();
+      let target: URL;
+      try { target = await assertFetchableUrl(url); } catch (e) {
+        audit({ tool, note: `ssrf refused: ${String((e as Error).message ?? e).slice(0, 100)}` });
+        return { ok: false, error: String((e as Error).message ?? e), out: "" };
+      }
+      let text = "";
+      try {
+        let current = target;
+        for (let hop = 0; hop < 4; hop++) {
+          const res = await fetch(current, { redirect: "manual", headers: { "user-agent": "EventHorizonCode/0.1 (local coding agent)" }, signal: AbortSignal.timeout(15000) });
+          if (res.status >= 300 && res.status < 400) {
+            const loc = res.headers.get("location");
+            if (!loc) break;
+            const next = new URL(loc, current);
+            try { await assertFetchableUrl(next.toString()); } catch (e) {
+              audit({ tool, note: `redirect refused -> ${next.hostname}` });
+              return { ok: false, error: `refused: redirect target ${next.hostname} is not a public address`, out: "" };
+            }
+            current = next;
+            continue;
+          }
+          // Bounded body read: stop at the cap instead of downloading whole.
+          const cap = 2_000_000;
+          const reader = res.body?.getReader();
+          if (!reader) { text = await res.text(); break; }
+          const chunks: Uint8Array[] = [];
+          let total = 0;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            total += value.byteLength;
+            if (total > cap) { await reader.cancel(); break; }
+            chunks.push(value);
+          }
+          const joined = new Uint8Array(Math.min(total, cap));
+          let off = 0;
+          for (const c of chunks) {
+            if (off + c.byteLength > joined.length) { joined.set(c.subarray(0, joined.length - off), off); break; }
+            joined.set(c, off); off += c.byteLength;
+          }
+          text = new TextDecoder("utf-8", { fatal: false }).decode(joined) + (total > cap ? "\n[ehc] truncated: response exceeded the 2MB fetch cap" : "");
+          break;
+        }
+      } catch (e) {
+        return { ok: false, error: `fetch failed: ${String((e as Error).message ?? e).slice(0, 160)}`, out: "" };
+      }
       const stripped = text
         .replace(/<script[\s\S]*?<\/script>/gi, "")
         .replace(/<style[\s\S]*?<\/style>/gi, "")

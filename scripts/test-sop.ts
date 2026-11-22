@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 // sopsDir() reads EH_SOPS_DIR at call time, so setting it before any startRun
 // call is enough - no dynamic import needed.
-import { startRun, approveRun, cancelRun, getRun, listSops } from "../src/server/sop";
+import { startRun, approveRun, cancelRun, getRun, listSops, agentNodePrompt } from "../src/server/sop";
 import { execFileSync } from "node:child_process";
 
 process.env.EH_SOPS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-sops-"));
@@ -184,6 +184,21 @@ async function main(): Promise<void> {
   check("post-restart script executed", after?.history.some((h) => h.output.includes("after-restart-ok")) === true);
   if (prevDir) process.env.EH_SOPS_DIR = prevDir;
   fs.rmSync(hydrDir, { recursive: true, force: true });
+
+  // 13. agent-node prompt composition (external audit finding): prior-node
+  // outputs MUST ride into later agent nodes as labelled untrusted context.
+  // NOTE: uses the static sop import on purpose - a dynamic `await import`
+  // under tsx holds a loader resource that races process.exit on Windows
+  // (libuv uv_handle_closing fast-fail, found by bisect).
+  const prompt = agentNodePrompt(
+    { task: "Ship the fix", history: [{ node: "s1", label: "Inspect", type: "agent", status: "ok", output: "3 failing tests in src/auth.ts", ts: new Date().toISOString() }] },
+    "repair-flow",
+    { id: "s2", type: "agent", label: "Repair", prompt: "repair the failures" },
+  );
+  check("agent node prompt carries prior-node output", prompt.includes("3 failing tests in src/auth.ts"));
+  check("prior context labelled untrusted", prompt.includes("UNTRUSTED DATA"));
+  check("task injected into agent node prompt", prompt.includes("Ship the fix"));
+  check("node instruction present", prompt.includes("repair the failures"));
 
   console.log(failures === 0 ? "[ehc] sop workflow tests: ALL PASS" : `[ehc] sop workflow tests: ${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);

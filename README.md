@@ -34,7 +34,7 @@ The full hand-driven pipeline lives in [`docs/RELEASE.md`](docs/RELEASE.md): ver
 
 ## Requirements
 
-- **Node.js 20+** (Electron 42, npm packages)
+- **Node.js 22+** (Electron 42, npm packages)
 - **Windows 10/11, Linux, or macOS** (prebuilt `node-pty` and engine templates included; the inference engine binary is machine-specific - see [Engine](#engine-setup) below).
 - A model: either a **GGUF** for the bundled engine *(e.g. `huihui-qwen3-4b-abliterated-v2-q8_0.gguf`, `Qwen3-4B`, `DeepSeek-Coder`, `Llama-3-8B-Instruct`, `Gemma-3-12b`)* or **Ollama** or a **BYOK** OpenAI-compatible endpoint.
 - Optional: **Python 3.8+** (AfterImage engram, TI-85 verification), **Ollama**, **ripgrep / fd** (JS fallbacks are built in if absent).
@@ -59,7 +59,7 @@ Roadmap (post-alpha): Linux/macOS engine staging in the packer, an [Omarchy](htt
 git clone https://github.com/XxChonkExX/event-horizon-code.git
 cd event-horizon-code
 npm install
-I electron_dev=1 npm run dev    # Windows PowerShell: $env:EH_PASS="dev123"; npm run dev
+electron_dev=1 npm run dev    # Windows PowerShell: $env:EH_PASS="dev123"; npm run dev
 ```
 
 First run: Electron opens the workbench. Pick a model (see below), and say *"summarise what this repository is"* - the agent will inspect the workspace itself.

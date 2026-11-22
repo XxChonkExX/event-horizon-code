@@ -29,7 +29,7 @@ export function initStore(): { mode: "sqlite" | "memory" } {
     db.exec(
       "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT, worktree TEXT, created TEXT, lastActivity TEXT);" +
       "CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, sessionId TEXT, text TEXT, done INTEGER);" +
-      "CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sessionId TEXT, seq INTEGER, role TEXT, content TEXT, ts TEXT);" +
+      "CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, sessionId TEXT, seq INTEGER, role TEXT, content TEXT, ts TEXT, toolCalls TEXT, toolCallId TEXT, toolName TEXT);" +
       "CREATE TABLE IF NOT EXISTS instructions (sessionId TEXT, key TEXT, text TEXT, ts TEXT, PRIMARY KEY (sessionId, key));" +
       "CREATE TABLE IF NOT EXISTS usage (sessionId TEXT, model TEXT, tokens INTEGER, ts TEXT);" +
       "CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, name TEXT, settings TEXT, created TEXT);" +
@@ -39,6 +39,12 @@ export function initStore(): { mode: "sqlite" | "memory" } {
     );
     // Migration: older DBs predate the lastActivity column.
     try { db.exec("ALTER TABLE sessions ADD COLUMN lastActivity TEXT"); } catch { /* already present */ }
+    // Migration (external audit Finding A): older DBs predate the tool-call
+    // protocol columns. Content-only history replays as invalid OpenAI
+    // protocol (orphaned tool responses) on providers that validate it.
+    try { db.exec("ALTER TABLE messages ADD COLUMN toolCalls TEXT"); } catch { /* already present */ }
+    try { db.exec("ALTER TABLE messages ADD COLUMN toolCallId TEXT"); } catch { /* already present */ }
+    try { db.exec("ALTER TABLE messages ADD COLUMN toolName TEXT"); } catch { /* already present */ }
     return { mode: "sqlite" };
   } catch (e) {
     // P1 (sweep 3): a silent memory fallback makes storage failure LOOK like a
@@ -208,10 +214,20 @@ export function listSessionsWithMeta(): SessionMeta[] {
 }
 
 // ---- conversation history (multi-turn + compaction) ----
-// Content-only persistence: tool_calls are not stored; continuity of
-// user/assistant turns is what matters across turns.
+// Protocol-faithful persistence (external audit Finding A): tool_calls,
+// tool_call_id, and name are stored alongside role/content so a reloaded
+// conversation replays as valid OpenAI protocol - orphaned tool responses
+// without their assistant tool-call records get rejected by some providers.
 
-type StoredMessage = { role: string; content: string };
+export type StoredMessage = {
+  role: string;
+  content: string;
+  // JSON string of the assistant's tool_calls array (verbatim protocol form).
+  toolCalls?: string;
+  // Tool-result protocol metadata (role === "tool").
+  toolCallId?: string;
+  toolName?: string;
+};
 
 const memMessages = new Map<string, StoredMessage[]>();
 
@@ -221,9 +237,9 @@ export function saveMessages(sessionId: string, msgs: StoredMessage[]): void {
     // process (serve + packaged app share this file) cannot leave partial turns.
     db.transaction(() => {
       db.prepare("DELETE FROM messages WHERE sessionId=?").run(sessionId);
-      const ins = db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) VALUES (?,?,?,?,?,?)");
+      const ins = db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts,toolCalls,toolCallId,toolName) VALUES (?,?,?,?,?,?,?,?,?)");
       const now = new Date().toISOString();
-      msgs.forEach((m, i) => ins.run(`m_${sessionId}_${i}`, sessionId, i, m.role, m.content, now));
+      msgs.forEach((m, i) => ins.run(`m_${sessionId}_${i}`, sessionId, i, m.role, m.content, now, m.toolCalls ?? null, m.toolCallId ?? null, m.toolName ?? null));
     })(msgs);
   } else {
     memMessages.set(sessionId, msgs);
@@ -231,7 +247,7 @@ export function saveMessages(sessionId: string, msgs: StoredMessage[]): void {
 }
 
 export function loadMessages(sessionId: string): StoredMessage[] {
-  if (db) return db.prepare("SELECT role, content FROM messages WHERE sessionId=? ORDER BY seq").all(sessionId) as StoredMessage[];
+  if (db) return db.prepare("SELECT role, content, toolCalls, toolCallId, toolName FROM messages WHERE sessionId=? ORDER BY seq").all(sessionId) as StoredMessage[];
   return memMessages.get(sessionId) ?? [];
 }
 
@@ -397,11 +413,12 @@ export function forkSession(fromId: string, opts?: { title?: string; atSeq?: num
       const now = new Date().toISOString();
       // Fork message ids embed the NEW session id: two forks of the same
       // parent previously collided on 'fk_<seq>' (UNIQUE constraint on
-      // messages.id) and the second fork failed outright.
+      // messages.id) and the second fork failed outright. Tool-call protocol
+      // columns ride along so forks replay as valid conversations.
       if (at === undefined) {
-        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||?||'_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? ORDER BY seq").run(id, id, now, fromId);
+        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts,toolCalls,toolCallId,toolName) SELECT 'fk_'||?||'_'||seq, ?, seq, role, content, ?, toolCalls, toolCallId, toolName FROM messages WHERE sessionId=? ORDER BY seq").run(id, id, now, fromId);
       } else {
-        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts) SELECT 'fk_'||?||'_'||seq, ?, seq, role, content, ? FROM messages WHERE sessionId=? AND seq < ? ORDER BY seq").run(id, id, now, fromId, at);
+        db.prepare("INSERT INTO messages (id,sessionId,seq,role,content,ts,toolCalls,toolCallId,toolName) SELECT 'fk_'||?||'_'||seq, ?, seq, role, content, ?, toolCalls, toolCallId, toolName FROM messages WHERE sessionId=? AND seq < ? ORDER BY seq").run(id, id, now, fromId, at);
       }
       db.prepare("INSERT INTO instructions (sessionId,key,text,ts) SELECT ?, key, text, ? FROM instructions WHERE sessionId=?").run(id, now, fromId);
     })();

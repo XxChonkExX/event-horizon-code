@@ -24,7 +24,7 @@ import {
   listSessionsWithMeta, renameSession, deleteSession,
   listInstructions, putInstruction, removeInstruction,
   usageSummary, listProfiles, upsertProfile, getProfile, deleteProfile,
-  forkSession, addCheckpoint, listCheckpoints, messageCount, newSessionId,
+  forkSession, addCheckpoint, listCheckpoints, messageCount, newSessionId, listSessions,
 } from "./store";
 import os from "node:os";
 import { runTool, safePath, resolveBin, readDetonateConfig } from "./tools";
@@ -39,6 +39,7 @@ import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { listVoices, speak, ttsDoctor } from "./tts";
 import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } from "./agentrun";
+import { APP_VERSION } from "../shared/version";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -165,7 +166,7 @@ async function capabilitiesSnapshot(): Promise<unknown> {
     Promise.resolve(readAgentWatchConfig().enabled),
   ]);
   const payload = {
-    runtime: { version: "0.0.2", ready: true },
+    runtime: { version: APP_VERSION, ready: true },
     capabilities: {
       localInference: Boolean((engine as { healthy?: boolean }).healthy),
       ollama,
@@ -248,7 +249,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       if (!checkAuth(req, opts.password, url)) {
         return sendJson(res, 401, { healthy: false, reason: "unauthorized — Basic auth required (user: eventhorizon, password printed at boot or EH_PASS)" });
       }
-      return sendJson(res, 200, { healthy: true, version: "0.0.2" });
+      return sendJson(res, 200, { healthy: true, version: APP_VERSION });
     }
 
     if (!checkAuth(req, opts.password, url)) return sendJson(res, 401, { error: "unauthorized" });
@@ -798,9 +799,16 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             // assigned workspace", never silently the server's cwd.
             const sessionId = params.sessionId ?? "default";
             const existingWorktree = sessionWorktrees.get(sessionId);
+            // Worktree recovery (external audit): after a restart the
+            // in-memory assignment map is empty - fall back to the session's
+            // PERSISTED worktree before dropping to the server's cwd, or a
+            // resumed session silently lands in the wrong workspace.
             const workdir = params.worktree
               ? resolveWorktree(params.worktree)
-              : existingWorktree ?? resolveWorktree(undefined);
+              : existingWorktree ?? (() => {
+                  const persisted = listSessions().find((s) => s.id === sessionId)?.worktree;
+                  return resolveWorktree(persisted || undefined);
+                })();
             sessionWorktrees.set(sessionId, workdir);
             const turn = await runAgentTurn({
               sessionId,
@@ -861,9 +869,15 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             // ACP client (or a new window) picks up exactly where it left off.
             const params = (body.params ?? {}) as { sessionId?: string };
             const sid = params.sessionId ?? "default";
+            // Worktree recovery (external audit): restore the persisted
+            // assignment into the process map, so a resumed session prompts
+            // against its own workspace instead of the server's cwd.
+            const persistedWt = listSessions().find((s) => s.id === sid)?.worktree;
+            if (persistedWt) sessionWorktrees.set(sid, resolveWorktree(persistedWt));
             audit({ tool: "acp.session.load", note: sid });
             sendJson(res, 200, {
               sessionId: sid,
+              worktree: sessionWorktrees.get(sid) ?? null,
               messages: loadMessages(sid),
               instructions: listInstructions(sid),
               todos: listTodos(sid),
