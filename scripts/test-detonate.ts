@@ -168,7 +168,7 @@ async function main(): Promise<void> {
     ].join("\n");
     const exec1 = await runTool("run_js", { code: marker, tier: "execute", timeoutMs: 20000 }, detWorktree, { userApproved: true, sessionId: "ses_det_e2e" });
     check("execute lane ok", exec1.ok === true, (exec1.error ?? exec1.out).slice(0, 200));
-    check("guest marker present", /GUEST-MARKER/.test(exec1.out));
+    check("guest marker present", /GUEST-MARKER/.test(exec1.out), exec1.out.split("\n\n").slice(-1)[0]?.slice(0, 240) ?? "");
     check("network namespace verified from guest", /netns=verified/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
     check("host drives hidden from guest", /hostfs=hidden from guest/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
     check("artifact delivered", /delivered=yes/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
