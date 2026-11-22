@@ -9,6 +9,7 @@
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export type DetonateTier = "review" | "execute" | "redteam";
@@ -490,57 +491,69 @@ export function buildBwrapArgs(opts: { artifactDir: string; artifactName: string
   ];
 }
 
-export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; artifactPath?: string }, opts: { runId: string; artifactDir: string }): Promise<NamespacedResult> {
-  const nodePath = await new Promise<string>((resolve) => {
-    const c = nodeSpawn("bash", ["-lc", "command -v node"], { stdio: ["ignore", "pipe", "ignore"] });
-    let o = "";
-    c.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
-    c.on("close", () => resolve(o.trim() || "/usr/bin/node"));
-    c.on("error", () => resolve("/usr/bin/node"));
-  });
-  const args = buildBwrapArgs({ artifactDir: opts.artifactDir, artifactName: "artifact.mjs", runId: opts.runId, nodePath });
-  const guestWork = "/det/" + opts.runId;
-  const result: NamespacedResult = {
-    code: null, out: "", killed: false, backend: "bwrap",
-    delivered: true, networkVerified: true, hostFsHidden: true, treeTerminated: false, guestLog: "",
-  };
-  let settled = false;
-  return new Promise<NamespacedResult>((resolve) => {
-    const child = nodeSpawn("bwrap", args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      try { child.kill("SIGKILL"); } catch { /* already gone */ }
-      result.code = null;
-      result.killed = true;
-      result.out = out.slice(0, plan.maxOutputBytes);
-      resolve(result);
-    }, plan.timeoutMs + 2000);
-    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-    child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
-    child.on("error", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      result.out = "bwrap could not start - is bubblewrap installed?";
-      resolve(result);
+export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; artifactPath?: string }, opts: { runId: string }): Promise<NamespacedResult> {
+  // Deliver a private copy under the canonical artifact.mjs name (mirrors
+  // the namespace pipeline's delivery step - the host temp dir must never be
+  // the thing that executes).
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-bwrap-"));
+  try {
+    if (!plan.artifactPath || !fs.existsSync(plan.artifactPath)) throw new Error("artifact missing");
+    fs.copyFileSync(plan.artifactPath, path.join(stage, "artifact.mjs"));
+    const nodePath = await new Promise<string>((resolve) => {
+      const c = nodeSpawn("bash", ["-lc", "command -v node"], { stdio: ["ignore", "pipe", "ignore"] });
+      let o = "";
+      c.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
+      c.on("close", () => resolve(o.trim() || "/usr/bin/node"));
+      c.on("error", () => resolve("/usr/bin/node"));
     });
-    child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      result.code = code;
-      result.out = out.slice(0, plan.maxOutputBytes);
-      // tree confirmation: bwrap --die-with-parent + --unshare-all (pid ns) reap
-      // the whole tree; confirm via pgrep on the unique guest work path.
-      nodeSpawn("pgrep", ["-f", guestWork], { stdio: ["ignore", "pipe", "ignore"] })        .on("close", (pcode) => {
+    const args = buildBwrapArgs({ artifactDir: stage, artifactName: "artifact.mjs", runId: opts.runId, nodePath });
+    const guestWork = "/det/" + opts.runId;
+    const result: NamespacedResult = {
+      code: null, out: "", killed: false, backend: "bwrap",
+      delivered: true, networkVerified: true, hostFsHidden: true, treeTerminated: false, guestLog: "",
+    };
+    let settled = false;
+    return new Promise<NamespacedResult>((resolve) => {
+      const child = nodeSpawn("bwrap", args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+      let out = "";
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { child.kill("SIGKILL"); } catch { /* already gone */ }
+        result.code = null;
+        result.killed = true;
+        result.out = out.slice(0, plan.maxOutputBytes);
+        resolve(result);
+      }, plan.timeoutMs + 2000);
+      child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+      child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+      child.on("error", () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        result.out = "bwrap could not start - is bubblewrap installed?";
+        resolve(result);
+      });
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        result.code = code;
+        result.out = out.slice(0, plan.maxOutputBytes);
+        // tree confirmation: bwrap --die-with-parent + --unshare-all (pid ns)
+        // reap the whole tree; confirm via pgrep on the unique guest work path.
+        const pg = nodeSpawn("pgrep", ["-f", guestWork], { stdio: ["ignore", "pipe", "ignore"] });
+        pg.on("close", (pcode) => {
           result.treeTerminated = pcode === 1; // pgrep exit 1 = no survivors
           resolve(result);
-        })
-        .on("error", () => { result.treeTerminated = true; resolve(result); });
-    });
-  });
+        });
+        pg.on("error", () => { result.treeTerminated = true; resolve(result); });
+      });
+    }).finally(() => { try { fs.rmSync(stage, { recursive: true, force: true }); } catch { /* best-effort */ } });
+  } catch (e) {
+    return { code: 1, out: `bwrap staging failed: ${String((e as Error).message ?? e).slice(0, 120)}`, killed: false,
+      backend: "bwrap", delivered: false, networkVerified: false, hostFsHidden: false, treeTerminated: false, guestLog: "" };
+  }
 }
 
 // ---- Seatbelt backend (macOS, best-effort) ----

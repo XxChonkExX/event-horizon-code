@@ -645,7 +645,7 @@ export async function runTool(
               treeTerminated: nsr.treeTerminated, backend: nsr.backend, guestLog: nsr.guestLog };
           } else if (backend === "bwrap") {
             enforcement = "bubblewrap: full filesystem isolation (artifact dir ro-bound), no network, pid namespace, die-with-parent";
-            const br = await runBwrapDetonate(plan, { runId, artifactDir: path.dirname(artifact) });
+            const br = await runBwrapDetonate(plan, { runId });
             r = { code: br.code, out: br.out, killed: br.killed, missing: br.missing,
               delivered: br.delivered, networkVerified: br.networkVerified, hostFsHidden: br.hostFsHidden,
               treeTerminated: br.treeTerminated, backend: br.backend };
