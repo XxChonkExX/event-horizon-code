@@ -513,6 +513,14 @@ export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; 
       delivered: true, networkVerified: true, hostFsHidden: true, treeTerminated: false, guestLog: "",
     };
     let settled = false;
+    // Tree confirmation runs on EVERY completion path (audit: verify, never
+    // assume) - including the timeout branch below.
+    const confirmTree = (): Promise<void> =>
+      new Promise((res) => {
+        const pg = nodeSpawn("pgrep", ["-f", guestWork], { stdio: ["ignore", "pipe", "ignore"] });
+        pg.on("close", (pcode) => { result.treeTerminated = pcode === 1; res(); }); // 1 = no survivors
+        pg.on("error", () => { result.treeTerminated = true; res(); });
+      });
     return new Promise<NamespacedResult>((resolve) => {
       const child = nodeSpawn("bwrap", args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
       let out = "";
@@ -523,7 +531,7 @@ export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; 
         result.code = null;
         result.killed = true;
         result.out = out.slice(0, plan.maxOutputBytes);
-        resolve(result);
+        setTimeout(() => { void confirmTree().then(() => resolve(result)); }, 400);
       }, plan.timeoutMs + 2000);
       child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
       child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
@@ -542,12 +550,7 @@ export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; 
         result.out = out.slice(0, plan.maxOutputBytes);
         // tree confirmation: bwrap --die-with-parent + --unshare-all (pid ns)
         // reap the whole tree; confirm via pgrep on the unique guest work path.
-        const pg = nodeSpawn("pgrep", ["-f", guestWork], { stdio: ["ignore", "pipe", "ignore"] });
-        pg.on("close", (pcode) => {
-          result.treeTerminated = pcode === 1; // pgrep exit 1 = no survivors
-          resolve(result);
-        });
-        pg.on("error", () => { result.treeTerminated = true; resolve(result); });
+        void confirmTree().then(() => resolve(result));
       });
     }).finally(() => { try { fs.rmSync(stage, { recursive: true, force: true }); } catch { /* best-effort */ } });
   } catch (e) {

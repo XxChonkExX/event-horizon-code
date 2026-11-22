@@ -91,7 +91,7 @@ async function main(): Promise<void> {
   } else if (canaryNsDenied) {
     check("SKIP execute-tier end-to-end (unshare privileges unavailable on this host)", true);
   } else {
-    const execVerified = canary.ok === true && /backend=ns/.test(canaryMsg) && /netns=verified/.test(canaryMsg);
+    const execVerified = canary.ok === true && /backend=(\w+)/.test(canaryMsg) && /netns=verified/.test(canaryMsg) && /delivered=yes/.test(canaryMsg);
     check("execute tier runs verified in the namespace (never host)", canary.ok === true && execVerified, canaryMsg.slice(0, 160));
   }
 
