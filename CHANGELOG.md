@@ -3,6 +3,13 @@
 All notable changes to Event Horizon Code. Newest first.
 Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
+## [0.0.3b] - 2026-11-22 - detonation sandbox hardening + cross-platform coverage
+
+- **Detonation lane: real OS-level isolation, one backend per platform.** Windows: WSL2 namespace runner (mount+pid+net namespaces, host drives detached, privilege drop). Linux (incl. Arch/Omarchy): bubblewrap - unprivileged, full filesystem isolation (only the delivered artifact dir and the runtime visible), no network. macOS: Seatbelt (network denied, writes confined - Apple deprecates sandbox-exec; best-effort, stated). Artifact delivered into a private guest copy on every backend; the host temp dir never executes. Process-tree termination confirmed by pgrep on every completion path, timeout included. Network isolation verified from inside the guest.
+- **Layered quarantine:** git baseline captured BEFORE execution + bounded fs-snapshot layer that catches git-invisible ignored-file changes; a quarantine failure fails the run.
+- **CI is now the permanent adversarial reviewer:** the end-to-end detonation suite runs real artifacts on Linux runners and skips with stated reasons where the stack is absent (guest node missing, unshare privileges unavailable). Live CI iterations found and fixed: hardcoded node path, unbound `/usr/local`, Windows backslashes in the Linux guest, missing private staging copy, timer-path tree confirmation.
+- Everything in [0.0.3a](#003a) carries forward.
+
 ## [0.0.3a] - 2026-11-21 - second public alpha (durable work + security consolidation)
 
 - Durable Agent Run (Phase 1-4): runs are first-class SQLite entities with a validated state machine and append-only timeline; restarts mark in-flight runs `interrupted`; `POST /api/runs/:id/resume` re-drives the loop with the objective + timeline digest; Runs panel in the workbench; SOP gates survive restarts.

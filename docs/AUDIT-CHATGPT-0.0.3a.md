@@ -1,5 +1,12 @@
 # External source audit (ChatGPT, 0.0.3a) — triage + remediation record
 
+> Status update (0.0.3b): all sandbox/gating items below are **fixed**; the
+> detonation lane gained real per-platform backends (WSL2 namespaces on
+> Windows, bubblewrap on Linux incl. Arch/Omarchy, Seatbelt on macOS) with
+> end-to-end CI verification (`detonate:test` runs real artifacts on Linux
+> runners). Remaining polish items: config split, SECURITY.md keychain claim,
+> TOCTOU note, module splitting. Release tags: 0.0.3a -> 0.0.3b.
+
 Source-level pre-release audit received 2026-11-22. Overall verdict 7.7/10
 pre-release; "make 0.0.3 the reliability and security consolidation milestone."
 Every finding below is actioned with a commit + regression test, or explicitly
