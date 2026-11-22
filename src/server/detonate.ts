@@ -481,10 +481,11 @@ export function buildBwrapArgs(opts: { artifactDir: string; artifactName: string
     "--ro-bind-try", "/lib", "/lib",
     "--ro-bind-try", "/lib64", "/lib64",
     "--ro-bind-try", "/bin", "/bin",
+    "--ro-bind-try", "/usr/local", "/usr/local",
     "--ro-bind", opts.artifactDir, guestWork,
     "--chdir", guestWork,
     "--",
-    opts.nodePath, path.join(guestWork, opts.artifactName),
+    opts.nodePath, `${guestWork}/${opts.artifactName}`,
   ];
 }
 
