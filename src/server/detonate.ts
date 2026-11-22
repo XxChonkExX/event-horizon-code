@@ -7,6 +7,7 @@
 // Aligns with BlackICE engram_vm: pyvm, rv32, ti85, mathcheck, dataflow — deterministic, no syscalls.
 
 import { execFile } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -200,9 +201,284 @@ export function quarantineDiff(hostWorktree: string, baseline: { files: Set<stri
   }
 }
 
+// ---- filesystem snapshot layer (external audit: git is blind to ignored
+// files and to anything outside the repo). Bounded walk + sha256 per file.
+// A detonation change in an IGNORED file is caught here even though
+// `git status` never reports it. Not a filesystem-integrity monitor for the
+// whole machine - the worktree is the guarded scope.
+export function fsSnapshot(worktree: string): { ok: boolean; entries: Map<string, string>; truncated: boolean } {
+  const entries = new Map<string, string>();
+  let truncated = false;
+  let count = 0;
+  let total = 0;
+  const SKIP = new Set([".git", "node_modules", ".eventhorizon", "dist", "out", "build"]);
+  const walk = (dir: string, rel: string): void => {
+    if (truncated) return;
+    let list: fs.Dirent[] = [];
+    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const d of list) {
+      if (truncated || count >= 5000) { truncated = count >= 5000; return; }
+      if (SKIP.has(d.name)) continue;
+      const abs = path.join(dir, d.name);
+      const relPath = rel ? `${rel}/${d.name}` : d.name;
+      if (d.isDirectory()) walk(abs, relPath);
+      else if (d.isFile()) {
+        try {
+          const st = fs.statSync(abs);
+          if (st.size > 8 * 1024 * 1024) { entries.set(relPath, "oversize"); count++; continue; }
+          const h = crypto.createHash("sha256").update(fs.readFileSync(abs)).digest("hex");
+          entries.set(relPath, h);
+          count++; total += st.size;
+          if (total > 256 * 1024 * 1024) { truncated = true; return; }
+        } catch { entries.set(relPath, "unreadable"); count++; }
+      }
+    }
+  };
+  walk(worktree, "");
+  return { ok: !truncated, entries, truncated };
+}
+
+export function fsDiff(worktree: string, snap: { entries: Map<string, string> }): { ok: boolean; changed: string[] } {
+  const now = fsSnapshot(worktree);
+  const changed: string[] = [];
+  for (const [f, h] of snap.entries) {
+    const cur = now.entries.get(f);
+    if (cur === undefined) changed.push(`${f} (deleted)`);
+    else if (cur !== h) changed.push(`${f} (modified)`);
+  }
+  for (const [f] of now.entries) if (!snap.entries.has(f)) changed.push(`${f} (created)`);
+  return { ok: changed.length === 0, changed: changed.slice(0, 10) };
+}
+
 export function worktreeConfigHasDetonate(worktree: string): boolean {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(worktree, ".eventhorizon", "worktree.json"), "utf8")) as { mode?: string };
     return raw.mode === "detonate";
   } catch { return false; }
+}
+
+// ---- namespace runner (the REAL backend, verified end-to-end on WSL2) ----
+//
+// Mechanism (each verified empirically on this machine, Nov 21):
+//   1. DELIVERY: the artifact is copied INTO the guest (/tmp/ehc-detonate/<id>/)
+//      via the /mnt/c mount during a root delivery phase - the host worktree
+//      is never the thing that executes.
+//   2. EXECUTION: unshare --mount --pid --fork --mount-proc --net, then inside
+//      the namespace: make-rprivate (stops propagation), umount -l /mnt/c
+//      (host drives DETACHED - verified: ls /mnt/c empty), loopback-only
+//      network verified FROM THE GUEST (ip -o link -> 0 non-lo interfaces),
+//      privilege dropped to the operator's non-root WSL user (setpriv).
+//   3. TERMINATION: killing the PID-namespace init kills every descendant
+//      (kernel guarantee - nothing can escape a pidns from inside); a pkill
+//      sweep by the unique run id is followed by a pgrep CONFIRMATION, and
+//      the result carries treeTerminated.
+// On a native Linux host the same pipeline runs without the wsl.exe prefix
+// (host-FS hiding is then honest false - use the WSL backend for full
+// host-filesystem isolation). Everywhere else: stated refusal.
+
+import { spawn as nodeSpawn } from "node:child_process";
+
+export type NamespacedResult = {
+  code: number | null;
+  out: string;
+  killed: boolean;
+  missing?: boolean;         // guest runtime or backend absent
+  backend: "ns-wsl" | "ns-native";
+  delivered: boolean;
+  networkVerified: boolean;  // guest reported a loopback-only interface set
+  hostFsHidden: boolean;     // guest could not list host drive contents
+  treeTerminated: boolean;   // guest process tree confirmed gone post-run
+  guestLog: string;
+};
+
+export type NsOptions = { distro?: string; guestUser?: string; mode: "wsl" | "native" };
+
+function wslPathToLinux(p: string): Promise<string> {
+  return new Promise((resolve) => {
+    const args = ["--", "wslpath", "-u", p];
+    const c = nodeSpawn("wsl", args, { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    let o = "";
+    c.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
+    c.on("close", (code) => resolve(code === 0 ? o.trim() : ""));
+    c.on("error", () => resolve(""));
+  });
+}
+
+// stdin-scripted wsl execution: the script arrives on /bin/bash -s stdin, so
+// nothing survives (or dies to) Windows argv quoting.
+function runWslScript(distro: string | undefined, script: string, timeoutMs: number): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve) => {
+    const args = distro ? ["-d", distro, "-u", "root", "--", "/bin/bash", "-s"] : ["-u", "root", "--", "/bin/bash", "-s"];
+    const child = nodeSpawn("wsl", args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let settled = false;
+    const done = (code: number | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, out });
+    };
+    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      resolve({ code: null, out: out + "\n[ehc] wsl runner timed out" });
+    }, timeoutMs);
+    child.on("close", (code) => { clearTimeout(timer); done(code); });
+    child.on("error", () => { clearTimeout(timer); done(-1); });
+    child.stdin?.end(script);
+  });
+}
+
+function runLocalScript(script: string, timeoutMs: number): Promise<{ code: number | null; out: string }> {
+  return new Promise((resolve) => {
+    const child = nodeSpawn("/bin/bash", ["-s"], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let settled = false;
+    const done = (code: number | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, out });
+    };
+    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      resolve({ code: null, out: out + "\n[ehc] runner timed out" });
+    }, timeoutMs);
+    child.on("close", (code) => { clearTimeout(timer); done(code); });
+    child.on("error", () => { clearTimeout(timer); done(-1); });
+    child.stdin?.end(script);
+  });
+}
+
+// Build the guest pipeline. RUNID placeholder replaced per call. No single
+// quotes anywhere (the unshare -c argument is single-quoted).
+function guestPipeline(opts: { runId: string; artifactLinuxPath: string; guestUid: number; hideHostFs: boolean; artifactName: string }): string {
+  const dir = `/tmp/ehc-detonate/${opts.runId}`;
+  const lines = [
+    "set -e",
+    `mkdir -p ${dir}`,
+    `cp "${opts.artifactLinuxPath}" ${dir}/${opts.artifactName}`,
+    `chmod 644 ${dir}/${opts.artifactName}`,
+    "echo delivered=1",
+    `command -v /usr/bin/node >/dev/null 2>&1 || { echo "guest node missing - install: wsl -u root apt-get install -y nodejs"; exit 92; }`,
+    `unshare --mount --pid --fork --mount-proc --net /bin/sh -c '`,
+    ...(opts.hideHostFs ? [
+      "  mount --make-rprivate / 2>/dev/null || true",
+      "  umount -l /mnt/c 2>/dev/null || true",
+      "  echo mntc_files=$(ls /mnt/c 2>/dev/null | wc -l)",
+    ] : [
+      "  echo mntc_files=n/a",
+    ]),
+    "  echo netns_ifaces=$(ip -o link show 2>/dev/null | grep -vc \": lo\")",
+    "  echo uid_in_ns=$(id -u)",
+    `  cd ${dir}`,
+    `  exec setpriv --reuid=${opts.guestUid} --regid=${opts.guestUid} --init-groups env -i PATH=/usr/bin:/bin HOME=${dir} /usr/bin/node ${dir}/${opts.artifactName}`,
+    "'",
+  ];
+  return lines.join("\n");
+}
+
+// Sweep the guest process tree by unique run id, then CONFIRM termination
+// (external audit: kill must be followed by verification, not assumed).
+// pgrep exit 1 = no match = the tree is gone; any other failure = cannot
+// verify, which reports as NOT terminated (stated, never assumed).
+async function sweepAndConfirm(mode: "wsl" | "native", distro: string | undefined, runId: string): Promise<boolean> {
+  const guest = (args: string[]): Promise<{ code: number | null; out: string }> =>
+    mode === "wsl"
+      ? new Promise((resolve) => {
+          const c = nodeSpawn("wsl", [...(distro ? ["-d", distro] : []), "-u", "root", "--", ...args], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+          let o = "";
+          c.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
+          c.on("close", (code) => resolve({ code, out: o }));
+          c.on("error", () => resolve({ code: -1, out: "" }));
+        })
+      : new Promise((resolve) => {
+          const c = nodeSpawn(args[0], args.slice(1), { stdio: ["ignore", "pipe", "ignore"] });
+          let o = "";
+          c.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
+          c.on("close", (code) => resolve({ code, out: o }));
+          c.on("error", () => resolve({ code: -1, out: "" }));
+        });
+  await guest(["pkill", "-9", "-f", `ehc-detonate/${runId}`]); // exit 1 = nothing matched (already gone)
+  await new Promise((r) => setTimeout(r, 400));
+  const check = await guest(["pgrep", "-f", `ehc-detonate/${runId}`]);
+  if (check.code !== 0 && check.code !== 1) return false; // pgrep itself failed - cannot verify
+  return check.out.trim() === ""; // empty = no survivors = terminated
+}
+
+export async function runNamespacedDetonate(plan: DetonatePolicy & { args: string[]; artifactPath?: string }, opts: NsOptions): Promise<NamespacedResult> {
+  const runId = `det-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const artifactName = "artifact.mjs";
+  const result: NamespacedResult = {
+    code: null, out: "", killed: false, backend: opts.mode === "wsl" ? "ns-wsl" : "ns-native",
+    delivered: false, networkVerified: false, hostFsHidden: false, treeTerminated: false,
+    guestLog: "",
+  };
+  if (!plan.artifactPath) {
+    result.out = "no artifact on the plan - nothing to deliver";
+    return result;
+  }
+  const finishInner = (code: number | null, out: string, wasKilled: boolean): NamespacedResult => {
+    result.code = code;
+    result.out = out.slice(0, plan.maxOutputBytes);
+    result.killed = wasKilled;
+    return result;
+  };
+
+  // Phase 0: guest runtime + artifact linux path. Forward slashes are required:
+  // backslash paths get their separators eaten by the Linux shell that wsl.exe
+  // feeds, and wslpath then fails silently (found by the ns probe).
+  let artifactLinuxPath = "";
+  if (opts.mode === "wsl") {
+    artifactLinuxPath = await wslPathToLinux(plan.artifactPath.replace(/\\/g, "/"));
+    if (!artifactLinuxPath) {
+      result.out = "wslpath conversion failed - the artifact path could not be mapped into the distro";
+      return result;
+    }
+  } else {
+    artifactLinuxPath = plan.artifactPath;
+  }
+  let guestUid = 65534; // nobody
+  if (opts.mode === "wsl") {
+    guestUid = await new Promise<number>((resolve) => {
+      const c = nodeSpawn("wsl", [...(opts.distro ? ["-d", opts.distro] : []), "-u", "root", "--", "id", "-u", opts.guestUser ?? "nobody"], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      let o = "";
+      c.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
+      c.on("close", () => resolve(Number(o.trim()) || 65534));
+      c.on("error", () => resolve(65534));
+    });
+  }
+
+  // Phase 1+2: delivery + namespaced execution, scripted over stdin (no
+  // Windows argv quoting survives into Linux, so the script rides stdin).
+  const script = guestPipeline({ runId, artifactLinuxPath, guestUid, hideHostFs: opts.mode === "wsl", artifactName });
+  const run = opts.mode === "wsl"
+    ? await runWslScript(opts.distro, script, plan.timeoutMs + 2000)
+    : await runLocalScript(script, plan.timeoutMs + 2000);
+  const guestLog = run.out;
+  result.guestLog = guestLog;
+  result.delivered = /delivered=1/.test(guestLog);
+  const finishInner0 = finishInner;
+  void finishInner0;
+  if (run.code === 92 || /guest node missing/.test(guestLog)) {
+    const fin = finishInner(92, guestLog, false);
+    fin.missing = true;
+    fin.treeTerminated = true; // nothing ever ran
+    return fin;
+  }
+  // Sweep + CONFIRM the guest process tree is gone (audit: verify, don't assume).
+  result.treeTerminated = await sweepAndConfirm(opts.mode, opts.distro, runId);
+  const mntc = guestLog.match(/mntc_files=(\d+)/);
+  const netns = guestLog.match(/netns_ifaces=(\d+)/);
+  result.hostFsHidden = opts.mode === "wsl" ? Boolean(mntc && mntc[1] === "0") : false;
+  result.networkVerified = Boolean(netns && netns[1] === "0");
+  result.out = guestLog.slice(0, plan.maxOutputBytes);
+  result.code = run.code;
+  result.killed = run.code === null;
+  return result;
 }

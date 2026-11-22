@@ -31,7 +31,7 @@ import { listTodos, addTodo, toggleTodo, putInstruction } from "./store";
 import crypto from "node:crypto";
 import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
-import { buildDetonatePlan, runDetonate, quarantineBaseline, quarantineDiff, scanUncleanScript, type DetonateTier } from "./detonate";
+import { buildDetonatePlan, runDetonate, runNamespacedDetonate, quarantineBaseline, quarantineDiff, fsSnapshot, fsDiff, scanUncleanScript, type DetonateTier } from "./detonate";
 import { isMcpTool, callMcpTool } from "./mcp";
 import dnsPromises from "node:dns/promises";
 
@@ -99,15 +99,21 @@ function permissionFor(tool: ToolName): string {
   return "ask";
 }
 
-export function readDetonateConfig(): { enabled: boolean; timeoutMs?: number; maxOutputBytes?: number } {
+export function readDetonateConfig(): {
+  enabled: boolean; timeoutMs?: number; maxOutputBytes?: number;
+  backend?: "ns" | "sbx"; wslDistro?: string; wslGuestUser?: string;
+} {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as {
-      detonate?: { enabled?: boolean; policy?: { timeoutMs?: number; maxOutputBytes?: number } };
+      detonate?: { enabled?: boolean; backend?: string; wslDistro?: string; wslGuestUser?: string; policy?: { timeoutMs?: number; maxOutputBytes?: number } };
     };
     return {
       enabled: raw.detonate?.enabled === true,
       timeoutMs: raw.detonate?.policy?.timeoutMs,
       maxOutputBytes: raw.detonate?.policy?.maxOutputBytes,
+      backend: raw.detonate?.backend === "sbx" ? "sbx" : undefined,
+      wslDistro: raw.detonate?.wslDistro,
+      wslGuestUser: raw.detonate?.wslGuestUser,
     };
   } catch { return { enabled: false }; }
 }
@@ -595,6 +601,9 @@ export async function runTool(
         plan.timeoutMs = det.timeoutMs ?? plan.timeoutMs;
         plan.maxOutputBytes = det.maxOutputBytes ?? plan.maxOutputBytes;
         plan.artifactPath = artifact;
+        // Guest timeout override (tests + per-call): clamped 2s..120s.
+        const argTimeout = Number((args as { timeoutMs?: unknown }).timeoutMs);
+        if (Number.isFinite(argTimeout)) plan.timeoutMs = Math.max(2000, Math.min(120000, argTimeout));
         audit({ tool, note: `detonate tier=${tier}` });
         // P0 (external audit): the quarantine baseline MUST precede execution.
         // The previous order captured it after runDetonate, so changes made
@@ -607,26 +616,52 @@ export async function runTool(
           audit({ tool, note: "detonate refused: no quarantine baseline" });
           return { ok: false, error: "unable to establish the quarantine baseline (git status unavailable) - refusing to detonate without the change detector", out: "" };
         }
-        let r: Awaited<ReturnType<typeof runDetonate>>;
+        // Filesystem snapshot layer (external audit): git is blind to ignored
+        // files - the snapshot covers them. Captured BEFORE execution too.
+        const fsPre = fsSnapshot(worktree);
+        const backend = det.backend ?? (process.platform === "win32" ? "ns" : process.platform === "linux" ? "ns" : "sbx");
+        let r: Awaited<ReturnType<typeof runDetonate>> & Partial<Awaited<ReturnType<typeof runNamespacedDetonate>>>;
+        let ns = false;
         try {
-          r = await runDetonate(plan);
+          if (backend === "ns") {
+            ns = true;
+            const mode: "wsl" | "native" = process.platform === "win32" ? "wsl" : "native";
+            const nsr = await runNamespacedDetonate(plan, { distro: det.wslDistro, guestUser: det.wslGuestUser, mode });
+            r = { code: nsr.code, out: nsr.out, killed: nsr.killed, missing: nsr.missing,
+              delivered: nsr.delivered, networkVerified: nsr.networkVerified, hostFsHidden: nsr.hostFsHidden,
+              treeTerminated: nsr.treeTerminated, backend: nsr.backend };
+          } else {
+            r = await runDetonate(plan);
+          }
         } finally {
           // Sweep-3 #19: artifact cleanup is unconditional - a runner throw
           // must not leave temporary scripts in the host temp directory.
           try { fs.rmSync(artifact, { force: true }); } catch { /* best effort */ }
         }
         if (r.missing) {
-          return { ok: false, error: "the detonation lane needs sbx (microVM), which is not installed. Install sbx, or run with tier=review in the clean sandbox.", out: r.out };
+          return { ok: false, error: r.out || "the detonation backend runtime is missing - see the runner message for the exact install step", out: "" };
         }
         const q = quarantineDiff(worktree, baseline);
-        const head = `detonation lane (${tier}) exit=${r.code}${r.killed ? " KILLED: timeout" : ""}` +
-          (q.ok ? "" : ` | quarantine: host changed (${q.changed.slice(0, 3).join(", ")})`);
-        // Sweep-3 #27: quarantine failure IS a failure - a "successful" run
-        // that changed the host is exactly what the lane exists to catch.
+        const fsq = fsDiff(worktree, fsPre);
+        const delivery = (r as { delivered?: boolean }).delivered;
+        const netv = (r as { networkVerified?: boolean }).networkVerified;
+        const fsHidden = (r as { hostFsHidden?: boolean }).hostFsHidden;
+        const tree = (r as { treeTerminated?: boolean }).treeTerminated;
+        const backendTag = (r as { backend?: string }).backend ?? backend;
+        const verify = `backend=${backendTag} delivered=${delivery ? "yes" : "NO"} netns=${netv ? "verified loopback-only" : "UNVERIFIED"} hostfs=${ns ? (fsHidden ? "hidden from guest" : "visible (native ns - stated)") : "n/a (sbx)"} tree=${tree ? "terminated" : "UNCONFIRMED"}`;
+        const head = `detonation lane (${tier}) exit=${r.code}${r.killed ? " KILLED: timeout" : ""} | ${verify}` +
+          (q.ok ? "" : ` | git quarantine: host changed (${q.changed.slice(0, 3).join(", ")})`) +
+          (fsq.ok ? "" : ` | fs snapshot: host changed (${fsq.changed.slice(0, 3).join(", ")})`);
+        // Sweep-3 #27 + external audit: quarantine failure IS a failure, and a
+        // run whose network isolation or delivery could not be VERIFIED is not
+        // a pass either - verified execution is the product here.
+        const verifiedOk = delivery !== false && netv === true && fsHidden === true && tree === true;
+        const ok = !r.killed && r.code === 0 && q.ok && fsq.ok && (ns ? verifiedOk : true);
+        audit({ tool, note: `detonate verify: ${verify}` });
         return {
-          ok: !r.killed && r.code === 0 && q.ok,
+          ok,
           out: `${head}\n\n${r.out}`,
-          error: r.killed ? "detonation timed out" : r.code !== 0 ? `exit code ${r.code}` : !q.ok ? "quarantine verification failed - the host workspace changed during detonation" : undefined,
+          error: r.killed ? "detonation timed out" : r.code !== 0 ? `exit code ${r.code}` : !q.ok ? "git quarantine failed - the host workspace changed during detonation" : !fsq.ok ? "fs snapshot failed - host files changed outside git's view during detonation" : ns && !verifiedOk ? `isolation unverified: ${verify}` : undefined,
         };
       }
 

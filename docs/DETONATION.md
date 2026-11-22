@@ -52,10 +52,14 @@ A policy that REFUSES dangerous operations is not the same as a sandbox that PRE
 | Claim | Status |
 |---|---|
 | run_js review tier | **Declarative read-only batch** (1-16 read/ls/grep/glob ops, 100 KB result cap). No model-written JavaScript executes in-process - the previous node:vm + host-stub design was removed after the sweep-3 finding. |
-| Detonation artifact delivery | **Implemented but NOT adversarially verified**: the artifact path is now first-class on the plan and cleanup is unconditional, but sbx is not installed on the dev machine, so delivery into the VM has never been demonstrated. Requires an integration test proving a known artifact reaches the guest and returns expected output. |
-| Git quarantine | Post-run status check only (pre-execution baseline snapshot not yet implemented); a quarantine failure now marks the run FAILED. |
-| Network off | Passed to sbx as a flag; enforcement depends on the installed sbx version - unverified. |
-| Credential exclusion | Plan policy field exists; not yet passed through to the runner. |
-| Kill on timeout | Two overlapping timeout mechanisms (detonate policy + exec timeout); needs integration verification. |
+| Detonation artifact delivery | **Implemented AND verified end-to-end (Nov 21)**: the artifact is copied into the guest (`/tmp/ehc-detonate/<runid>/`) during a root delivery phase, then the mount namespace detaches `/mnt/c` before the artifact runs - guest code cannot reach host drives. Verified: guest sees 0 files under `/mnt/c`. |
+| Isolation mechanism | **WSL2 namespace runner** (`ns` backend, default on Windows/Linux): `unshare --mount --pid --fork --mount-proc --net` - mount, PID, and network namespaces plus privilege drop to the operator's non-root WSL user. Each mechanic verified from inside the guest: 0 non-loopback interfaces, host drives detached, uid drop confirmed. |
+| Git quarantine | Baseline captured **BEFORE** execution (external-audit P0 fix, regression-tested: baseline-before-change detects, post-change baseline demonstrated blind). Quarantine failure marks the run FAILED. **Known limit (documented + asserted):** `git status` is blind to ignored files - covered by the fs-snapshot layer below. |
+| Fs-snapshot quarantine | Bounded sha256 walk of the worktree (skips .git/node_modules; caps 5000 files / 8MB per file / 256MB total) before + after. Catches ignored-file changes git cannot see. |
+| Network off | **Verified from inside the guest**: the net namespace contains only loopback (`netns_ifaces=0`); the run result carries `netns=verified loopback-only`. |
+| Credential exclusion | The guest receives a minimal constructed env (`PATH`, `HOME` in the run dir) - host environment is not inherited. Host drives are detached, so host credential files are unreachable from guest code. |
+| Kill on timeout | Runner timeout + sweep by unique run id + **pgrep confirmation** (`tree=terminated` in the result; pid-namespace semantics kill every descendant - nothing escapes the pidns). |
 
-Until the sbx-dependent rows are adversarially verified, treat the detonation lane as **policy refusal plus best-effort isolation**, not a demonstrated OS-level sandbox.
+Verified end-to-end on Windows + WSL2 (Ubuntu-26.04, node 22 in the guest): artifact executed in the guest, network isolated, host FS hidden, tree terminated, quarantine layers clean - `npm run detonate:test` §6 + §11.
+
+Until a deployment exercises these on its own hardware, treat the lane as verified-on-this-machine: the mechanics are OS-level (namespaces are kernel guarantees), but re-run `detonate:test` on any new host to re-prove the stack.
