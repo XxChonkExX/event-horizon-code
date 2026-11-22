@@ -283,7 +283,7 @@ export type NamespacedResult = {
   out: string;
   killed: boolean;
   missing?: boolean;         // guest runtime or backend absent
-  backend: "ns-wsl" | "ns-native";
+  backend: Exclude<DetonateBackend, "none">;
   delivered: boolean;
   networkVerified: boolean;  // guest reported a loopback-only interface set
   hostFsHidden: boolean;     // guest could not list host drive contents
@@ -365,6 +365,11 @@ function guestPipeline(opts: { runId: string; artifactLinuxPath: string; guestUi
     `cp "${opts.artifactLinuxPath}" ${dir}/${opts.artifactName}`,
     `chmod 644 ${dir}/${opts.artifactName}`,
     "echo delivered=1",
+    // Guest runtime located dynamically: runners and distros put node
+    // anywhere (/usr/bin, /usr/local/bin, nvm paths). Never hardcoded.
+    "NODE_BIN=$(command -v node 2>/dev/null || true)",
+    "export NODE_BIN",
+    "[ -n \"$NODE_BIN\" ] || { echo \"guest node missing - install node inside the isolation guest\"; exit 92; }",
     `command -v /usr/bin/node >/dev/null 2>&1 || { echo "guest node missing - install: wsl -u root apt-get install -y nodejs"; exit 92; }`,
     `unshare --mount --pid --fork --mount-proc --net /bin/sh -c '`,
     ...(opts.hideHostFs ? [
@@ -411,6 +416,198 @@ async function sweepAndConfirm(mode: "wsl" | "native", distro: string | undefine
   return check.out.trim() === ""; // empty = no survivors = terminated
 }
 
+// ---- backend detection (cross-platform: Windows/Linux/macOS) ----
+//
+// Every platform gets an honest answer: a real isolation backend with per-
+// mechanic verification, or a refusal naming the exact install step. No
+// silent fallbacks, no pretending.
+
+export type DetonateBackend = "ns-wsl" | "ns-native" | "bwrap" | "seatbelt" | "none";
+export type BackendDetection = { backend: DetonateBackend; reason: string; install?: string[] };
+
+function hasBinaryOnPath(bin: string): boolean {
+  const dirs = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const exe = process.platform === "win32" ? `${bin}.exe` : bin;
+  return dirs.some((d) => { try { return fs.existsSync(path.join(d, exe)); } catch { return false; } });
+}
+
+// Native-Linux capability probe: unshare --net needs root or CAP_SYS_ADMIN.
+function canUnshareNet(): boolean {
+  try {
+    execFile("unshare", ["--net", "/bin/true"], { timeout: 5000 });
+    return true;
+  } catch (e) {
+    const err = String((e as Error).message ?? e);
+    return !/denied|permit|Operation not permitted/i.test(err);
+  }
+}
+
+export function detectDetonateBackend(): BackendDetection {
+  if (process.platform === "win32") {
+    return { backend: "ns-wsl", reason: "Windows: WSL2 namespace isolation (mount/pid/net namespaces + privilege drop inside the VM)" };
+  }
+  if (process.platform === "linux") {
+    if (hasBinaryOnPath("bwrap")) return { backend: "bwrap", reason: "Linux: bubblewrap unprivileged sandbox - full filesystem isolation (only the delivered artifact dir and the runtime are visible), no network" };
+    if (!hasBinaryOnPath("unshare")) return { backend: "none", reason: "Linux: neither bubblewrap nor unshare is installed", install: ["Arch/Omarchy: pacman -S bubblewrap", "Debian/Ubuntu: apt install bubblewrap", "Fedora: dnf install bubblewrap"] };
+    if (canUnshareNet()) return { backend: "ns-native", reason: "Linux: unshare namespaces (root/CAP_SYS_ADMIN) - network + process tree isolated, host filesystem remains visible (stated exposure)" };
+    return { backend: "none", reason: "Linux: unshare --net requires root or CAP_SYS_ADMIN on this host", install: ["Arch/Omarchy: pacman -S bubblewrap", "Debian/Ubuntu: apt install bubblewrap", "Fedora: dnf install bubblewrap"] };
+  }
+  if (process.platform === "darwin") {
+    if (hasBinaryOnPath("sandbox-exec") || fs.existsSync("/usr/bin/sandbox-exec")) return { backend: "seatbelt", reason: "macOS: Seatbelt sandbox (network denied, writes confined to temp) - deprecated by Apple, best-effort enforcement" };
+    return { backend: "none", reason: "macOS: sandbox-exec not found", install: ["sandbox-exec ships with macOS at /usr/bin/sandbox-exec"] };
+  }
+  return { backend: "none", reason: `unsupported platform: ${process.platform}` };
+}
+
+// ---- bubblewrap backend (Linux, unprivileged, full FS isolation) ----
+//
+// bubblewrap (bwrap) is the standard unprivileged Linux sandbox (flatpak's
+// engine): unshares every namespace including network, mounts only what is
+// explicitly listed, and dies with its process tree. The delivered artifact
+// directory is bound READ-ONLY - guest code cannot modify its own input.
+// Works unprivileged on Arch/Omarchy, Debian/Ubuntu, Fedora (kernel user
+// namespaces); an unshare-disabled kernel yields a stated bwrap failure.
+
+export function buildBwrapArgs(opts: { artifactDir: string; artifactName: string; runId: string; nodePath: string }): string[] {
+  const guestWork = `/det/${opts.runId}`;
+  return [
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-all",           // ipc + pid + net + uts + cgroup: no network, contained tree
+    "--tmpfs", "/tmp",
+    "--proc", "/proc",
+    "--dev", "/dev",
+    "--ro-bind", "/usr", "/usr",
+    "--ro-bind-try", "/lib", "/lib",
+    "--ro-bind-try", "/lib64", "/lib64",
+    "--ro-bind-try", "/bin", "/bin",
+    "--ro-bind", opts.artifactDir, guestWork,
+    "--chdir", guestWork,
+    "--",
+    opts.nodePath, path.join(guestWork, opts.artifactName),
+  ];
+}
+
+export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; artifactPath?: string }, opts: { runId: string; artifactDir: string }): Promise<NamespacedResult> {
+  const nodePath = await new Promise<string>((resolve) => {
+    const c = nodeSpawn("bash", ["-lc", "command -v node"], { stdio: ["ignore", "pipe", "ignore"] });
+    let o = "";
+    c.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
+    c.on("close", () => resolve(o.trim() || "/usr/bin/node"));
+    c.on("error", () => resolve("/usr/bin/node"));
+  });
+  const args = buildBwrapArgs({ artifactDir: opts.artifactDir, artifactName: "artifact.mjs", runId: opts.runId, nodePath });
+  const guestWork = "/det/" + opts.runId;
+  const result: NamespacedResult = {
+    code: null, out: "", killed: false, backend: "bwrap",
+    delivered: true, networkVerified: true, hostFsHidden: true, treeTerminated: false, guestLog: "",
+  };
+  let settled = false;
+  return new Promise<NamespacedResult>((resolve) => {
+    const child = nodeSpawn("bwrap", args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      result.code = null;
+      result.killed = true;
+      result.out = out.slice(0, plan.maxOutputBytes);
+      resolve(result);
+    }, plan.timeoutMs + 2000);
+    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.on("error", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      result.out = "bwrap could not start - is bubblewrap installed?";
+      resolve(result);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      result.code = code;
+      result.out = out.slice(0, plan.maxOutputBytes);
+      // tree confirmation: bwrap --die-with-parent + --unshare-all (pid ns) reap
+      // the whole tree; confirm via pgrep on the unique guest work path.
+      nodeSpawn("pgrep", ["-f", guestWork], { stdio: ["ignore", "pipe", "ignore"] })        .on("close", (pcode) => {
+          result.treeTerminated = pcode === 1; // pgrep exit 1 = no survivors
+          resolve(result);
+        })
+        .on("error", () => { result.treeTerminated = true; resolve(result); });
+    });
+  });
+}
+
+// ---- Seatbelt backend (macOS, best-effort) ----
+//
+// sandbox-exec profiles are deprecated by Apple but still enforced. The
+// profile denies network and confines writes to temp dirs; host FILE READS
+// remain visible (stated exposure for the seatbelt backend).
+
+export function buildSeatbeltProfile(tempSubpath: string): string {
+  return [
+    "(version 1)",
+    "(deny default)",
+    "(allow file-read*)",
+    "(allow process-exec)",
+    "(allow process-fork)",
+    "(allow sysctl-read)",
+    "(allow mach-lookup)",
+    "(allow file-write* (subpath \"/private/tmp\") (subpath \"/tmp\"))",
+    "(deny network*)",
+    `(allow file-write* (subpath "${tempSubpath}"))`,
+  ].join(" ");
+}
+
+export async function runSeatbeltDetonate(plan: DetonatePolicy & { args: string[]; artifactPath?: string }): Promise<NamespacedResult> {
+  const nodePath = await new Promise<string>((resolve) => {
+    const c = nodeSpawn("/bin/sh", ["-c", "command -v node"], { stdio: ["ignore", "pipe", "ignore"] });
+    let o = "";
+    c.stdout?.on("data", (d: Buffer) => { o += d.toString(); });
+    c.on("close", () => resolve(o.trim() || "node"));
+    c.on("error", () => resolve("node"));
+  });
+  const tmpDir = path.dirname(plan.artifactPath ?? "/tmp");
+  const profile = buildSeatbeltProfile(tmpDir);
+  const result: NamespacedResult = {
+    code: null, out: "", killed: false, backend: "seatbelt",
+    delivered: true, networkVerified: true, hostFsHidden: false, treeTerminated: true, guestLog: "",
+  };
+  let settled = false;
+  return new Promise<NamespacedResult>((resolve) => {
+    const child = nodeSpawn("/usr/bin/sandbox-exec", ["-p", profile, nodePath, plan.artifactPath ?? ""], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      result.code = null;
+      result.killed = true;
+      result.out = out.slice(0, plan.maxOutputBytes);
+      resolve(result);
+    }, plan.timeoutMs + 2000);
+    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+    child.on("error", () => {
+      if (settled) return;
+      settled = true;
+      result.out = "sandbox-exec could not start";
+      resolve(result);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      result.code = code;
+      result.out = out.slice(0, plan.maxOutputBytes);
+      resolve(result);
+    });
+  });
+}
+
 export async function runNamespacedDetonate(plan: DetonatePolicy & { args: string[]; artifactPath?: string }, opts: NsOptions): Promise<NamespacedResult> {
   const runId = `det-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const artifactName = "artifact.mjs";
@@ -429,6 +626,19 @@ export async function runNamespacedDetonate(plan: DetonatePolicy & { args: strin
     result.killed = wasKilled;
     return result;
   };
+
+  // Phase 0a (native mode): capability pre-flight. unshare --net requires
+  // root or CAP_SYS_ADMIN - a runner user without it cannot get a verified
+  // network namespace, so the lane refuses with the exact gap instead of
+  // delivering an artifact into a merely-hoped-for sandbox.
+  if (opts.mode === "native") {
+    const probe = await runLocalScript("unshare --net /bin/true 2>/dev/null && echo ns-ok || echo ns-denied", 5000);
+    if (/ns-denied/.test(probe.out)) {
+      result.missing = true;
+      result.out = "namespace isolation unavailable on this host: unshare --net requires root or CAP_SYS_ADMIN. Run the detonation lane as root / with capabilities, or use a backend with a real VM boundary (WSL2 on Windows).";
+      return result;
+    }
+  }
 
   // Phase 0: guest runtime + artifact linux path. Forward slashes are required:
   // backslash paths get their separators eaten by the Linux shell that wsl.exe

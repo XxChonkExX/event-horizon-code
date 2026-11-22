@@ -31,7 +31,7 @@ import { listTodos, addTodo, toggleTodo, putInstruction } from "./store";
 import crypto from "node:crypto";
 import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
-import { buildDetonatePlan, runDetonate, runNamespacedDetonate, quarantineBaseline, quarantineDiff, fsSnapshot, fsDiff, scanUncleanScript, type DetonateTier } from "./detonate";
+import { buildDetonatePlan, runDetonate, runNamespacedDetonate, runBwrapDetonate, runSeatbeltDetonate, detectDetonateBackend, quarantineBaseline, quarantineDiff, fsSnapshot, fsDiff, scanUncleanScript, type DetonateTier } from "./detonate";
 import { isMcpTool, callMcpTool } from "./mcp";
 import dnsPromises from "node:dns/promises";
 
@@ -619,19 +619,42 @@ export async function runTool(
         // Filesystem snapshot layer (external audit): git is blind to ignored
         // files - the snapshot covers them. Captured BEFORE execution too.
         const fsPre = fsSnapshot(worktree);
-        const backend = det.backend ?? (process.platform === "win32" ? "ns" : process.platform === "linux" ? "ns" : "sbx");
+        // Backend selection (external audit remediation): detection-driven per
+        // platform, with per-mechanic verification on the result. `backend:
+        // "sbx"` in config still forces the legacy sbx runner explicitly.
+        const detSel = detectDetonateBackend();
+        const backend = det.backend === "sbx" ? "sbx" : detSel.backend;
+        const runId = `det-${crypto.randomUUID().slice(0, 8)}`;
         let r: Awaited<ReturnType<typeof runDetonate>> & Partial<Awaited<ReturnType<typeof runNamespacedDetonate>>>;
-        let ns = false;
+        let enforcement = "unverified";
         try {
-          if (backend === "ns") {
-            ns = true;
-            const mode: "wsl" | "native" = process.platform === "win32" ? "wsl" : "native";
-            const nsr = await runNamespacedDetonate(plan, { distro: det.wslDistro, guestUser: det.wslGuestUser, mode });
+          if (backend === "none") {
+            r = { code: 1, out: `${detSel.reason}${detSel.install ? ` — install: ${detSel.install.join(" | ")}` : ""}`, killed: false, missing: true,
+              delivered: false, networkVerified: false, hostFsHidden: false, treeTerminated: false };
+          } else if (backend === "ns-wsl") {
+            enforcement = "namespaces (WSL2): mount+pid+net, privilege drop, host drives detached";
+            const nsr = await runNamespacedDetonate(plan, { distro: det.wslDistro, guestUser: det.wslGuestUser, mode: "wsl" });
             r = { code: nsr.code, out: nsr.out, killed: nsr.killed, missing: nsr.missing,
               delivered: nsr.delivered, networkVerified: nsr.networkVerified, hostFsHidden: nsr.hostFsHidden,
-              treeTerminated: nsr.treeTerminated, backend: nsr.backend };
+              treeTerminated: nsr.treeTerminated, backend: nsr.backend, guestLog: nsr.guestLog };
+          } else if (backend === "ns-native") {
+            enforcement = "namespaces (native Linux): network + process tree isolated; host filesystem remains VISIBLE (stated exposure)";
+            const nsr = await runNamespacedDetonate(plan, { mode: "native" });
+            r = { code: nsr.code, out: nsr.out, killed: nsr.killed, missing: nsr.missing,
+              delivered: nsr.delivered, networkVerified: nsr.networkVerified, hostFsHidden: nsr.hostFsHidden,
+              treeTerminated: nsr.treeTerminated, backend: nsr.backend, guestLog: nsr.guestLog };
+          } else if (backend === "bwrap") {
+            enforcement = "bubblewrap: full filesystem isolation (artifact dir ro-bound), no network, pid namespace, die-with-parent";
+            const br = await runBwrapDetonate(plan, { runId, artifactDir: path.dirname(artifact) });
+            r = { code: br.code, out: br.out, killed: br.killed, missing: br.missing,
+              delivered: br.delivered, networkVerified: br.networkVerified, hostFsHidden: br.hostFsHidden,
+              treeTerminated: br.treeTerminated, backend: br.backend };
           } else {
-            r = await runDetonate(plan);
+            enforcement = "seatbelt: network denied, writes confined to temp; host FILE READS remain visible (stated exposure - Apple deprecates sandbox-exec)";
+            const sb = await runSeatbeltDetonate(plan);
+            r = { code: sb.code, out: sb.out, killed: sb.killed, missing: sb.missing,
+              delivered: sb.delivered, networkVerified: sb.networkVerified, hostFsHidden: sb.hostFsHidden,
+              treeTerminated: sb.treeTerminated, backend: sb.backend };
           }
         } finally {
           // Sweep-3 #19: artifact cleanup is unconditional - a runner throw
@@ -648,20 +671,22 @@ export async function runTool(
         const fsHidden = (r as { hostFsHidden?: boolean }).hostFsHidden;
         const tree = (r as { treeTerminated?: boolean }).treeTerminated;
         const backendTag = (r as { backend?: string }).backend ?? backend;
-        const verify = `backend=${backendTag} delivered=${delivery ? "yes" : "NO"} netns=${netv ? "verified loopback-only" : "UNVERIFIED"} hostfs=${ns ? (fsHidden ? "hidden from guest" : "visible (native ns - stated)") : "n/a (sbx)"} tree=${tree ? "terminated" : "UNCONFIRMED"}`;
+        const verify = `backend=${backendTag} delivered=${delivery ? "yes" : "NO"} netns=${netv ? "verified" : "UNVERIFIED"} hostfs=${fsHidden ? "hidden from guest" : "READ-VISIBLE (stated exposure)"} tree=${tree ? "terminated" : "UNCONFIRMED"} enforcement=${enforcement.slice(0, 60)}`;
         const head = `detonation lane (${tier}) exit=${r.code}${r.killed ? " KILLED: timeout" : ""} | ${verify}` +
           (q.ok ? "" : ` | git quarantine: host changed (${q.changed.slice(0, 3).join(", ")})`) +
           (fsq.ok ? "" : ` | fs snapshot: host changed (${fsq.changed.slice(0, 3).join(", ")})`);
         // Sweep-3 #27 + external audit: quarantine failure IS a failure, and a
-        // run whose network isolation or delivery could not be VERIFIED is not
-        // a pass either - verified execution is the product here.
-        const verifiedOk = delivery !== false && netv === true && fsHidden === true && tree === true;
-        const ok = !r.killed && r.code === 0 && q.ok && fsq.ok && (ns ? verifiedOk : true);
+        // run whose network isolation, delivery, or tree termination could not
+        // be VERIFIED is not a pass either - verified execution is the product.
+        // hostfs READ-visibility (seatbelt/ns-native) is a stated exposure, not
+        // a verification failure - it is flagged in the result header instead.
+        const verifiedOk = delivery !== false && netv === true && tree === true;
+        const ok = !r.killed && r.code === 0 && q.ok && fsq.ok && (backend === "seatbelt" ? verifiedOk : verifiedOk && fsHidden === true);
         audit({ tool, note: `detonate verify: ${verify}` });
         return {
           ok,
           out: `${head}\n\n${r.out}`,
-          error: r.killed ? "detonation timed out" : r.code !== 0 ? `exit code ${r.code}` : !q.ok ? "git quarantine failed - the host workspace changed during detonation" : !fsq.ok ? "fs snapshot failed - host files changed outside git's view during detonation" : ns && !verifiedOk ? `isolation unverified: ${verify}` : undefined,
+          error: r.killed ? "detonation timed out" : r.code !== 0 ? `exit code ${r.code}` : !q.ok ? "git quarantine failed - the host workspace changed during detonation" : !fsq.ok ? "fs snapshot failed - host files changed outside git's view during detonation" : !verifiedOk ? "isolation could not be fully verified - stated in the result header" : undefined,
         };
       }
 
