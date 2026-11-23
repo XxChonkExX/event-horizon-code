@@ -109,3 +109,36 @@ Windows session should: re-verify `pack` end-to-end now that extraResources
 gained templates/languages (should be additive), spot-check the #48859
 workaround is a no-op there (`isVisible` guard means Windows never logs the
 reveal line), and then run agent-run testing with the chonkllama engine.
+
+## Addendum — 2026-11-23 (0.0.3 sync + packaging + detonation)
+
+- **0.0.3 green on Linux**: 302 checks pass (suite grew: webfetch SSRF 24,
+  templates, durable runs). detonate:test executes REAL bwrap guest artifacts
+  on this box: artifact delivered, netns verified from guest, host drives
+  hidden, tree terminated, output budget + timeout kills, fs-snapshot honest.
+  The detonation lane is WIRED and VERIFIED here (bubblewrap 0.11.1 detected
+  automatically; unprivileged userns+netns available).
+- **Packaging**: AppImage (156 MB) + deb (122 MB) build and launch; icon ships
+  in the deb (hicolor 256) and .desktop entry auto-generated. rpm refused
+  plainly: needs `rpmbuild` on the build host (`sudo apt install rpm` if
+  wanted). electron-builder packs `out/` as-is — **always `npm run build`
+  before packing** (a stale out/ produced a 0.0.2-artifact labeled 0.0.3;
+  caught by the health endpoint version).
+- **`--appimage-extract-and-run` quirk on this box**: first run boots fully;
+  later runs crash-looped on `libffmpeg.so` in Chromium child processes
+  (AppImageKit env setup, not the artifact — the FUSE-mount path a normal
+  desktop uses is unaffected; verified by running the extracted squashfs-root
+  tree directly, which is what a FUSE mount presents).
+- **Single-instance lock behavior worth knowing**: a stuck instance holds
+  `~/.config/event-horizon-code`; later launches queue via
+  `requestSingleInstanceLock` and print nothing. On this box, stuck
+  Electron processes ignored SIGTERM (needed SIGKILL). Candidate for a
+  quit-time watchdog (process hygiene) — noted for a future pass.
+- **Omarchy plugin built out**: eventhorizon.sessions/{BarWidget.qml,
+  Panel.qml,poll.py,manifest.json} — real runtime polling (sessions, runs,
+  approvals, global pause) over loopback with Basic auth from
+  runtime.json; poller stdlib-only and unit-testable
+  (`python3 poll.py <runtime.json>`). QML styling awaits a real Omarchy
+  desktop; the API contract is verified against http.ts.
+- **Default workspace**: 0.0.3 creates `~/Documents/Event Horizon Code` as a
+  default workspace root on first GUI boot (new workspace-root behavior).

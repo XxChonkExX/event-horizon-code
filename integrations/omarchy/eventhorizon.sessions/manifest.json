@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "xchonkex.eventhorizon",
+  "name": "Event Horizon Sessions",
+  "version": "0.2.0",
+  "kinds": ["bar-widget", "panel"],
+  "entryPoints": { "barWidget": "BarWidget.qml", "panel": "Panel.qml" }
+}

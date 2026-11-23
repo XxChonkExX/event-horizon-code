@@ -1,82 +1,56 @@
 # Omarchy shell plugin for Event Horizon Code
 
-Desktop-shell integration (bar widget + session menu) driven by EHC's local
-runtime API. The plugin never talks to a model itself; it reads sessions,
-approvals and run state from the local runtime on 127.0.0.1.
-
-## Contract (as of runtime 0.1.0)
-
-| Endpoint | Use |
-|---|---|
-| `GET /api/sessions` | session list (titles, message counts) |
-| `GET /api/approvals` | pending human decisions (SOP gates / script pauses) |
-| `GET /api/capabilities` | what this install can actually do |
-| `GET /api/runtime/pause` · `POST /api/runtime/pause` | global agent pause/resume |
-
-Auth: HTTP Basic, user `eventhorizon`. The password is printed at app boot (or
-`EH_PASS`). The plugin reads it once from the user's `~/.eventhorizon/runtime.json`
-only if the file is readable; otherwise the widget shows "runtime not reachable"
-and leaves auth to the user.
-
-> This is a scaffold: layout and API calls are placeholders to be validated on
-> a real Omarchy/Quattro install before publishing to the plugin marketplace.
+Desktop-shell integration (bar widget + panel) driven by EHC's local runtime
+API. The plugin never talks to a model itself; it reads sessions, approvals,
+runs and the global pause state from the runtime on 127.0.0.1.
 
 ## Layout
 
 ```
 integrations/omarchy/eventhorizon.sessions/
-├── manifest.json     # plugin contract (id, kind, entry points)
-├── BarWidget.qml     # small bar indicator: running/paused agents
-├── Panel.qml         # session list + approvals + pause toggle
-└── README.md
+├── manifest.json     # plugin contract (id, kinds, entry points)
+├── BarWidget.qml     # bar indicator: running / paused agents, approval count
+├── Panel.qml         # session list + approvals + global pause toggle
+├── poll.py           # one-shot runtime poller (bar widget data source)
+└── README.md         # plugin notes
 ```
 
-## manifest.json
+## Contract (verified against http.ts, runtime 0.0.3)
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "xchonkex.eventhorizon",
-  "name": "Event Horizon Sessions",
-  "version": "0.1.0",
-  "kinds": ["bar-widget"],
-  "entryPoints": { "barWidget": "BarWidget.qml" }
-}
-```
+| Endpoint | Shape | Use |
+|---|---|---|
+| `GET /api/sessions` | `{sessions:[{id,title,...}]}` | panel session list |
+| `GET /api/approvals` | `{approvals:[{kind,runId,sop,node,command}]}` | what is waiting on a human (SOP gates / script pauses) |
+| `GET /api/runs` | `[{id,status,...}]` | bar widget active-run count |
+| `GET /api/capabilities` | capability snapshot | panel banner |
+| `GET/POST /api/runtime/pause` | `{paused:bool}` | global pause toggle (POST) |
 
-## BarWidget.qml (skeleton)
+Auth: HTTP Basic, user `eventhorizon`. Port + per-launch password are read from
+`~/.eventhorizon/runtime.json` (0600, same user) by `poll.py` / `Panel.qml`.
+Unreachable runtime or unreadable file -> the widget shows "EHC · offline" and
+the panel states why. It never guesses a state.
 
-```qml
-import Quickshell
-import QtQuick
+Security posture: the plugin only ever talks to 127.0.0.1, only ever reads the
+operator's own runtime descriptor, and its only write is the global pause
+toggle — the operator's hand on the switch, not an agent capability.
 
-Item {
-  property bool paused: false
-  property int active: 0
+## Implementation notes
 
-  // Poll the local runtime (127.0.0.1 only). Token/ticket exchange happens in
-  // the app; the widget uses Basic auth against the runtime password file.
-  Timer {
-    interval: 5000
-    running: true
-    repeat: true
-    onTriggered: root.refresh()
-  }
+- `poll.py` (stdlib only) does one runtime sweep per invocation and prints a
+  single JSON line; the QML timer invokes it every 5s via Quickshell `Process`.
+  Keeping the HTTP/parse logic in Python keeps the QML dumb and testable
+  (`python3 poll.py ~/.eventhorizon/runtime.json` is the whole test).
+- `Panel.qml` uses `curl` one-shots for reads and the pause POST (curl is
+  omnipresent on Omarchy; XHR inside Quickshell is less predictable).
+- Both QML files handle a dead runtime as a first-class state (offline label),
+  matching EHC's stated-plainly rule.
 
-  function refresh() {
-    // curl-style fetch via Quickshell's IShell; auth header from
-    // ~/.eventhorizon/runtime.json. On failure show "ehc: offline".
-  }
+## Status & publishing
 
-  Text {
-    text: root.paused ? "EHC ⏸" : `EHC ⚡ ${root.active}`
-    color: root.paused ? "#fbbf24" : "#22d3ee"
-  }
-}
-```
-
-## Publishing
-
-Per https://plugins.omarchy.org/publish.html: validate the folder with
-`omarchy plugin validate <dir>` + `qmllint`, keep the namespaced id, then submit
-to the marketplace repo. Re-validate after every EHC runtime API change.
+Validated against the live runtime API on the Strix Linux box (poll.py output
+matches the endpoint shapes above; endpoint routes verified in `http.ts`).
+QML layout/styling is scaffold-grade until tested on a real Omarchy/Quattro
+desktop (Quickshell + Wayland). Before marketplace submission per
+https://plugins.omarchy.org/publish.html: `omarchy plugin validate <dir>` +
+`qmllint`, namespaced id `xchonkex.eventhorizon`, then re-validate after every
+EHC runtime API change.
