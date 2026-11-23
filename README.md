@@ -23,14 +23,23 @@ Ships as an Electron app (Windows, Linux, macOS) with a workbench UI modelled on
 ## Known issues (stated, not hidden)
 
 - **Windows compositor**: under heavy GPU load a window can present a stale frame; a single click recovers it. Every in-app trigger found by two independent audits is fixed; the machine-level trigger remains under investigation (`docs/GPU.md`).
-- **Not bundled**: speech-to-text (whisper sidecar), the `sbx` microVM sandbox (the detonation lane refuses plainly without it), the AfterImage engram (imported via subprocess - see `docs/ENGRAM_INTEGRATION.md`), and the AgentWatch `aw` CLI. Every absent dependency is stated plainly in the UI rather than faked.
+- **Not bundled**: speech-to-text (whisper sidecar), the AfterImage engram (imported via subprocess - see `docs/ENGRAM_INTEGRATION.md`), and the AgentWatch `aw` CLI. The detonation lane uses OS-level sandbox backends (WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS) - if none is available it refuses plainly. Every absent dependency is stated plainly in the UI rather than faked.
 - **Packaging cosmetics**: default Electron icon, no code-signing certificate.
-- **Session switching** reloads the window (in-place tabs are on the roadmap).
-- **Linux/macOS builds**: the runtime is portable (llama.cpp engine, native Ollama, BYOK to any OpenAI-compatible server - including your own llama-server), but the packer currently stages Windows binaries only. An [Omarchy](https://omarchy.org) shell plugin is on the roadmap after the Linux build.
+- **Linux builds**: AppImage + deb are packaged and verified live (0.0.3d); the Windows packer stages the Vulkan engine binaries, while Linux runs use your own llama.cpp/Ollama or the engine from source. An [Omarchy](https://omarchy.org) shell plugin (sessions bar widget + panel) ships in `integrations/omarchy/`.
 
 ## Release
 
-The full hand-driven pipeline lives in [`docs/RELEASE.md`](docs/RELEASE.md): version bump, pre-flight tests, engine staging with SHA-256 verification, `pack:dir`, a release-candidate checklist, artifact hashing, and the tag/publish template. `npm run pack:dir` has been verified end-to-end (engine staged, RC launched, own runtime, health green).
+The full hand-driven pipeline lives in [`docs/RELEASE.md`](docs/RELEASE.md): version bump, pre-flight tests, engine staging with SHA-256 verification, `pack:dir`, a release-candidate checklist, artifact hashing, and the tag/publish template.
+
+**Downloads ([releases](https://github.com/XxChonkExX/event-horizon-code/releases))** - tagged `0.0.3d`, marked latest:
+
+| Platform | Artifacts |
+|---|---|
+| Windows 10/11 | NSIS installer + MSI (Vulkan engine staged) |
+| Linux (deb/AppImage) | verified live on Omarchy/Arch |
+| Source | zip at each tag |
+
+Every release ships a SHA-256 sheet; the binaries are unsigned, so verify before running.
 
 ## Requirements
 
@@ -51,7 +60,7 @@ No Ollama? You don't need it. The model ladder works without it on every platfor
 
 Ollama is a *convenience*, not a requirement (native Linux/macOS/Windows builds exist if you want it).
 
-Roadmap (post-alpha): Linux/macOS engine staging in the packer, an [Omarchy](https://omarchy.org) shell plugin (bar widget + session menu driven by the local runtime API), speech-to-text sidecar. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
+Roadmap (post-alpha): macOS packaging, speech-to-text sidecar, and engine staging for Linux in the packer. The Omarchy shell plugin shipped in 0.0.3d. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
 
 ## Quick start
 
@@ -97,9 +106,9 @@ Everything else is automatic: `GET /api/engine/models` scans `~/.eventhorizon/mo
 - Local server binds `127.0.0.1` with Basic auth; the Electron shell attaches to an existing runtime (or spawns exactly one) and logs the port. The **renderer never receives the API password** — JSON calls go through a main-process proxy, streams use single-use tickets. User keys live in `.harness/secrets.json` (gitignored).
 - **Permission gate** on every tool: `allow` / `ask` / `deny` in `.harness/config.json` (`permissions`). `edit` / `write` / `bash` default to `ask`; the composer's **auto-approve tools** toggle flips them.
 - **Workspace path jail** — tools cannot write outside the workspace; credential files (`.harness/secrets.json`, `.env`) are never agent-readable or agent-writable.
-- **Detonation lane** - requires an operator-installed `sbx` microVM; **without it the lane refuses plainly** (never a silent host fallback). Artifact delivery into the guest is not yet implemented and is not claimed — see the implemented/planned table in `docs/DETONATION.md` and `docs/SECURITY.md`.
+- **Detonation lane** - untrusted code executes inside per-platform OS-level sandboxes: WSL2 namespaces (Windows), bubblewrap (Linux), Seatbelt (macOS, best-effort). Artifact delivery, host-drive detachment, network isolation, and pgrep-confirmed tree termination are implemented and verified - with per-mechanic verification flags in every result and honest failure when any cannot be verified (`docs/DETONATION.md`).
 - Every tool call, model call, escalation and context recovery is appended to `~/.eventhorizon/audit.jsonl`.
-- Detonated tools (`run_js` with `tier=execute|redteam`) require `sbx`; without it the tool refuses plainly.
+- Detonated tools (`run_js` with `tier=execute|redteam`) require a sandbox backend - WSL2 namespaces (Windows), bubblewrap (Linux), or Seatbelt (macOS); without one the tool refuses plainly, never a silent host fallback.
 
 ## Multi-window agents & SOPs
 
@@ -145,4 +154,4 @@ Roadmap and UI/UX audits: [`docs/ROADMAP.md`](docs/ROADMAP.md) and
 
 ---
 
-Status: **v0.0.2 (alpha patch)**. Windows is the verified packaged target; the local runtime also builds/runs from source on Linux and macOS, but per-platform engine staging in the packer is still roadmap. Rough edges and deferrals are documented in `docs/`; please file issues.
+Status: **v0.0.3d (alpha)**. Windows (NSIS/MSI, Vulkan engine) and Linux (AppImage/deb, verified live on Omarchy) are packaged; macOS runs from source. Rough edges and deferrals are documented in `docs/`; please file issues.
