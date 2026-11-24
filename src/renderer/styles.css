@@ -547,6 +547,18 @@ aside.chat li { font-size: 13.5px; line-height: 1.45; }
 .ft-icon { color: var(--dim); width: 12px; flex: 0 0 auto; font-family: Consolas, monospace; }
 .ft-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ft-dir-name { color: var(--text); font-weight: 500; }
+/* Git decoration (file tree): same hues as the Runs panel states. */
+.ft-modified { color: #d29922; }
+.ft-untracked { color: #3fb950; }
+.ft-deleted { color: #f85149; text-decoration: line-through; }
+.ft-dir-dirty::after { content: " •"; color: #d29922; }
+/* File-tree toolbar: filter on its own row, actions below (fits narrow sidebars). */
+.ft-toolbar { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 4px; }
+.ft-toolbar .ft-filter { flex: 1 1 100%; min-width: 0; }
+.ft-tool { background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.ft-tool:hover { color: var(--accent); border-color: var(--accent); }
+/* Context-menu group separator. */
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 .ft-loading { color: var(--dim); font-size: 11px; padding-left: 24px; }
 
 /* ---- terminal ---- */

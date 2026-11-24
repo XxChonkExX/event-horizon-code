@@ -2,7 +2,7 @@
 // Owns: windows, menus, single-instance lock, localhost server bootstrap
 // Non-negotiable: no domain logic here. Sessions/tools/engrams live in server.
 
-import { app, BrowserWindow, Menu, ipcMain, dialog, screen } from "electron";
+import { app, BrowserWindow, Menu, ipcMain, dialog, screen, shell } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -408,6 +408,21 @@ app.whenReady().then(async () => {
     } catch (err) {
       return { ok: false, error: String((err as Error).message ?? err).slice(0, 160) };
     }
+  });
+  // "Reveal in file manager" (Explorer / Finder / xdg): same containment
+  // discipline as fs:op - the path must resolve inside the session's validated
+  // worktree, so a renderer can never pop an arbitrary host location.
+  ipcMain.handle("shell:reveal", (e, p: unknown, root?: string) => {
+    if (!isTrustedRenderer(e)) return { ok: false, error: "rejected sender" };
+    const rootGuard = contained(process.cwd(), typeof root === "string" && root ? root : ".");
+    if (!rootGuard.ok || !rootGuard.abs) return { ok: false, error: rootGuard.error ?? "invalid session worktree" };
+    if (typeof p !== "string" || p.length === 0 || p.length > 1024) return { ok: false, error: "invalid path" };
+    const guard = contained(rootGuard.abs, p);
+    if (!guard.ok || !guard.abs) return { ok: false, error: guard.error ?? "path escapes the workspace" };
+    if (!fs.existsSync(guard.abs)) return { ok: false, error: "not found" };
+    audit({ tool: "shell.reveal", note: path.relative(rootGuard.abs, guard.abs) || "." });
+    shell.showItemInFolder(guard.abs);
+    return { ok: true };
   });
   const windows = new Map<string, BrowserWindow>();
   // Multi-window: one BrowserWindow per session/worktree.

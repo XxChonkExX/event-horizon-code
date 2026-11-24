@@ -1,12 +1,15 @@
 // Event Horizon Code - File tree
 // Real workspace tree, lazily expanded one directory at a time (GET /api/files).
 // Click a file to open it in the editor. Right-click a row for file operations:
-// new file / new folder / rename / delete (fs:op in the main process, guarded).
+// new file / new folder / rename / delete (fs:op in the main process, guarded),
+// copy path (absolute or relative), reveal in the OS file manager, and open in
+// the integrated terminal. Git status decorates names (modified / untracked /
+// deleted) so the tree doubles as a lightweight change view.
 // Skip-listed dirs (node_modules, .git, out, dist, build) never appear; the
 // tree only ever shows what is on disk.
 
-import { createSignal, For, Show, onMount } from "solid-js";
-import { apiJson, fsOp } from "./api";
+import { createSignal, createMemo, For, Show, onMount } from "solid-js";
+import { apiJson, fsOp, revealInFolder, canReveal } from "./api";
 import { openContextMenu } from "./ContextMenu";
 
 type Entry = { name: string; type: "dir" | "file" };
@@ -19,10 +22,25 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
   const [opErr, setOpErr] = createSignal("");
   const [filter, setFilter] = createSignal("");
   const [worktrees, setWorktrees] = createSignal<Array<{ id: string; path: string; branch: string }>>([]);
+  // rel path -> git porcelain code ("M", "??", "D", ...). Empty outside a repo.
+  const [gitStatus, setGitStatus] = createSignal<Record<string, string>>({});
   // Inline name entry for new/rename - never window.prompt (native modals are
   // banned in this app: they open off-screen and block the renderer).
   const [pendingNew, setPendingNew] = createSignal<{ dir: string; type: "file" | "dir"; name: string } | null>(null);
   const [pendingRename, setPendingRename] = createSignal<{ path: string; isDir: boolean; name: string } | null>(null);
+
+  const toast = (text: string, kind: "ok" | "error" | "info" | "warn" = "info"): void => {
+    window.dispatchEvent(new CustomEvent("ehc-toast", { detail: { text, kind } }));
+  };
+
+  // Paths the tree shows are workspace-relative; "Copy path" and "Reveal" want
+  // the absolute native form (backslashes on Windows).
+  const rootDir = (): string => (props.root?.() ?? "").replace(/[\\/]+$/, "");
+  const absOf = (rel: string): string => {
+    const base = rootDir();
+    const joined = rel === "." || !rel ? base : `${base}/${rel}`;
+    return base.includes("\\") ? joined.replace(/\//g, "\\") : joined;
+  };
 
   async function listDir(dir: string): Promise<void> {
     setLoading((l) => ({ ...l, [dir]: true }));
@@ -36,6 +54,20 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
       setLoading((l) => ({ ...l, [dir]: false }));
     }
   }
+
+  // Git decoration is a read-only status call; a non-repo simply clears it.
+  const refreshGit = async (): Promise<void> => {
+    try {
+      const g = await apiJson<{ ok?: boolean; status?: Record<string, string> }>("/api/files/gitstatus");
+      setGitStatus(g?.status ?? {});
+    } catch { setGitStatus({}); }
+  };
+
+  // Refresh every directory the user has open (keeps the expanded state).
+  const refreshAll = async (): Promise<void> => {
+    await Promise.all([...openDirs()].map((d) => listDir(d)));
+    await refreshGit();
+  };
 
   const toggle = (dir: string): void => {
     const open = openDirs().has(dir);
@@ -63,6 +95,7 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
     if (op.kind === "delete" && openDirs().has(op.path)) {
       setOpenDirs((s) => { const n = new Set(s); n.delete(op.path); return n; });
     }
+    void refreshGit();
   }
 
   const commitNew = async (): Promise<void> => {
@@ -80,6 +113,45 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
     await runOp({ kind: "rename", path: r.path, to });
   };
 
+  // ---- menu actions shared by rows, the root area, and editor tabs ----
+  const copyAbs = (rel: string): void => { void navigator.clipboard.writeText(absOf(rel)).then(() => toast("absolute path copied", "ok")); };
+  const copyRel = (rel: string): void => { void navigator.clipboard.writeText(rel).then(() => toast("relative path copied", "ok")); };
+  const reveal = (rel: string): void => {
+    void revealInFolder(rel, props.root?.()).then((r) => {
+      if (!r.ok) toast(`could not reveal: ${r.error ?? "?"}`, "error");
+    });
+  };
+  // cd the ACTIVE terminal into a directory. If the terminal is closed, the
+  // request opens the panel first and the PTY consumes it on mount.
+  const openInTerminal = (rel: string, isDir: boolean): void => {
+    const target = isDir ? rel : parentOf(rel);
+    (window as unknown as { __ehcPendingCd?: string }).__ehcPendingCd = absOf(target);
+    window.dispatchEvent(new CustomEvent("ehc:want-terminal"));
+    window.dispatchEvent(new CustomEvent("ehc:terminal-cd", { detail: { path: absOf(target) } }));
+  };
+
+  // Directories that contain a change get a subtle marker, like an editor's
+  // SCM-decorated explorer - you can see where work is pending while collapsed.
+  const dirtyDirs = createMemo(() => {
+    const dirs = new Set<string>();
+    for (const f of Object.keys(gitStatus())) {
+      const parts = f.split("/");
+      parts.pop();
+      for (let i = 1; i <= parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+    }
+    return dirs;
+  });
+
+  const gitClass = (full: string, isDir: boolean): Record<string, boolean> => {
+    const code = gitStatus()[full];
+    return {
+      "ft-untracked": code === "??",
+      "ft-deleted": Boolean(code && code.includes("D")),
+      "ft-modified": Boolean(code && code !== "??" && !code.includes("D")),
+      "ft-dir-dirty": isDir && dirtyDirs().has(full),
+    };
+  };
+
   function rowMenu(e: MouseEvent, full: string, isDir: boolean, name: string): void {
     openContextMenu(e, [
       ...(isDir ? [
@@ -87,7 +159,26 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
         { label: "New folder here", action: () => { setOpenDirs((s) => new Set(s).add(full)); setPendingNew({ dir: full, type: "dir", name: "" }); } },
       ] : []),
       { label: "Rename", action: () => setPendingRename({ path: full, isDir, name }) },
-      { label: "Delete", danger: true, action: () => void runOp({ kind: "delete", path: full }) },
+      { separator: true, label: "", action: () => {} },
+      { label: "Copy path", action: () => copyAbs(full) },
+      { label: "Copy relative path", action: () => copyRel(full) },
+      { label: "Open in terminal", action: () => openInTerminal(full, isDir) },
+      { label: "Reveal in file manager", disabled: !canReveal(), action: () => reveal(full) },
+      { separator: true, label: "", action: () => {} },
+      { label: isDir ? "Delete folder" : "Delete", danger: true, action: () => void runOp({ kind: "delete", path: full }) },
+    ]);
+  }
+
+  // Right-click on the tree's empty area: workspace-level actions.
+  function rootMenu(e: MouseEvent): void {
+    openContextMenu(e, [
+      { label: "New file", action: () => setPendingNew({ dir: ".", type: "file", name: "" }) },
+      { label: "New folder", action: () => setPendingNew({ dir: ".", type: "dir", name: "" }) },
+      { separator: true, label: "", action: () => {} },
+      { label: "Refresh", action: () => void refreshAll() },
+      { label: "Copy workspace path", action: () => copyAbs(".") },
+      { label: "Open workspace in terminal", action: () => openInTerminal(".", true) },
+      { label: "Reveal workspace in file manager", disabled: !canReveal(), action: () => reveal(".") },
     ]);
   }
 
@@ -118,7 +209,7 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
                     onKeyDown={(ev) => { if (ev.key === "Enter") void commitRename(); else if (ev.key === "Escape") setPendingRename(null); }}
                   />
                 ) : (
-                  <span class="ft-name" classList={{ "ft-dir-name": isDir }}>{e.name}</span>
+                  <span class="ft-name" classList={{ "ft-dir-name": isDir, ...gitClass(full, isDir) }}>{e.name}</span>
                 )}
               </button>
               {renaming ? (
@@ -155,6 +246,7 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
   onMount(() => {
     setOpenDirs((s) => new Set(s).add("."));
     void listDir(".");
+    void refreshGit();
     void (async () => {
       try { setWorktrees(await apiJson("/api/worktrees")); } catch { /* optional */ }
     })();
@@ -169,16 +261,21 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
         </div>
         <h3>Workspace</h3>
       </Show>
-      <input
-        class="ft-filter"
-        placeholder="filter files..."
-        value={filter()}
-        onInput={(e) => setFilter(e.target.value)}
-      />
-      <p class="ft-hint">Click a file to open it; right-click for new / rename / delete.</p>
+      <div class="ft-toolbar">
+        <input
+          class="ft-filter"
+          placeholder="filter files..."
+          value={filter()}
+          onInput={(e) => setFilter(e.target.value)}
+        />
+        <button class="ft-tool" title="New file in the workspace root" onClick={() => setPendingNew({ dir: ".", type: "file", name: "" })}>+ file</button>
+        <button class="ft-tool" title="New folder in the workspace root" onClick={() => setPendingNew({ dir: ".", type: "dir", name: "" })}>+ folder</button>
+        <button class="ft-tool" title="Refresh the tree and git status" onClick={() => void refreshAll()}>↻</button>
+      </div>
+      <p class="ft-hint">Click a file to open it; right-click for new / rename / copy path / reveal / terminal.</p>
       {err() ? <p>{err()}</p> : null}
       {opErr() ? <p class="ft-hint">{opErr()}</p> : null}
-      <ul class="ft-root">
+      <ul class="ft-root" onContextMenu={rootMenu}>
         <Show when={pendingNew()?.dir === "."}>
           <span class="ft-op-row">
             <input

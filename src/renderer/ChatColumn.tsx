@@ -8,6 +8,7 @@
 
 import { createSignal, For, Show, onMount, onCleanup, createMemo, createEffect } from "solid-js";
 import { apiJson } from "./api";
+import { openContextMenu } from "./ContextMenu";
 import { whenVoicesReady, refreshSystemVoices, pickDefaultVoice, speakSystem, speakViaServer, stopSpeaking, stopAudio, speechSupported, type SpeechVoice } from "./speech";
 
 export type ChatMsg = { role: "user" | "assistant" | "tool"; text: string };
@@ -318,6 +319,24 @@ export default function ChatColumn(props: {
     }
   });
 
+  // Right-click a message: copy (text / answer / full with thinking), quote it
+  // into the composer, edit-and-resend your own turn, read an answer aloud.
+  const msgMenu = (ev: MouseEvent, role: ChatMsg["role"], text: string, answer?: string): void => {
+    const body = answer ?? text;
+    const quote = (): void => {
+      const cur = props.input();
+      props.setInput(`${cur ? `${cur}\n` : ""}> ${body.replace(/\n/g, "\n> ")}\n`);
+      taRef?.focus();
+    };
+    openContextMenu(ev, [
+      { label: role === "assistant" ? "Copy answer" : "Copy", action: () => void navigator.clipboard.writeText(body) },
+      ...(role === "assistant" && answer !== undefined ? [{ label: "Copy with thinking", action: () => void navigator.clipboard.writeText(text) }] : []),
+      { label: "Quote into composer", action: quote },
+      ...(role === "user" ? [{ label: "Edit & resend", action: () => { props.setInput(body); taRef?.focus(); } }] : []),
+      ...(role === "assistant" ? [{ label: "Read aloud", action: () => void speak(body) }] : []),
+    ]);
+  };
+
   return (
     <aside class="chat">
       <div class="chat-toolbar" title="Model, capabilities, and tool activity this turn">
@@ -355,14 +374,14 @@ export default function ChatColumn(props: {
           <For each={props.messages()}>
             {(m) => (
               <Show when={m.role === "assistant"} fallback={
-                <Show when={m.role === "user"} fallback={<pre class="msg-tool">{m.text.slice(0, 600)}</pre>}>
-                  <div class="msg msg-user"><Markdown text={m.text} /></div>
+                <Show when={m.role === "user"} fallback={<pre class="msg-tool" onContextMenu={(ev) => msgMenu(ev, "tool", m.text)}>{m.text.slice(0, 600)}</pre>}>
+                  <div class="msg msg-user" onContextMenu={(ev) => msgMenu(ev, "user", m.text)}><Markdown text={m.text} /></div>
                 </Show>
               }>
                 {(() => {
                   const p = parseAssistant(m.text);
                   return (
-                    <div class="msg msg-assistant">
+                    <div class="msg msg-assistant" onContextMenu={(ev) => msgMenu(ev, "assistant", m.text, p.answer)}>
                       <Show when={p.label}><div class="msg-label">{p.label}</div></Show>
                       <Show when={p.steps.length > 0}><ToolSteps steps={p.steps} /></Show>
                       <div class="msg-answer"><Markdown text={p.answer} /></div>

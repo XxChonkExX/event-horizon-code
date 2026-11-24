@@ -115,8 +115,32 @@ function TermBody(props: { serverId: string; active: () => string }) {
         const id = props.serverId;
         term.onData((data) => { void apiFetch(`/api/terminal/${id}/input`, { method: "POST", body: JSON.stringify({ data }) }); });
         term.onResize(({ cols, rows }) => { void apiFetch(`/api/terminal/${id}/resize`, { method: "POST", body: JSON.stringify({ cols, rows }) }); });
+        // "Open in terminal" (file tree / editor tabs): only the ACTIVE tab's
+        // PTY takes the cd. A request that arrived while the panel was closed
+        // (no PTY existed) rides in __ehcPendingCd and is consumed once this
+        // stream has attached.
+        const w = window as unknown as { __ehcPendingCd?: string };
+        const isMine = (): boolean => props.active() === id;
+        const sendCd = (dir: string): void => {
+          void apiFetch(`/api/terminal/${id}/input`, { method: "POST", body: JSON.stringify({ data: `cd "${dir.replace(/"/g, "")}"\r` }) });
+        };
+        const onCd = (ev: Event): void => {
+          const d = (ev as CustomEvent<{ path?: string }>).detail;
+          if (!d?.path || !isMine()) return;
+          delete w.__ehcPendingCd;
+          sendCd(d.path);
+        };
+        window.addEventListener("ehc:terminal-cd", onCd);
+        onCleanup(() => window.removeEventListener("ehc:terminal-cd", onCd));
         const q = `ticket=${encodeURIComponent(await eventStreamTicket())}`;
         const es = new EventSource(`${baseUrl()}/api/terminal/${id}/stream?${q}`);
+        es.onopen = () => {
+          if (isMine() && w.__ehcPendingCd) {
+            const pending = w.__ehcPendingCd;
+            delete w.__ehcPendingCd;
+            setTimeout(() => sendCd(pending), 400); // let the shell print its prompt first
+          }
+        };
         es.onmessage = (ev) => {
           try { term.write(JSON.parse(ev.data).d as string); } catch { /* skip malformed frame */ }
         };

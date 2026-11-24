@@ -19,6 +19,7 @@ declare global {
       apiProxy: (req: { method?: string; path?: string; body?: unknown }) => Promise<{ status: number; body: unknown }>;
       eventTicket: () => Promise<string>;
       fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => Promise<{ ok: boolean; error?: string }>;
+    revealInFolder: (path: string, root?: string) => Promise<{ ok: boolean; error?: string }>;
     onContextMenu: (cb: (p: { x: number; y: number }) => void) => void;
     };
   }
@@ -80,6 +81,18 @@ export async function eventStreamTicket(): Promise<string> {
 export function baseUrl(): string {
   return cached?.baseUrl ?? "";
 }
+
+// Reveal a workspace-relative path in the OS file manager. Containment is
+// enforced in MAIN against the session worktree; returns ok:false (no throw)
+// in browser/dev contexts without the preload bridge so menu items can hide.
+export async function revealInFolder(rel: string, root?: string): Promise<{ ok: boolean; error?: string }> {
+  if (typeof window !== "undefined" && window.eventhorizon?.revealInFolder) {
+    return window.eventhorizon.revealInFolder(rel, root);
+  }
+  return { ok: false, error: "not available outside the desktop app" };
+}
+
+export const canReveal = (): boolean => typeof window !== "undefined" && Boolean(window.eventhorizon?.revealInFolder);
 
 export async function pickFolder(): Promise<string | null> {
   if (typeof window !== "undefined" && window.eventhorizon?.pickFolder) {

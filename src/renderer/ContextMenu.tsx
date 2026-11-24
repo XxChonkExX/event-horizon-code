@@ -6,7 +6,7 @@
 import { createSignal, For, Show, onMount, onCleanup } from "solid-js";
 import { editAction, onContextMenu } from "./api";
 
-export type CtxItem = { label: string; action: () => void; danger?: boolean; disabled?: boolean };
+export type CtxItem = { label: string; action: () => void; danger?: boolean; disabled?: boolean; separator?: boolean };
 
 const [items, setItems] = createSignal<CtxItem[]>([]);
 const [pos, setPos] = createSignal<{ x: number; y: number } | null>(null);
@@ -78,7 +78,9 @@ export default function ContextMenu() {
     <Show when={pos()}>
       <div class="ctx-menu" style={{ left: `${pos()!.x}px`, top: `${pos()!.y}px` }} role="menu">
         <For each={items()}>
-          {(it) => (
+          {(it) => it.separator ? (
+            <div class="ctx-sep" role="separator" />
+          ) : (
             <button
               class="ctx-item"
               classList={{ danger: it.danger }}

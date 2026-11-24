@@ -5,6 +5,7 @@
 
 import { createSignal, onMount, onCleanup, For, Show } from "solid-js";
 import { apiJson, apiFetch } from "./api";
+import { openContextMenu } from "./ContextMenu";
 
 type Run = {
   id: string;
@@ -90,6 +91,17 @@ export default function RunsPanel() {
               class="session-meta"
               style={{ cursor: "pointer", background: selected() === r.id ? "rgba(88,166,255,0.12)" : "transparent" }}
               onClick={() => { void openTimeline(r.id); }}
+              onContextMenu={(e) => {
+                // Runs menu: timeline, copy the id (for bug reports / logs),
+                // cancel an active run, resume an interrupted one.
+                openContextMenu(e, [
+                  { label: "View timeline", action: () => { void openTimeline(r.id); } },
+                  { label: "Copy run id", action: () => void navigator.clipboard.writeText(r.id) },
+                  { separator: true, label: "", action: () => {} },
+                  ...(ACTIVE_STATES.has(r.state) ? [{ label: "Cancel run", danger: true, action: () => { void act(r.id, "cancel"); } }] : []),
+                  ...(r.state === "interrupted" ? [{ label: "Resume run", action: () => { void act(r.id, "resume"); } }] : []),
+                ]);
+              }}
             >
               <span style={{ color: stateColor(r.state), "font-weight": "600" }}>[{r.state}]</span>{" "}
               <span>{r.objective.slice(0, 90)}</span>

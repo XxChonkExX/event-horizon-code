@@ -4,6 +4,7 @@
 import http from "node:http";
 import path from "node:path";
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import { loadLanguagePacks, lspManager } from "./lsp";
 import { runToolchainDoctor } from "./toolchain";
@@ -402,6 +403,27 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         sendJson(res, 400, { error: "cannot list directory" });
       }
       return;
+    }
+    // ---- workspace git status (file tree decoration) ----
+    // Porcelain v1, bounded and read-only: the tree only needs rel-path ->
+    // status letters. A non-git worktree is a plain "no status", not an error.
+    if (req.method === "GET" && url.pathname === "/api/files/gitstatus") {
+      const base = resolveWorktree(url.searchParams.get("worktree") ?? undefined);
+      try {
+        const out = execFileSync("git", ["status", "--porcelain"], { cwd: base, timeout: 5000, encoding: "utf8", maxBuffer: 2_000_000, windowsHide: true }) as string;
+        const status: Record<string, string> = {};
+        for (const line of out.split("\n")) {
+          if (!line.trim()) continue;
+          const code = line.slice(0, 2).trim() || "?";
+          let file = line.slice(3).trim();
+          if (file.includes(" -> ")) file = file.split(" -> ").pop() ?? file; // renames: show the new path
+          if (file.startsWith('"') && file.endsWith('"')) file = file.slice(1, -1);
+          if (Object.keys(status).length < 5000) status[file] = code;
+        }
+        return sendJson(res, 200, { ok: true, status });
+      } catch {
+        return sendJson(res, 200, { ok: false, status: {}, note: "not a git worktree (or git unavailable)" });
+      }
     }
 
     if (req.method === "GET" && url.pathname === "/api/models") {

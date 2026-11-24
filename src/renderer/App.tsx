@@ -24,7 +24,7 @@ import Splitter from "./Splitter";
 import ChatColumn, { type ChatMsg } from "./ChatColumn";
 import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo, eventStreamTicket } from "./api";
 import Toasts, { type Toast } from "./Toasts";
-import ContextMenu from "./ContextMenu";
+import ContextMenu, { openContextMenu } from "./ContextMenu";
 
 const bootSession = new URLSearchParams(location.search).get("session") ?? "default";
 // Mutable: in-place session switching (no window reload) updates this; every
@@ -157,7 +157,11 @@ export default function App() {
       if (d?.text) toast(d.text, d.kind ?? "info");
     };
     window.addEventListener("ehc-toast", onToast);
-    onCleanup(() => window.removeEventListener("ehc-toast", onToast));
+    // "Open in terminal" (file tree / editor tabs) asks for the panel to be
+    // shown; the PTY itself consumes the cd request on mount or live.
+    const onWantTerminal = () => setOpen((o) => ({ ...o, terminal: true }));
+    window.addEventListener("ehc:want-terminal", onWantTerminal);
+    onCleanup(() => { window.removeEventListener("ehc-toast", onToast); window.removeEventListener("ehc:want-terminal", onWantTerminal); });
   });
 
   // (Re)load everything that is per-session: history, live streams. Called on
@@ -302,6 +306,12 @@ export default function App() {
       return next;
     });
   };
+  // Tab-strip menu actions (VS Code parity).
+  const closeOtherFiles = (keep: string): void => {
+    setOpenFiles(() => [keep]);
+    setActiveFile(keep);
+  };
+  const closeAllFiles = (): void => { setOpenFiles([]); };
 
   const send = async () => {
     const text = input().trim();
@@ -391,6 +401,29 @@ export default function App() {
     switchSession(id);
   };
 
+  // Session-strip context menu: the actions a tab already implies (switch,
+  // hide) plus fork/checkpoint without hunting through the Sessions panel.
+  const forkSession = async (id: string): Promise<void> => {
+    try {
+      const r = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const d = (await r.json()) as { id?: string; error?: string };
+      if (d.id) { toast(`forked ${id.slice(0, 10)} -> ${d.id.slice(0, 10)}`, "ok"); void refreshSessionTabs(); }
+      else toast(`fork failed: ${d.error ?? "?"}`, "error");
+    } catch { toast("fork failed - server unreachable", "error"); }
+  };
+  const sessionMenu = (ev: MouseEvent, t: SessionTab): void => {
+    const cur = t.id === session;
+    openContextMenu(ev, [
+      ...(!cur ? [{ label: "Switch to this session", action: () => openSession(t.id) }] : []),
+      { label: "Fork session", action: () => void forkSession(t.id) },
+      { label: "Copy session id", action: () => void navigator.clipboard.writeText(t.id) },
+      { separator: true, label: "", action: () => {} },
+      ...(cur ? [{ label: "Checkpoint", action: () => void checkpointSession() }] : []),
+      { label: "Session log", action: () => toggleSessionLog() },
+      ...(!cur ? [{ label: "Hide tab (session preserved)", action: () => closeSessionTab(t.id) }] : []),
+    ]);
+  };
+
   onMount(() => { void refreshSessionTabs(); });
 
   const newWorktree = async () => {
@@ -417,7 +450,6 @@ export default function App() {
         return;
       }
       toast(`new session ${d.id.slice(0, 10)} — switched THIS window`, "ok");
-      toast(`new session ${d.id.slice(0, 10)} - switched THIS window`, "ok");
       switchSession(d.id);
     } catch { toast("could not create session - server unreachable", "error"); }
   };
@@ -471,6 +503,7 @@ export default function App() {
                   aria-selected={t.id === sessionSig()}
                   title={`${t.title} (${t.messageCount} messages) - window #${t.id.slice(0, 10)}`}
                   onClick={() => openSession(t.id)}
+                  onContextMenu={(ev) => sessionMenu(ev, t)}
                 >
                   <span class="chat-tab-title">{t.title || t.id}</span>
                   <span class="chat-tab-meta">{t.messageCount}</span>
@@ -503,7 +536,7 @@ export default function App() {
       <Splitter direction="col" class="ehc-split-v2" onDelta={sidebarRightEdge} onEnd={persistLayout} />
 
       <section class="main-area">
-        <Tabs files={openFiles} active={activeFile} onSelect={setActiveFile} onClose={closeFile} />
+        <Tabs files={openFiles} active={activeFile} onSelect={setActiveFile} onClose={closeFile} onCloseOthers={closeOtherFiles} onCloseAll={closeAllFiles} root={wt} />
         <Show keyed when={sessionVersion()}>
           <MonacoMount file={activeFile()} worktree={wt()} />
         </Show>
