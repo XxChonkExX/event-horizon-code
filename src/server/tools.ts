@@ -11,6 +11,7 @@ import { execFile, exec } from "node:child_process";
 import { fetch as ufetch, Agent } from "undici";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
 import { contained } from "./wsguard";
+import { secretsPath } from "./secrets";
 
 // AfterImage machines/src resolution - portable order, no machine-specific
 // absolute paths: explicit env, sibling checkout, in-workspace copy.
@@ -251,6 +252,32 @@ function isCredentialPath(rel: string): boolean {
   return CREDENTIAL_FILES.test(norm);
 }
 
+// The BYOK secrets file can live anywhere through EH_SECRETS_FILE
+// (src/server/secrets.ts). The name patterns above only know
+// `.harness/secrets.json`, so the RESOLVED location is protected as well:
+// wherever the operator put it - and whatever they called it - it is never
+// agent-readable or agent-writable. Includes the atomic temp file a save
+// writes next to it.
+function samePath(a: string, b: string): boolean {
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+function secretsFileTargets(): string[] {
+  const configured = path.resolve(secretsPath());
+  const out: string[] = [];
+  try { out.push(fs.realpathSync(configured)); } catch {
+    // Not created yet (a write target): canonicalise its directory so the
+    // comparison still holds against a canonical candidate.
+    try { out.push(path.join(fs.realpathSync(path.dirname(configured)), path.basename(configured))); } catch { /* directory missing too */ }
+  }
+  out.push(configured);
+  return out;
+}
+function isConfiguredSecretsFile(abs: string): boolean {
+  let real = abs;
+  try { real = fs.realpathSync(abs); } catch { /* a write target may not exist yet */ }
+  return secretsFileTargets().some((t) => [abs, real].some((c) => samePath(t, c) || samePath(t, c.slice(0, t.length)) && c.slice(t.length).startsWith(".tmp-")));
+}
+
 // Exported for sweep-3 remediation: the ACP HTTP layer must enforce the SAME
 // credential policy as the agent tools (one security rule, one implementation).
 export function safePath(worktree: string, p: string): { ok: boolean; abs?: string; error?: string } {
@@ -260,6 +287,9 @@ export function safePath(worktree: string, p: string): { ok: boolean; abs?: stri
   // Shared containment policy (sibling-prefix proof + symlink canonicalisation).
   const result = contained(worktree, p);
   if (!result.ok || !result.abs) return result;
+  if (isConfiguredSecretsFile(result.abs)) {
+    return { ok: false, error: "refused: the secrets file is never agent-readable or agent-writable. Ask the user to edit it by hand." };
+  }
   // Sweep-3 #23: the canonical path can resolve INTO a credential file through
   // a symlink alias ("harmless-config.json" -> ".env") - re-check the resolved
   // path against the same policy.
@@ -400,7 +430,10 @@ export async function runTool(
       // Defense in depth: the file-tool jail blocks direct credential reads,
       // but a shell could still cat them. Refuse commands that name credential
       // files (.env.example is allowed - it is a template, not a secret).
-      if (/\bsecrets\.json\b/i.test(cmd) || /(^|[^\w.])\.env(\.[^.]+)?\b/i.test(cmd.replace(/\.env\.example/g, "")) || /\bid_rsa\b|\.netrc\b|credentials?\.(json|ya?ml)\b/i.test(cmd)) {
+      // EH_SECRETS_FILE may have moved the secrets file under another name.
+      const secretsBase = path.basename(secretsPath()).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const namesSecretsFile = secretsBase !== "" && new RegExp(`(^|[^\\w.-])${secretsBase}($|[^\\w.-])`, "i").test(cmd);
+      if (/\bsecrets\.json\b/i.test(cmd) || namesSecretsFile || /(^|[^\w.])\.env(\.[^.]+)?\b/i.test(cmd.replace(/\.env\.example/g, "")) || /\bid_rsa\b|\.netrc\b|credentials?\.(json|ya?ml)\b/i.test(cmd)) {
         audit({ tool, note: "refused: credential file access" });
         return { ok: false, error: "refused: commands that read or write credential files (.harness/secrets.json, .env, keys) are not allowed. Ask the user instead.", out: "" };
       }

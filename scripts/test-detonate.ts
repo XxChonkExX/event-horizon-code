@@ -108,6 +108,23 @@ async function main(): Promise<void> {
   check("bash cat .env refused", catEnv.ok === false && /credential/i.test(catEnv.error ?? ""), catEnv.error ?? "");
   const envExample = await runTool("read", { path: ".env.example" }, worktree, { userApproved: true });
   check(".env.example stays readable (template, not secret)", envExample.ok === true || !/credential/i.test(envExample.error ?? ""), envExample.error ?? "(missing file is fine)");
+  // EH_SECRETS_FILE can relocate the secrets file under another name: the
+  // shell rule must refuse that name too, not only the literal "secrets.json".
+  // The relocated file lives in a temp dir, never in this worktree.
+  const savedSecretsFile = process.env.EH_SECRETS_FILE;
+  const movedDir = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-moved-secrets-"));
+  try {
+    process.env.EH_SECRETS_FILE = path.join(movedDir, "keys.json");
+    const catMoved = await runTool("bash", { cmd: "cat keys.json" }, worktree, { userApproved: true });
+    check("bash cat of a relocated secrets file (other name) refused", catMoved.ok === false && /credential/i.test(catMoved.error ?? ""), catMoved.error ?? "");
+    const casedMoved = await runTool("bash", { cmd: "type config\\KEYS.JSON" }, worktree, { userApproved: true });
+    check("bash naming the relocated secrets file in another case refused", casedMoved.ok === false && /credential/i.test(casedMoved.error ?? ""), casedMoved.error ?? "");
+    const neighbour = await runTool("bash", { cmd: "echo keys.json.bak" }, worktree, { userApproved: true });
+    check("a similarly named neighbour is not caught by the relocated-name rule", neighbour.ok !== false || !/credential/i.test(neighbour.error ?? ""), neighbour.error ?? "");
+  } finally {
+    if (savedSecretsFile === undefined) delete process.env.EH_SECRETS_FILE; else process.env.EH_SECRETS_FILE = savedSecretsFile;
+    fs.rmSync(movedDir, { recursive: true, force: true });
+  }
 
   // 9. extended credential denylist (external audit): .ssh keys, cloud
   // credentials, npm/docker auth, private-key formats.

@@ -3,6 +3,15 @@
 All notable changes to Event Horizon Code. Newest first.
 Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
+## [Unreleased]
+
+- **BYOK keys are sealed with the OS keychain** (Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, libsecret/kwallet on Linux). New `src/server/secrets.ts`, `/api/secrets*`, and a BYOK section in the Models panel: save a key, see how each stored key is kept, seal existing plaintext values in place, two-step remove. Where no keychain is reachable (the headless runtime, Linux without a keyring) a saved key stays plaintext and the panel says so in warning colour - never a silent downgrade, and a sealed key is refused with the reason rather than guessed at. Keys are never returned by the status API, never shown after saving, never logged.
+  - Verified end to end on Windows only: the built app seals a key, a fresh launch decrypts it, the agent lane sends the decrypted key to the configured endpoint; the same file handed to a headless runtime is refused with nothing sent. Linux and macOS proofs are pending on their own machines.
+  - Negative result, recorded: on a brand-new profile the profile's wrapping key reaches disk about 10 s after the first launch (or at once on a normal close), so a key saved inside that window is lost - refused as `undecryptable`, never exposed - if the app is killed before the write. Not fixed; the envelope design in `docs/ENCRYPTION.md` is the option.
+- **Credential denylist covers a relocated secrets file.** `EH_SECRETS_FILE` can place the file under any name, which the name-based rules did not know. `safePath` now compares the resolved path and the shell rule refuses the configured name. An empty `EH_SECRETS_FILE` means "not set".
+- Tests: `secrets:test` (plain node, no keychain), `secrets:test:electron` (real keychain, two launches), `/api/secrets` in the end-to-end smoke, relocated-file cases in `wsguard:test` and `detonate:test`.
+- Docs: SECURITY.md, PRIVACY.md and ENCRYPTION.md now state exactly what is built and what was verified. PRIVACY.md previously claimed an "encrypted file fallback" that did not exist. Closes audit item 17.
+
 ## [0.0.3c] - 2026-11-22 - follow-up audit hardening (assurance truthfulness)
 
 Remediation of the 0.0.3b follow-up audit (P0 security correctness + P1 containment):

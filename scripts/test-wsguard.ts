@@ -27,6 +27,39 @@ try {
   checkCred(".env.example permitted", safePath(credRoot, ".env.example").ok);
   checkCred("normal file permitted", safePath(credRoot, "src/index.ts").ok);
   checkCred("parent traversal refused", !safePath(credRoot, "../outside.txt").ok);
+  // EH_SECRETS_FILE can put the BYOK secrets file anywhere under any name.
+  // The name patterns only know `.harness/secrets.json`, so the resolved
+  // location has to be protected too - and ONLY it (no collateral refusals).
+  const savedSecretsFile = process.env.EH_SECRETS_FILE;
+  try {
+    fs.mkdirSync(path.join(credRoot, "config"), { recursive: true });
+    const moved = path.join(credRoot, "config", "keys.json");
+    process.env.EH_SECRETS_FILE = moved;
+    fs.writeFileSync(moved, "{}");
+    const refused = safePath(credRoot, path.join("config", "keys.json"));
+    if (refused.ok) console.log(`    (was allowed: ${refused.abs})`);
+    checkCred("relocated secrets file (EH_SECRETS_FILE) refused", !refused.ok && /secrets file/i.test(refused.error ?? ""));
+    fs.rmSync(moved);
+    checkCred("relocated secrets file refused before it exists (write target)", !safePath(credRoot, path.join("config", "keys.json")).ok);
+    checkCred("its atomic temp file refused", !safePath(credRoot, path.join("config", "keys.json.tmp-1-abc")).ok);
+    checkCred("similarly named neighbour still permitted", safePath(credRoot, path.join("config", "keys.json.bak")).ok);
+    checkCred("other files still permitted", safePath(credRoot, path.join("config", "settings.json")).ok);
+    fs.writeFileSync(moved, "{}");
+    try {
+      fs.symlinkSync(moved, path.join(credRoot, "alias.json"));
+      checkCred("relocated secrets file refused through a symlink alias", !safePath(credRoot, "alias.json").ok);
+      fs.rmSync(path.join(credRoot, "alias.json"));
+    } catch { console.log("  SKIP symlink alias for the relocated secrets file (cannot create symlinks here)"); }
+    delete process.env.EH_SECRETS_FILE;
+    checkCred("with no override the same name is an ordinary file", safePath(credRoot, path.join("config", "keys.json")).ok);
+    process.env.EH_SECRETS_FILE = "";
+    checkCred("an EMPTY override means not set (workspace root and the old name are ordinary paths)", safePath(credRoot, ".").ok && safePath(credRoot, path.join("config", "keys.json")).ok);
+  } catch (e) {
+    console.log(`  FAIL relocated-secrets suite: ${String(e).slice(0, 160)}`);
+    cfail++;
+  } finally {
+    if (savedSecretsFile === undefined) delete process.env.EH_SECRETS_FILE; else process.env.EH_SECRETS_FILE = savedSecretsFile;
+  }
   fs.rmSync(credRoot, { recursive: true, force: true });
 } catch (e) {
   console.log(`  FAIL credential suite setup: ${String(e).slice(0, 120)}`);

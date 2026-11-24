@@ -6,7 +6,11 @@
 - Permission gate runs before execution, per tool pattern, per workspace, per agent mode.
 - MCP servers run as subprocesses with env allowlist. Treat tool output as untrusted (prompt injection).
 - Local server: 127.0.0.1 only, per-launch random password, Basic auth. No LAN exposure by default.
-- Secrets: stored in `.harness/secrets.json` (gitignored, workspace-local) with file permissions kept minimal; the credential denylist keeps agent tools from reading credential files. A future keychain integration remains an open item - do not treat the current file store as OS-keychain-grade. Never logged.
+- Secrets (bring-your-own-key): `.harness/secrets.json`, gitignored, workspace-local. Saved from the desktop app, an `apiKey` is sealed with the OS keychain through Electron `safeStorage` (`enc1:` + base64; DPAPI on Windows, Keychain on macOS, libsecret/kwallet on Linux) and is bound to the OS user account - copying the file to another machine or another user does not reveal the key. `baseUrl` stays readable by design. Where the OS keychain is unreachable - the headless runtime (`npm run serve`), or Linux without a keyring - a saved key is stored in plaintext and the panel says so (`PLAINTEXT`); the runtime also refuses to *use* a sealed key there and states why. Nothing is ever silently downgraded or faked: Linux "basic text" encryption (a hard-coded key) is deliberately not enabled.
+  - Verified end to end on Windows only: the built app seals a key, a fresh launch after a normal close decrypts it, and the agent lane sends the decrypted key to the configured endpoint. Linux and macOS use the same Electron API but are **untested here** - `npm run secrets:test:electron` inside a graphical session is the proof to run on each.
+  - What this does not establish: a process already running as the same OS user can use that user's keychain, so this protects stolen files and copied workspaces, not a compromised account. Not end-to-end encryption, not transport encryption, not database encryption (`docs/ENCRYPTION.md`).
+  - Known edge (measured on Windows): on a brand-new profile the key that wraps sealed values is written ~10 s after the first launch, or at once on a normal close. A key saved inside that window is lost - refused as `undecryptable`, never exposed - if the app is killed before the write. Later launches are not affected. Details and the fix option: `docs/ENCRYPTION.md`.
+  - The file is written owner-only (`0600`) where the OS supports it; on Windows it inherits the workspace folder's ACL. The status API never returns a key value, the audit log records provider names and storage state only, and the credential denylist still keeps agent tools from reading the file.
 - CSP in renderer. contextIsolation true, nodeIntegration false. No remote content in windows.
 
 ## Network egress inventory (zero-telemetry sweep, 2026-11-24)
@@ -18,6 +22,7 @@ Every outbound connection the codebase can make, classified. Re-verify with `nod
 | `127.0.0.1` runtime / engine / descriptor | `http.ts`, `index.ts`, `engine.ts`, `router.ts`, `api.ts` | Local-only. Server listens on `opts.host ?? "127.0.0.1"`. |
 | Ollama (`127.0.0.1:11434` default) | `router.ts` | Local model lane, operator-configured. |
 | BYOK OpenAI-compatible endpoint | `router.ts` | Operator-configured base URL + key; never a default host. |
+| - | `secrets.ts` | Makes no network call. A key leaves the machine only toward the BYOK base URL above. |
 | `html.duckduckgo.com` | `tools.ts` (`websearch`) | The only third-party contact in the tree. User-invoked tool, permission `ask`, no key, no identifier sent beyond the query. |
 | Pinned public hosts | `tools.ts` (`webfetch`) | User-invoked tool, permission `ask`; SSRF guard + DNS-pinned connections. |
 

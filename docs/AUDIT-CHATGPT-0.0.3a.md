@@ -4,8 +4,9 @@
 > detonation lane gained real per-platform backends (WSL2 namespaces on
 > Windows, bubblewrap on Linux incl. Arch/Omarchy, Seatbelt on macOS) with
 > end-to-end CI verification (`detonate:test` runs real artifacts on Linux
-> runners). Remaining polish items: config split, SECURITY.md keychain claim,
-> TOCTOU note, module splitting. Release tags: 0.0.3a -> 0.0.3b.
+> runners). Remaining polish items: config split, TOCTOU note, module
+> splitting. Release tags: 0.0.3a -> 0.0.3b. The keychain item (17) was
+> closed afterwards by implementing it - see its row.
 >
 > Follow-up audit (0.0.3b) remediated in 0.0.3c: Seatbelt tree lifecycle is
 > truthful (pgrep-confirmed on every path, group-kill on timeout), DNS
@@ -37,7 +38,7 @@ scheduled. Companion to `docs/AUDIT-432ccfb.md` (internal sweeps).
 | 14 | Sandbox artifact delivery + process-tree termination + policy env to guest (P1s) | **FIXED (9f70132)** | Namespace runner (`ns` backend, default): artifact DELIVERED into the guest copy (`/tmp/ehc-detonate/<runid>/`), mount+pid+net namespaces (host drives detached — guest sees 0 files under /mnt/c; loopback-only network verified from inside the guest), privilege drop to non-root with a minimal constructed env, pkill sweep + pgrep CONFIRMATION of tree termination. Per-mechanic verification flags on the result; the run fails honestly if any mechanic cannot be verified. sbx remains selectable via config (`detonate.backend: "sbx"`) |
 | 15 | .harness/config.json machine-specific paths in repo | **SCHEDULED** | split into example + gitignored local; touches permission defaults — planned with fresh-clone testing |
 | 16 | TOCTOU in wsguard (known limitation) | **SCHEDULED** | descriptor-relative operations noted; current mitigations documented in `wsguard.ts` |
-| 17 | SECURITY.md keychain claim vs plain-JSON BYOK | **TODO (docs)** | correct the doc or implement keychain — next docs pass |
+| 17 | SECURITY.md keychain claim vs plain-JSON BYOK | **FIXED** | both, by implementing it: `src/server/secrets.ts` seals saved keys with Electron `safeStorage` and refuses to pretend where no keychain is reachable (headless: plaintext, labelled `PLAINTEXT`). SECURITY.md, PRIVACY.md and ENCRYPTION.md now state exactly that, verified on Windows only. Regression: `secrets:test` (no-keychain contract), `secrets:test:electron` (real keychain, two launches), `test:integration` `/api/secrets`, `wsguard:test` + `detonate:test` (relocated secrets file stays agent-unreadable) |
 | 18 | http.ts/tools.ts/agentLoop.ts module size | **NOTE** | split incrementally AFTER security work (audit agrees with deferral) |
 
 ## Preserved by design (audit "do not rewrite" list)

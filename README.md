@@ -95,15 +95,16 @@ Everything else is automatic: `GET /api/engine/models` scans `~/.eventhorizon/mo
 
 **Ollama lane:** `ollama serve`, then models appear in the picker; capabilities are probed live via `POST /api/show` and shown as badges.
 
-**BYOK:** `.harness/secrets.json` (gitignored) —
+**BYOK:** save the key in the app under **Models → BYOK secrets**. It is sealed with the OS keychain (Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, libsecret/kwallet on Linux) and written to `.harness/secrets.json` (gitignored) as `enc1:<ciphertext>`. The file can also be edited by hand — plaintext, which is also what a headless runtime (`npm run serve`) can use, since it cannot reach a keychain and says so; **Encrypt stored keys** seals plaintext values later:
 ```json
 { "openai": { "baseUrl": "https://api.openai.com/v1", "apiKey": "sk-..." } }
 ```
+Verified end to end on Windows only — see `docs/ENCRYPTION.md`.
 
 ## Security & privacy posture
 
 - **No telemetry, no analytics, no cloud proxy.** All network calls go to endpoints you configure (Ollama on localhost, BYOK, or none).
-- Local server binds `127.0.0.1` with Basic auth; the Electron shell attaches to an existing runtime (or spawns exactly one) and logs the port. The **renderer never receives the API password** — JSON calls go through a main-process proxy, streams use single-use tickets. User keys live in `.harness/secrets.json` (gitignored).
+- Local server binds `127.0.0.1` with Basic auth; the Electron shell attaches to an existing runtime (or spawns exactly one) and logs the port. The **renderer never receives the API password** — JSON calls go through a main-process proxy, streams use single-use tickets. User keys live in `.harness/secrets.json` (gitignored), sealed with the OS keychain when saved from the app.
 - **Permission gate** on every tool: `allow` / `ask` / `deny` in `.harness/config.json` (`permissions`). `edit` / `write` / `bash` default to `ask`; the composer's **auto-approve tools** toggle flips them.
 - **Workspace path jail** — tools cannot write outside the workspace; credential files (`.harness/secrets.json`, `.env`) are never agent-readable or agent-writable.
 - **Detonation lane** - untrusted code executes inside per-platform OS-level sandboxes: WSL2 namespaces (Windows), bubblewrap (Linux), Seatbelt (macOS, best-effort). Artifact delivery, host-drive detachment, network isolation, and pgrep-confirmed tree termination are implemented and verified - with per-mechanic verification flags in every result and honest failure when any cannot be verified (`docs/DETONATION.md`).

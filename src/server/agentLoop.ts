@@ -25,6 +25,7 @@ import type { ToolName } from "./tools";
 import { contained } from "./wsguard";
 import { engineEndpoint } from "./engine";
 import { beginRun, transition, completeRun, failRun, cancelRun, appendRunEvent, getAgentRun } from "./agentrun";
+import { readSecret } from "./secrets";
 import type { AgentRunState, AgentRun } from "./agentrun";
 
 export type AgentTurnParams = {
@@ -113,12 +114,9 @@ function activeProfileId(): string {
   } catch { return "default"; }
 }
 
-function readSecret(provider: string): { baseUrl?: string; apiKey?: string } | null {
-  try {
-    const s = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "secrets.json"), "utf8")) as Record<string, { baseUrl?: string; apiKey?: string }>;
-    return s[provider] ?? null;
-  } catch { return null; }
-}
+// BYOK secrets live in src/server/secrets.ts: OS-keychain-backed at rest when
+// the desktop app saved them, with an honest refusal where the keychain is
+// unreachable (headless runtime). Nothing here touches the file directly.
 
 // Sweep-3 (storage audit): concurrent prompts on the same session would load
 // the same history, run separate turns, and each saveMessages would overwrite
@@ -269,9 +267,16 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
       : convo;
     if (p.provider === "openai") {
       lane = "openai";
-      const secret = readSecret("openai");
+      let secret: ReturnType<typeof readSecret> = null;
+      try {
+        secret = readSecret("openai");
+      } catch (e) {
+        // Stored but not decryptable here (keychain unreachable / other OS
+        // user): the exact reason beats a generic "no key" message.
+        return { ok: false, content: "", model: usedModel || "openai", error: String((e as Error).message ?? e).slice(0, 240) };
+      }
       if (!secret?.apiKey || !secret.baseUrl) {
-        return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
+        return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - save one under Models > BYOK secrets, or put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
       }
       return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, onDelta: p.onDelta });
     }

@@ -47,6 +47,9 @@ async function main() {
   // so the smoke never triggers a real model load and never touches operator
   // data. The echo path (no model) makes the run fast and deterministic.
   const smokeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-smoke-home-"));
+  // The secrets checks below write keys: pin the file inside the smoke home so
+  // the operator's real .harness/secrets.json is never in play.
+  const secretsFile = path.join(smokeHome, "secrets.json");
   const projectDir = process.cwd();
   const child = spawn(process.execPath, [path.join(projectDir, runner), path.join(projectDir, tsxCli), path.join(projectDir, "scripts", "serve.ts")], {
     cwd: smokeHome,
@@ -54,7 +57,7 @@ async function main() {
     // leader. Without `detached`, process.kill(-pid) fails, the child survives
     // and keeps our captured pipes open -> the CI runner hangs forever.
     detached: process.platform !== "win32",
-    env: { ...process.env, EH_PORT: String(PORT), EH_PASS: PASS, EH_DB: path.join(smokeHome, "smoke.db"), EH_SOPS_DIR: path.join(smokeHome, "sops") },
+    env: { ...process.env, EH_PORT: String(PORT), EH_PASS: PASS, EH_DB: path.join(smokeHome, "smoke.db"), EH_SOPS_DIR: path.join(smokeHome, "sops"), EH_SECRETS_FILE: secretsFile },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";
@@ -151,6 +154,62 @@ async function main() {
 
   const engine = await fetchJson("/api/engine/status");
   console.log(`[smoke] ok  /api/engine/status (${engine.status})`);
+
+  // BYOK secrets (docs/ENCRYPTION.md, E1) over the real HTTP surface. This
+  // runtime is headless (ELECTRON_RUN_AS_NODE): no OS keychain. Everything
+  // below asserts the headless contract - the state is reported as it is, a
+  // refused request touches nothing, and an encrypted key becomes a stated
+  // failure. The keychain path itself is proven by secrets:test:electron.
+  const fail = (msg: string, detail?: unknown): never => {
+    console.error(`[smoke] FAIL: ${msg}${detail !== undefined ? ` - ${JSON.stringify(detail).slice(0, 300)}` : ""}`);
+    killTree(child.pid);
+    process.exit(1);
+  };
+  const secStatus = await fetchJson("/api/secrets/status");
+  if (secStatus.status !== 200 || secStatus.body?.encryptionAvailable !== false || secStatus.body?.storage !== "plaintext-only" || !Array.isArray(secStatus.body?.providers)) {
+    fail("secrets status must report the headless truth (no keychain, plaintext-only)", secStatus.body);
+  }
+  const secBad = await fetchJson("/api/secrets", { method: "POST", body: JSON.stringify({ provider: "../evil", apiKey: "x" }) });
+  if (secBad.status !== 400 || secBad.body?.ok !== false || fs.existsSync(secretsFile)) {
+    fail("an invalid provider must be refused without creating a secrets file", secBad.body);
+  }
+  const SMOKE_KEY = "smoke-key-" + "z".repeat(20);
+  const secSave = await fetchJson("/api/secrets", {
+    method: "POST",
+    body: JSON.stringify({ provider: "smokeprov", baseUrl: "https://api.example.com/v1", apiKey: SMOKE_KEY }),
+  });
+  if (secSave.status !== 200 || secSave.body?.ok !== true || secSave.body?.encrypted !== false) {
+    fail("a headless save must succeed and say it stored PLAINTEXT", secSave.body);
+  }
+  const secListed = await fetchJson("/api/secrets/status");
+  const sp = secListed.body?.providers?.find((p: any) => p.provider === "smokeprov");
+  if (!sp || sp.hasKey !== true || sp.encrypted !== false || JSON.stringify(secListed.body).includes(SMOKE_KEY)) {
+    fail("status must list the provider and never carry the key", secListed.body);
+  }
+  const secSnap = fs.readFileSync(secretsFile, "utf8");
+  const secEnc = await fetchJson("/api/secrets/encrypt", { method: "POST", body: "{}" });
+  if (secEnc.status !== 400 || secEnc.body?.ok !== false || !/desktop app/.test(secEnc.body?.error ?? "") || fs.readFileSync(secretsFile, "utf8") !== secSnap) {
+    fail("encrypt without a keychain must be refused and leave the file byte-identical", secEnc.body);
+  }
+  const secDel = await fetchJson("/api/secrets/smokeprov", { method: "DELETE" });
+  if (secDel.status !== 200 || secDel.body?.ok !== true) fail("delete a stored secret", secDel.body);
+  // A key sealed by the desktop app, read by a runtime with no keychain: the
+  // prompt fails with the reason (the loop's shape for a failed model call:
+  // the text lands in `reply`, the run record gets `error`) - not a generic
+  // "no key", and no request goes out (the refusal precedes the endpoint call).
+  fs.writeFileSync(secretsFile, JSON.stringify({ openai: { baseUrl: "https://api.example.com/v1", apiKey: "enc1:AAAA" } }));
+  const secPrompt = await fetchJson("/api/acp/session/prompt", {
+    method: "POST",
+    body: JSON.stringify({ params: { sessionId, text: "ping", think: "low", numPredict: 16, provider: "openai" } }),
+  });
+  if (secPrompt.status !== 200 || secPrompt.body?.ok !== false || secPrompt.body?.lane !== "openai" || !/^model error: .*keychain/.test(secPrompt.body?.reply ?? "") || /no BYOK key/.test(secPrompt.body?.reply ?? "")) {
+    fail("an encrypted key on a headless runtime must fail the prompt with the stated reason", secPrompt.body);
+  }
+  const secRuns = await fetchJson(`/api/runs?sessionId=${encodeURIComponent(sessionId ?? "")}`);
+  if (!Array.isArray(secRuns.body) || !secRuns.body.some((r: any) => r.state === "failed" && /keychain/.test(r.error ?? ""))) {
+    fail("the durable run record must carry the keychain reason", secRuns.body);
+  }
+  console.log("[smoke] ok  /api/secrets (headless state reported as-is, refused write, plaintext save labelled, encrypt refused, delete, undecryptable key stated)");
 
   killTree(child.pid);
   await sleep(1000);

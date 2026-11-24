@@ -559,6 +559,25 @@ aside.chat li { font-size: 13.5px; line-height: 1.45; }
 .ft-tool:hover { color: var(--accent); border-color: var(--accent); }
 /* Context-menu group separator. */
 .ctx-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+/* BYOK secrets list (Model Manager). */
+.secret-row { display: flex; align-items: center; gap: 8px; }
+.secret-provider { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.secret-enc { border-color: rgba(63,185,80,0.5); color: #3fb950; }
+.secret-bad { border-color: rgba(248,81,73,0.5); color: #f85149; }
+/* BYOK secrets form: compact grid (id + URL share a row and wrap on narrow
+   panels; the key gets its own row), same dark input treatment as
+   .rename-input. The verdict line turns warning-coloured whenever a key was
+   NOT stored encrypted or a request failed. */
+.secret-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 8px; margin: 6px 0; }
+.secret-form label { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 12px; color: var(--muted, #8a8a98); }
+.secret-form label:last-child { grid-column: 1 / -1; }
+.secret-input {
+  background: var(--panel2); border: 1px solid var(--accent2); border-radius: 6px;
+  color: var(--text); padding: 4px 8px; font-size: 12.5px; min-width: 0; width: 100%;
+}
+.secret-input:focus { border-color: var(--accent); outline: none; }
+.secret-note { margin: 4px 0 0; }
+.secret-warn { color: var(--warn); }
 .ft-loading { color: var(--dim); font-size: 11px; padding-left: 24px; }
 
 /* ---- terminal ---- */

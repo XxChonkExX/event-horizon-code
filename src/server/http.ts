@@ -41,6 +41,7 @@ import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { listVoices, speak, ttsDoctor } from "./tts";
 import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } from "./agentrun";
 import { APP_VERSION } from "../shared/version";
+import { secretsStatus, writeSecret, deleteSecret, encryptAllSecrets, validProviderId } from "./secrets";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -1439,6 +1440,40 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;
+    }
+    // ---- BYOK secrets: OS-keychain-backed storage (docs/ENCRYPTION.md, E1) ----
+    // Status never carries a value; the audit log records provider names and
+    // storage state only - never key material.
+    if (req.method === "GET" && url.pathname === "/api/secrets/status") {
+      return sendJson(res, 200, secretsStatus());
+    }
+    if (req.method === "POST" && url.pathname === "/api/secrets") {
+      let raw = "";
+      let over = false;
+      req.on("data", (c) => { raw += c; if (raw.length > 16 * 1024) over = true; });
+      req.on("end", () => {
+        if (over) return sendJson(res, 413, { ok: false, error: "body too large" });
+        try {
+          const body = JSON.parse(raw || "{}") as { provider?: unknown; baseUrl?: unknown; apiKey?: unknown };
+          if (!validProviderId(body.provider)) return sendJson(res, 400, { ok: false, error: "provider id required (letters, digits, - and _ only, 1-32 chars)" });
+          const r = writeSecret(body.provider, { baseUrl: body.baseUrl as string | undefined, apiKey: body.apiKey as string | undefined });
+          audit({ tool: "secrets.write", note: `${body.provider} ok=${r.ok}${r.ok ? ` encrypted=${r.encrypted}` : ""}` });
+          return sendJson(res, r.ok ? 200 : 400, r);
+        } catch { sendJson(res, 400, { ok: false, error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/secrets/encrypt") {
+      const r = encryptAllSecrets();
+      audit({ tool: "secrets.encrypt", note: `ok=${r.ok} encrypted=${r.encrypted} already=${r.already}` });
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/secrets/")) {
+      const provider = decodeURIComponent(url.pathname.slice("/api/secrets/".length));
+      if (!validProviderId(provider)) return sendJson(res, 400, { ok: false, error: "invalid provider id" });
+      const r = deleteSecret(provider);
+      audit({ tool: "secrets.delete", note: `${provider} ok=${r.ok}` });
+      return sendJson(res, r.ok ? 200 : 404, r);
     }
     if (req.method === "POST" && url.pathname === "/api/engine/start") {
       let raw = "";
