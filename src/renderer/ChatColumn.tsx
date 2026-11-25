@@ -451,7 +451,7 @@ export default function ChatColumn(props: {
         <span>model</span>
         <select value={props.model()} onChange={(e) => props.setModel(e.target.value)}>
           <option value="">(none - echo)</option>
-          <For each={props.models()}>{(m) => <option value={m}>{m}</option>}</For>
+          <For each={props.models()}>{(m) => <option value={m}>{m.startsWith("byok:") ? `BYOK - ${m.slice(5)}` : m}</option>}</For>
         </select>
         <span>think</span>
         <select value={props.think()} onChange={(e) => props.setThink(e.target.value)}>

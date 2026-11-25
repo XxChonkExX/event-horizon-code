@@ -50,32 +50,57 @@ calls `safeStorage` directly - there is no IPC hop to secure.
   hard-coded key) is deliberately NOT enabled: obfuscation sold as security.
 - **Surface.** `GET /api/secrets/status` (never carries a value),
   `POST /api/secrets`, `POST /api/secrets/encrypt` (seal every plaintext value
-  in place), `DELETE /api/secrets/:provider`. Bodies are size-capped, provider
-  ids validated, writes atomic and owner-only (`0600`) where the OS supports
-  it. The audit log records provider names and storage state only. Agent tools
-  cannot read or write the file wherever `EH_SECRETS_FILE` puts it: `safePath`
-  compares the resolved path and the shell rule refuses its name.
+  in place), `DELETE /api/secrets/:provider`, `POST /api/secrets/backup` /
+  `GET /api/secrets/backups` / `DELETE /api/secrets/backups/:name` (plaintext
+  backups, below), `POST /api/secrets/:provider/test` (one 1-token completion
+  through the same call the agent lane makes; goes to the operator's base URL
+  only). Bodies are size-capped, provider ids validated, writes atomic,
+  flushed and owner-only (`0600`) where the OS supports it - verified on
+  Linux, where the backup folder is `0700`. The audit log records provider
+  names and storage state only. Agent tools cannot read or write the file
+  wherever `EH_SECRETS_FILE` puts it: `safePath` compares the resolved path
+  and the shell rule refuses its name.
+- **In the workbench.** A stored provider (base URL + key + model) appears in
+  the composer's picker as `byok:<provider>` and in profiles the same way;
+  selecting it routes the turn through that endpoint, and a missing or
+  unreadable key there is a stated failure, never a silent reroute to another
+  lane. The panel shows each provider's endpoint and model, offers the
+  1-token test, and gates "Encrypt stored keys" behind a plaintext backup
+  (kept under `~/.eventhorizon/backups/<timestamp>/secrets.json`, listed in
+  the panel, deletable there once moved somewhere safe).
 - **Verified on Windows, against the built app on this machine.**
   - `secrets:test:electron`: the module inside real Electron, two launches
     sharing one profile - the key sealed in launch one decrypts in launch two.
   - Built app: seal -> normal close -> fresh launch decrypts -> the agent lane
     sends the decrypted key to the configured endpoint. The same file handed to
     a headless runtime: stated refusal, nothing sent, file untouched.
-  - BYOK panel driven end to end in both states: invalid input refused, save,
-    verdict, key cleared from the DOM, two-step remove.
-- **Not verified.** Linux (libsecret/kwallet) and macOS (Keychain): the same
-  Electron API, untested here. `npm run secrets:test:electron` inside a
-  graphical session is the proof to run on each.
-- **Known edge (measured).** On a brand-new profile, Chromium writes the
-  profile's wrapping key about 10 s after launch, or at once on a normal close -
-  not when a value is sealed - and offers no API to force it. A key saved
-  within those first ~10 s of the very first launch is therefore lost if the
-  app is killed before the write: the next launch reports it `undecryptable`
-  and says why. It is a refusal, never a leak, and cannot recur once the key is
-  on disk. Closing it completely needs an envelope design - a random data key
-  sealed with `safeStorage` and written atomically beside the ciphertext in the
-  same save (Node's built-in AEAD for the data, the OS keychain for the key).
-  That is the recommended next step if the first-launch window matters.
+  - BYOK panel driven end to end in both states (39 checks): invalid input
+    refused, save, verdict, key cleared from the DOM, picker wiring
+    (`/api/models` gains `byok:<id>`), the backup-then-seal flow, two-step
+    remove.
+  - The BYOK secrets module (not the keychain path) also passes its node suite
+    on Linux (WSL2, Ubuntu 26.04): 86 checks including the `0600` file and
+    `0700` backup-folder modes.
+- **Not verified.** The Linux *keyring* path (libsecret/kwallet) and macOS
+  (Keychain): the same Electron API, untested here - this machine's WSL2 has
+  no secret service and lacks the libraries Electron needs. The proof to run
+  on each: `npm run secrets:test:electron` inside a graphical session.
+- **First-launch window: closed (settle-before-seal).** On a brand-new
+  profile, Chromium writes the profile's wrapping key about 10 s after launch,
+  or at once on a normal close - not when a value is sealed - and offers no
+  API to force it. A value sealed before that lands used to be lost if the app
+  died first. The fix: the first seal on a profile whose wrapping key is not
+  yet on disk (Windows) waits for it before sealing (poll, max 30 s). The
+  save returns only once the key is durable, so even an immediate kill cannot
+  lose it - measured against the built app: the save waited 10.1 s, the app
+  was force-killed right after, and the relaunch decrypted the key. Two
+  honest notes: (1) an earlier proposal here - an envelope design with a data
+  key wrapped by `safeStorage` - was REJECTED on closer analysis, because the
+  wrapped data key would depend on the very key that failed to reach disk; it
+  would not have closed this window. (2) If the wait cannot confirm the key
+  within 30 s (an unexpected Chromium layout), the save proceeds and says the
+  durability could not be confirmed - stated in the save response and in the
+  panel's verdict, never silent.
 - **Limits.** Bound to the OS user account: protects stolen files and copied
   workspaces, not a compromised account (a process running as the same user can
   use the same keychain). Not transport, database, or end-to-end encryption.
@@ -102,8 +127,10 @@ the interface it needs.
 
 ## Status
 
-- E1: **implemented** (2026-11-24) and verified on Windows; Linux and macOS
-  proofs pending on their own machines. The first-launch edge above is
-  documented, not closed - envelope design is the optional next step.
+- E1: **implemented** (2026-11-24). Verified on Windows (module in real
+  Electron across launches, built app end to end, panel flows) and the module's
+  POSIX behaviour on Linux (WSL2); the Linux keyring path and macOS are pending
+  proofs on their own machines. The first-launch window is closed by
+  settle-before-seal (above).
 - E2: research item; tracked with the runtime-supervision work.
 - E3: blocked on the Mission Control lane; primitives chosen.

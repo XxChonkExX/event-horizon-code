@@ -95,11 +95,11 @@ Everything else is automatic: `GET /api/engine/models` scans `~/.eventhorizon/mo
 
 **Ollama lane:** `ollama serve`, then models appear in the picker; capabilities are probed live via `POST /api/show` and shown as badges.
 
-**BYOK:** save the key in the app under **Models → BYOK secrets**. It is sealed with the OS keychain (Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, libsecret/kwallet on Linux) and written to `.harness/secrets.json` (gitignored) as `enc1:<ciphertext>`. The file can also be edited by hand — plaintext, which is also what a headless runtime (`npm run serve`) can use, since it cannot reach a keychain and says so; **Encrypt stored keys** seals plaintext values later:
+**BYOK:** save it in the app under **Models → BYOK secrets**: base URL, API key, and the model the agent should use. The key is sealed with the OS keychain (Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, libsecret/kwallet on Linux) and written to `.harness/secrets.json` (gitignored) as `enc1:<ciphertext>`. The provider then appears in the composer's model picker as `byok:<provider>` (and can be set as a profile's model). **test** fires one 1-token completion through the same call the agent makes; the panel shows each provider's endpoint and storage state; **Encrypt stored keys** seals hand-written plaintext keys behind a plaintext backup it offers first. The file can also be edited by hand — plaintext, which is also what a headless runtime (`npm run serve`) can use, since it cannot reach a keychain and says so:
 ```json
-{ "openai": { "baseUrl": "https://api.openai.com/v1", "apiKey": "sk-..." } }
+{ "openai": { "baseUrl": "https://api.openai.com/v1", "apiKey": "sk-...", "model": "gpt-4o-mini" } }
 ```
-Verified end to end on Windows only — see `docs/ENCRYPTION.md`.
+Verified end to end on Windows (module also tested on Linux); the Linux/macOS keyring proofs are pending — see `docs/ENCRYPTION.md`.
 
 ## Security & privacy posture
 

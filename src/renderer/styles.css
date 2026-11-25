@@ -570,7 +570,10 @@ aside.chat li { font-size: 13.5px; line-height: 1.45; }
    NOT stored encrypted or a request failed. */
 .secret-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 8px; margin: 6px 0; }
 .secret-form label { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 12px; color: var(--muted, #8a8a98); }
-.secret-form label:last-child { grid-column: 1 / -1; }
+.secret-form .span2 { grid-column: 1 / -1; }
+.secret-sub { font-size: 10.5px; color: var(--muted, #8a8a98); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.secret-confirm { border: 1px solid var(--border); border-radius: 8px; padding: 8px; margin: 6px 0; }
+.secret-confirm p { margin: 4px 0; font-size: 12px; }
 .secret-input {
   background: var(--panel2); border: 1px solid var(--accent2); border-radius: 6px;
   color: var(--text); padding: 4px 8px; font-size: 12.5px; min-width: 0; width: 100%;

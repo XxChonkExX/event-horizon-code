@@ -18,7 +18,7 @@ import { subscribe, broadcast } from "./sse";
 import { contained } from "./wsguard";
 import { getAuditPath, auditHealth } from "./audit";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
-import { listModels, modelCapabilities } from "./router";
+import { listModels, modelCapabilities, chatOpenAI } from "./router";
 import { searchEngram, verifyArithmetic } from "./engram";
 import {
   createSession, listTodos, addTodo, loadMessages,
@@ -41,7 +41,7 @@ import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { listVoices, speak, ttsDoctor } from "./tts";
 import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } from "./agentrun";
 import { APP_VERSION } from "../shared/version";
-import { secretsStatus, writeSecret, deleteSecret, encryptAllSecrets, validProviderId } from "./secrets";
+import { secretsStatus, writeSecret, deleteSecret, encryptAllSecrets, validProviderId, readSecret, createBackup, listBackups, deleteBackup, usableByokProviders, byokModelId, byokProviderFromModel } from "./secrets";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
 
 
@@ -429,12 +429,18 @@ export function startHttpServer(opts: ServerOpts): http.Server {
 
     if (req.method === "GET" && url.pathname === "/api/models") {
       const models = await listModels();
+      // Stored BYOK providers join the picker as "byok:<provider>": selecting
+      // one routes the turn through that endpoint (agentLoop). Only providers
+      // this runtime can actually read are listed.
+      try { for (const p of usableByokProviders()) models.push({ id: byokModelId(p.provider) }); } catch { /* picker still lists the local models */ }
       return sendJson(res, 200, models);
     }
     // What can this model actually do? Engine /props or Ollama /api/show.
     if (req.method === "GET" && url.pathname === "/api/models/capabilities") {
       const model = url.searchParams.get("model") ?? "";
       const refresh = url.searchParams.get("refresh") === "1";
+      // A BYOK endpoint is the operator's own: nothing is probed, so nothing is claimed.
+      if (byokProviderFromModel(model)) return sendJson(res, 200, { capabilities: [], source: "byok", note: "your endpoint - capabilities are not probed" });
       return sendJson(res, 200, await modelCapabilities(model, { engineBase: engineEndpoint(), refresh }));
     }
 
@@ -1451,12 +1457,13 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       let raw = "";
       let over = false;
       req.on("data", (c) => { raw += c; if (raw.length > 16 * 1024) over = true; });
-      req.on("end", () => {
+      req.on("end", async () => {
         if (over) return sendJson(res, 413, { ok: false, error: "body too large" });
         try {
-          const body = JSON.parse(raw || "{}") as { provider?: unknown; baseUrl?: unknown; apiKey?: unknown };
+          const body = JSON.parse(raw || "{}") as { provider?: unknown; baseUrl?: unknown; apiKey?: unknown; model?: unknown };
           if (!validProviderId(body.provider)) return sendJson(res, 400, { ok: false, error: "provider id required (letters, digits, - and _ only, 1-32 chars)" });
-          const r = writeSecret(body.provider, { baseUrl: body.baseUrl as string | undefined, apiKey: body.apiKey as string | undefined });
+          // Any field may be omitted; every type is re-checked by writeSecret.
+          const r = await writeSecret(body.provider, { baseUrl: body.baseUrl as string | undefined, apiKey: body.apiKey as string | undefined, model: body.model as string | undefined });
           audit({ tool: "secrets.write", note: `${body.provider} ok=${r.ok}${r.ok ? ` encrypted=${r.encrypted}` : ""}` });
           return sendJson(res, r.ok ? 200 : 400, r);
         } catch { sendJson(res, 400, { ok: false, error: "bad request" }); }
@@ -1464,9 +1471,42 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       return;
     }
     if (req.method === "POST" && url.pathname === "/api/secrets/encrypt") {
-      const r = encryptAllSecrets();
+      const r = await encryptAllSecrets();
       audit({ tool: "secrets.encrypt", note: `ok=${r.ok} encrypted=${r.encrypted} already=${r.already}` });
       return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    // Plaintext backups (docs/ENCRYPTION.md): a copy of the file as it is,
+    // taken before existing keys are sealed. Never inside a workspace.
+    if (req.method === "POST" && url.pathname === "/api/secrets/backup") {
+      const r = createBackup();
+      audit({ tool: "secrets.backup", note: r.ok ? `bytes=${r.bytes}` : "failed" });
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    if (req.method === "GET" && url.pathname === "/api/secrets/backups") {
+      return sendJson(res, 200, listBackups());
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/secrets/backups/")) {
+      const r = deleteBackup(decodeURIComponent(url.pathname.slice("/api/secrets/backups/".length)));
+      audit({ tool: "secrets.backup.delete", note: `ok=${r.ok}` });
+      return sendJson(res, r.ok ? 200 : r.error === "no such backup" ? 404 : 400, r);
+    }
+    // "Does this key work?" - one 1-token completion on the provider's own
+    // endpoint, through the same call the agent lane makes. It goes to the
+    // operator-configured base URL only; neither the response nor the audit
+    // log carries key material.
+    if (req.method === "POST" && url.pathname.startsWith("/api/secrets/") && url.pathname.endsWith("/test")) {
+      const provider = decodeURIComponent(url.pathname.slice("/api/secrets/".length, -"/test".length));
+      if (!validProviderId(provider)) return sendJson(res, 400, { ok: false, error: "invalid provider id" });
+      let secret: ReturnType<typeof readSecret> = null;
+      try { secret = readSecret(provider); } catch (e) { return sendJson(res, 200, { ok: false, latencyMs: 0, error: String((e as Error).message ?? e).slice(0, 240) }); }
+      if (!secret?.apiKey || !secret.baseUrl) return sendJson(res, 200, { ok: false, latencyMs: 0, error: `no key or base URL stored for "${provider}"` });
+      const model = (url.searchParams.get("model") ?? "").trim().slice(0, 200) || secret.model || "";
+      if (!model) return sendJson(res, 200, { ok: false, latencyMs: 0, error: `no model set for "${provider}" - save one under Models > BYOK secrets` });
+      const t0 = Date.now();
+      const r = await chatOpenAI(model, [{ role: "user", content: "Reply with the single word: ok" }], { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: "low", numPredict: 1, timeoutMs: 30_000 });
+      const latencyMs = Date.now() - t0;
+      audit({ tool: "secrets.test", note: `${provider} ok=${r.ok} model=${model.slice(0, 60)} ms=${latencyMs}` });
+      return sendJson(res, 200, { ok: r.ok, model, latencyMs, ...(r.ok ? {} : { error: String(r.error ?? "request failed").slice(0, 240) }) });
     }
     if (req.method === "DELETE" && url.pathname.startsWith("/api/secrets/")) {
       const provider = decodeURIComponent(url.pathname.slice("/api/secrets/".length));

@@ -25,7 +25,7 @@ import type { ToolName } from "./tools";
 import { contained } from "./wsguard";
 import { engineEndpoint } from "./engine";
 import { beginRun, transition, completeRun, failRun, cancelRun, appendRunEvent, getAgentRun } from "./agentrun";
-import { readSecret } from "./secrets";
+import { readSecret, byokProviderFromModel, validProviderId } from "./secrets";
 import type { AgentRunState, AgentRun } from "./agentrun";
 
 export type AgentTurnParams = {
@@ -260,25 +260,38 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   // One model call on whichever lane applies, with the agent tool set.
   // lane is recorded in the audit and returned - "provider" in the prompt
   // params is only the requester's hint, not what actually served the turn.
+  // BYOK lane selection. The composer's picker (and profiles) select a stored
+  // provider as "byok:<provider>"; ACP clients may pass params.provider. A
+  // selection never reroutes to another lane: a missing or unreadable key is
+  // a stated failure.
+  const byokFromPicker = byokProviderFromModel(usedModel);
+  const byokProvider: string | null = byokFromPicker ?? (validProviderId(p.provider) ? p.provider : null);
   let lane: "engine" | "openai" | "router" | "none" = "none";
   const callModel = async (budget: number, nudge: boolean): Promise<ChatResult> => {
     const msgs = nudge
       ? [...convo, { role: "system" as const, content: "Stop deliberating. Use your final answer or a tool call now." }]
       : convo;
-    if (p.provider === "openai") {
+    if (byokProvider) {
       lane = "openai";
       let secret: ReturnType<typeof readSecret> = null;
       try {
-        secret = readSecret("openai");
+        secret = readSecret(byokProvider);
       } catch (e) {
         // Stored but not decryptable here (keychain unreachable / other OS
         // user): the exact reason beats a generic "no key" message.
-        return { ok: false, content: "", model: usedModel || "openai", error: String((e as Error).message ?? e).slice(0, 240) };
+        return { ok: false, content: "", model: usedModel || byokProvider, error: String((e as Error).message ?? e).slice(0, 240) };
       }
       if (!secret?.apiKey || !secret.baseUrl) {
-        return { ok: false, content: "", model: usedModel || "openai", error: "no BYOK key - save one under Models > BYOK secrets, or put {\"openai\":{\"baseUrl\",\"apiKey\"}} in .harness/secrets.json (gitignored)" };
+        return { ok: false, content: "", model: usedModel || byokProvider, error: `no BYOK key for "${byokProvider}" - save one under Models > BYOK secrets, or put {"${byokProvider}":{"baseUrl","apiKey"}} in .harness/secrets.json (gitignored)` };
       }
-      return chatOpenAI(usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, onDelta: p.onDelta });
+      // A picker selection carries no model of its own: the provider's stored
+      // model is the only source, and guessing one would hit the wrong model
+      // on the operator's endpoint. (The explicit provider param keeps its
+      // historical fallbacks.)
+      if (!secret.model && byokFromPicker) {
+        return { ok: false, content: "", model: byokProvider, error: `no model set for BYOK provider "${byokProvider}" - save one under Models > BYOK secrets` };
+      }
+      return chatOpenAI(secret.model || usedModel || "gpt-4o-mini", msgs, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: effThink, numPredict: budget, timeoutMs: p.timeoutMs, tools: advertised, onDelta: p.onDelta });
     }
     if (engineUp) {
       // Bundled chonkllama sidecar serves whatever GGUF it was started with; model field is informational.
@@ -294,7 +307,7 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     return { ok: false, content: "", model: "none", error: "no model selected" };
   };
 
-  const busy = Boolean(usedModel || p.provider === "openai" || engineUp);
+  const busy = Boolean(usedModel || byokProvider || engineUp);
   let result: ChatResult | null = null;
   let budget = clampBudget(effTokens);
   let attempts = 0;

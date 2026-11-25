@@ -57,7 +57,7 @@ async function main() {
     // leader. Without `detached`, process.kill(-pid) fails, the child survives
     // and keeps our captured pipes open -> the CI runner hangs forever.
     detached: process.platform !== "win32",
-    env: { ...process.env, EH_PORT: String(PORT), EH_PASS: PASS, EH_DB: path.join(smokeHome, "smoke.db"), EH_SOPS_DIR: path.join(smokeHome, "sops"), EH_SECRETS_FILE: secretsFile },
+    env: { ...process.env, EH_PORT: String(PORT), EH_PASS: PASS, EH_DB: path.join(smokeHome, "smoke.db"), EH_SOPS_DIR: path.join(smokeHome, "sops"), EH_SECRETS_FILE: secretsFile, EH_BACKUPS_DIR: path.join(smokeHome, "backups") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "";
@@ -183,14 +183,49 @@ async function main() {
   }
   const secListed = await fetchJson("/api/secrets/status");
   const sp = secListed.body?.providers?.find((p: any) => p.provider === "smokeprov");
-  if (!sp || sp.hasKey !== true || sp.encrypted !== false || JSON.stringify(secListed.body).includes(SMOKE_KEY)) {
-    fail("status must list the provider and never carry the key", secListed.body);
+  if (!sp || sp.hasKey !== true || sp.encrypted !== false || sp.model !== null || JSON.stringify(secListed.body).includes(SMOKE_KEY)) {
+    fail("status must list the provider (without a model yet) and never carry the key", secListed.body);
   }
+  // Picker + lane selection: a provider is offered only with a key, a base URL
+  // AND a model; selecting it routes the turn to the BYOK lane, and every
+  // failure there is a stated one - no silent reroute, no network call here.
+  const picker0 = await fetchJson("/api/models");
+  if (JSON.stringify(picker0.body).includes("byok:")) fail("the picker must not offer a provider without a model", picker0.body);
+  const laneNoModel = await fetchJson("/api/acp/session/prompt", { method: "POST", body: JSON.stringify({ params: { sessionId, text: "ping", think: "low", numPredict: 16, model: "byok:smokeprov" } }) });
+  if (laneNoModel.status !== 200 || laneNoModel.body?.ok !== false || laneNoModel.body?.lane !== "openai" || !/^model error: no model set for BYOK provider "smokeprov"/.test(laneNoModel.body?.reply ?? "")) {
+    fail("a picker selection without a stored model must fail the turn with the reason", laneNoModel.body);
+  }
+  const laneGhost = await fetchJson("/api/acp/session/prompt", { method: "POST", body: JSON.stringify({ params: { sessionId, text: "ping", think: "low", numPredict: 16, model: "byok:ghost" } }) });
+  if (laneGhost.status !== 200 || laneGhost.body?.ok !== false || laneGhost.body?.lane !== "openai" || !/^model error: no BYOK key for "ghost"/.test(laneGhost.body?.reply ?? "")) {
+    fail("an unknown BYOK provider must fail the turn with the reason", laneGhost.body);
+  }
+  const caps = await fetchJson("/api/models/capabilities?model=" + encodeURIComponent("byok:smokeprov"));
+  if (caps.status !== 200 || !Array.isArray(caps.body?.capabilities) || caps.body?.source !== "byok") fail("BYOK capabilities are reported as not probed, never claimed", caps.body);
+  const testGhost = await fetchJson("/api/secrets/ghost/test", { method: "POST", body: "{}" });
+  if (testGhost.status !== 200 || testGhost.body?.ok !== false || !/no key or base URL stored for "ghost"/.test(testGhost.body?.error ?? "")) fail("testing a provider with no stored key states it", testGhost.body);
+  const testNoModel = await fetchJson("/api/secrets/smokeprov/test", { method: "POST", body: "{}" });
+  if (testNoModel.status !== 200 || testNoModel.body?.ok !== false || !/no model set/.test(testNoModel.body?.error ?? "")) fail("testing without a stored model states it (and sends nothing)", testNoModel.body);
+  const wModel = await fetchJson("/api/secrets", { method: "POST", body: JSON.stringify({ provider: "smokeprov", model: "gpt-4o-mini" }) });
+  if (wModel.status !== 200 || wModel.body?.ok !== true) fail("a model-only save succeeds and keeps the key", wModel.body);
+  const picker1 = await fetchJson("/api/models");
+  if (!Array.isArray(picker1.body) || !picker1.body.some((m: any) => m.id === "byok:smokeprov")) fail("with a model saved, the provider joins the picker as byok:<id>", picker1.body);
   const secSnap = fs.readFileSync(secretsFile, "utf8");
   const secEnc = await fetchJson("/api/secrets/encrypt", { method: "POST", body: "{}" });
   if (secEnc.status !== 400 || secEnc.body?.ok !== false || !/desktop app/.test(secEnc.body?.error ?? "") || fs.readFileSync(secretsFile, "utf8") !== secSnap) {
     fail("encrypt without a keychain must be refused and leave the file byte-identical", secEnc.body);
   }
+  // Plaintext backups over HTTP: exact copy, confined to the backups dir, and
+  // deletable only by a server-generated name.
+  const bk = await fetchJson("/api/secrets/backup", { method: "POST", body: "{}" });
+  if (bk.status !== 200 || bk.body?.ok !== true || !String(bk.body?.path ?? "").startsWith(path.join(smokeHome, "backups")) || path.basename(bk.body?.path ?? "") !== "secrets.json" || fs.readFileSync(bk.body.path, "utf8") !== secSnap) {
+    fail("a backup is a byte-identical copy inside the configured backups dir", bk.body);
+  }
+  const bkList = await fetchJson("/api/secrets/backups");
+  if (bkList.status !== 200 || bkList.body?.length !== 1 || JSON.stringify(bkList.body).includes(SMOKE_KEY)) fail("the backup list shows one entry and no key material", bkList.body);
+  const bkBad = await fetchJson("/api/secrets/backups/" + encodeURIComponent("../evil"), { method: "DELETE" });
+  if (bkBad.status !== 400) fail("a backup name with path separators is refused", bkBad.body);
+  const bkDel = await fetchJson("/api/secrets/backups/" + encodeURIComponent(bkList.body[0].name), { method: "DELETE" });
+  if (bkDel.status !== 200 || bkDel.body?.ok !== true || (await fetchJson("/api/secrets/backups")).body?.length !== 0) fail("a listed backup can be deleted by name", bkDel.body);
   const secDel = await fetchJson("/api/secrets/smokeprov", { method: "DELETE" });
   if (secDel.status !== 200 || secDel.body?.ok !== true) fail("delete a stored secret", secDel.body);
   // A key sealed by the desktop app, read by a runtime with no keychain: the
