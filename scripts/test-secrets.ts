@@ -15,7 +15,7 @@ import {
   readSecret, writeSecret, deleteSecret, encryptAllSecrets, secretsStatus,
   encryptionAvailable, isEncryptedValue, secretsPath, SecretError,
   backupsDir, createBackup, listBackups, deleteBackup, usableByokProviders,
-  byokModelId, byokProviderFromModel, wrappingKeyOnDisk,
+  byokModelId, byokProviderFromModel, wrappingKeyOnDisk, hasSecretRefs, resolveSecretRefs,
 } from "../src/server/secrets";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-secrets-"));
@@ -97,6 +97,33 @@ async function main(): Promise<void> {
   check("model on disk stays readable", (JSON.parse(fs.readFileSync(file, "utf8")) as { openai: { model: string } }).openai.model === "gpt-4o-mini");
   await writeSecret("openai", { model: "" });
   check("an empty model clears the field", readSecret("openai")?.model === undefined);
+
+  // 5b. secret references (MCP config): "${secrets:<provider>[:field]}"
+  await writeSecret("openai", { model: "gpt-4o-mini" });
+  const refStore = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, Record<string, string>>;
+  check("hasSecretRefs detects references", hasSecretRefs("${secrets:openai}") === true && hasSecretRefs("${other:x}") === false && hasSecretRefs(undefined) === false);
+  check("a bare reference resolves to the apiKey", resolveSecretRefs("token ${secrets:openai}") === `token ${refStore.openai.apiKey}`);
+  check("field references resolve to their field", resolveSecretRefs("${secrets:openai:baseUrl}|${secrets:openai:model}") === "https://b|gpt-4o-mini");
+  check("multiple references in one string all resolve", resolveSecretRefs("${secrets:openai:baseUrl} key=${secrets:openai} m=${secrets:openai:model}") === `https://b key=${refStore.openai.apiKey} m=gpt-4o-mini`);
+  check("non-secret syntax passes through untouched", resolveSecretRefs("${secrets:} ${secrets:has.dot} $secrets:x") === "${secrets:} ${secrets:has.dot} $secrets:x");
+  let refErr: SecretError | null = null;
+  try { resolveSecretRefs("${secrets:ghost}"); } catch (e) { refErr = e as SecretError; }
+  check("a reference to a missing secret throws with the name", refErr instanceof SecretError && /no secret stored for "ghost"/.test(refErr.message ?? ""), refErr?.message);
+  refErr = null;
+  fs.appendFileSync(file, ""); // (no-op: keep the file as the assertions above left it)
+  await writeSecret("minimal", { apiKey: "only-a-key" });
+  try { resolveSecretRefs("${secrets:minimal:baseUrl}"); } catch (e) { refErr = e as SecretError; }
+  check("a reference to an absent field throws", refErr instanceof SecretError && /has no baseUrl/.test(refErr.message ?? ""), refErr?.message);
+  if (!keychain) {
+    fs.writeFileSync(file, JSON.stringify({ sealed: { apiKey: "enc1:AAAA" } }));
+    refErr = null;
+    try { resolveSecretRefs("${secrets:sealed}"); } catch (e) { refErr = e as SecretError; }
+    check("a reference to an unreadable secret throws the keychain reason", refErr instanceof SecretError && refErr.code === "keychain-unavailable", refErr?.message);
+    fs.writeFileSync(file, JSON.stringify({ openai: { baseUrl: "https://b", apiKey: "k1" } }));
+  } else {
+    skip("reference to an unreadable secret", "a keychain IS available in this process");
+  }
+  await writeSecret("openai", { model: "" });
 
   // 6. an encrypted blob with no keychain: stated refusal with the reason
   if (!keychain) {

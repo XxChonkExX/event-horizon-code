@@ -8,10 +8,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, exec } from "node:child_process";
-import { fetch as ufetch, Agent } from "undici";
+import { fetch as ufetch } from "undici";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
 import { contained } from "./wsguard";
 import { secretsPath } from "./secrets";
+import { pinnedAgent, resolveHostAddrs } from "./dnspin";
 
 // AfterImage machines/src resolution - portable order, no machine-specific
 // absolute paths: explicit env, sibling checkout, in-workspace copy.
@@ -35,7 +36,6 @@ import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
 import { buildDetonatePlan, runDetonate, runNamespacedDetonate, runBwrapDetonate, runSeatbeltDetonate, detectDetonateBackend, quarantineBaseline, quarantineDiff, fsSnapshot, fsDiff, scanUncleanScript, type DetonateTier } from "./detonate";
 import { isMcpTool, callMcpTool } from "./mcp";
-import dnsPromises from "node:dns/promises";
 
 // ---- SSRF guard (external audit) ----
 // webfetch with auto-approval must never become a pivot into the operator's
@@ -112,27 +112,15 @@ export async function resolveValidatedUrl(raw: string): Promise<{ url: URL; ips:
     if (isPrivateAddress(bare)) throw new Error(`refused: ${u.hostname} is a private/reserved address`);
     return { url: u, ips: [bare] };
   }
-  const addrs = await dnsPromises.lookup(u.hostname, { all: true });
-  if (!addrs.length) throw new Error(`dns: no address for ${u.hostname}`);
-  const ips = addrs.map((a) => a.address);
+  const ips = await resolveHostAddrs(u.hostname);
   for (const ip of ips) {
     if (isPrivateAddress(ip)) throw new Error(`refused: ${u.hostname} resolves to a private/reserved address (${ip})`);
   }
   return { url: u, ips };
 }
 
-// Connection pin: an undici Agent whose lookup returns ONLY the validated
-// addresses for this hop - the socket cannot connect elsewhere.
-function pinnedAgent(ips: string[]): Agent {
-  return new Agent({
-    connect: {
-      lookup(_hostname, _opts, callback) {
-        const ip = ips[Math.floor(Math.random() * ips.length)]!;
-        callback(null, ip, ip.includes(":") ? 6 : 4);
-      },
-    },
-  });
-}
+// The connection pin itself (resolveHostAddrs + pinnedAgent) lives in
+// ./dnspin - one implementation shared with the BYOK lane.
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean; image?: string };

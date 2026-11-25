@@ -127,16 +127,21 @@ export function recordUsage(sessionId: string, model: string, tokens: number): v
 
 const memUsage: UsageRow[] = [];
 
-export function usageSummary(sessionId?: string): { totalTokens: number; byModel: Array<{ model: string; tokens: number }> } {
+export function usageSummary(sessionId?: string): { totalTokens: number; totalCalls: number; byModel: Array<{ model: string; tokens: number; calls: number }> } {
   const rows = db
-    ? (db.prepare(sessionId ? "SELECT model, SUM(tokens) as tokens FROM usage WHERE sessionId=? GROUP BY model" : "SELECT model, SUM(tokens) as tokens FROM usage GROUP BY model").all(...(sessionId ? [sessionId] : [])) as Array<{ model: string; tokens: number }>)
+    ? (db.prepare(sessionId ? "SELECT model, SUM(tokens) as tokens, COUNT(*) as calls FROM usage WHERE sessionId=? GROUP BY model" : "SELECT model, SUM(tokens) as tokens, COUNT(*) as calls FROM usage GROUP BY model").all(...(sessionId ? [sessionId] : [])) as Array<{ model: string; tokens: number; calls: number }>)
     : (() => {
         const filtered = sessionId ? memUsage.filter((u) => u.sessionId === sessionId) : memUsage;
-        const m = new Map<string, number>();
-        for (const u of filtered) m.set(u.model, (m.get(u.model) ?? 0) + u.tokens);
-        return Array.from(m.entries()).map(([model, tokens]) => ({ model, tokens }));
+        const m = new Map<string, { tokens: number; calls: number }>();
+        for (const u of filtered) {
+          const cur = m.get(u.model) ?? { tokens: 0, calls: 0 };
+          cur.tokens += u.tokens;
+          cur.calls += 1;
+          m.set(u.model, cur);
+        }
+        return Array.from(m.entries()).map(([model, v]) => ({ model, tokens: v.tokens, calls: v.calls }));
       })();
-  return { totalTokens: rows.reduce((a, r) => a + (r.tokens ?? 0), 0), byModel: rows };
+  return { totalTokens: rows.reduce((a, r) => a + (r.tokens ?? 0), 0), totalCalls: rows.reduce((a, r) => a + (r.calls ?? 0), 0), byModel: rows };
 }
 
 // ---- profiles (user-level defaults; project config stays in .harness) ----

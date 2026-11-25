@@ -7,6 +7,8 @@ import { createSignal, onMount, onCleanup, For, Show } from "solid-js";
 import { apiJson, apiFetch } from "./api";
 import { openContextMenu } from "./ContextMenu";
 
+type Usage = { totalTokens: number; totalCalls: number; byModel: Array<{ model: string; tokens: number; calls: number }> };
+
 type Run = {
   id: string;
   sessionId: string;
@@ -40,7 +42,11 @@ export default function RunsPanel() {
   const [events, setEvents] = createSignal<RunEvent[]>([]);
   const [busy, setBusy] = createSignal("");
   const [note, setNote] = createSignal("Runs are durable work records - they survive restarts. Interrupted runs can be resumed.");
+  const [usage, setUsage] = createSignal<Usage | null>(null);
 
+  const refreshUsage = async (): Promise<void> => {
+    try { setUsage(await apiJson<Usage>("/api/usage")); } catch { /* usage unavailable */ }
+  };
   const refresh = async (): Promise<void> => {
     try {
       const list = await apiJson<Run[]>("/api/runs");
@@ -70,6 +76,7 @@ export default function RunsPanel() {
   };
 
   onMount(() => {
+    void refreshUsage();
     void refresh();
     const iv = setInterval(() => { void refresh(); }, 4000);
     onCleanup(() => clearInterval(iv));
@@ -138,6 +145,11 @@ export default function RunsPanel() {
         </details>
       </Show>
       <p class="session-meta">{note()}</p>
+      <p class="session-meta" title="Token accounting from durable usage records (all sessions in this workspace)">
+        {usage()
+          ? `tokens: ${usage()!.totalTokens.toLocaleString()} across ${usage()!.totalCalls} turn${usage()!.totalCalls === 1 ? "" : "s"} — ${(usage()!.byModel ?? []).map((m) => `${m.model}: ${m.tokens.toLocaleString()}`).join(" · ") || "no model usage yet"}`
+          : "tokens: (usage unavailable)"}
+      </p>
     </div>
   );
 }

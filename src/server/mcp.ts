@@ -5,11 +5,15 @@
 //
 // Config (.harness/config.json):
 //   "mcp": { "servers": { "files": { "command": "npx", "args": ["-y","@modelcontextprotocol/server-filesystem","."], "env": {} } } }
+// Env values (and command/args) may reference the BYOK keychain:
+//   "env": { "GITHUB_TOKEN": "${secrets:github}" }   -> resolved at start
+// A missing or unreadable secret fails the start with the reason.
 
 import { spawn, ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { audit } from "./audit";
+import { hasSecretRefs, resolveSecretRefs } from "./secrets";
 
 export type McpToolDef = {
   type: "function";
@@ -33,23 +37,16 @@ class McpServer {
 
   async start(timeoutMs = 15000): Promise<void> {
     if (this.proc) return;
-    // Sweep-5: configured env values may not override executable-resolution
-    // variables (PATH decides which binary the MCP server itself runs through).
-    const BLOCKED_MCP_ENV = new Set(["PATH", "PATHEXT", "NODE_OPTIONS", "ELECTRON_RUN_AS_NODE"]);
-    const configured: Record<string, string> = {};
-    for (const [k, v] of Object.entries(this.cfg.env ?? {})) {
-      if (!BLOCKED_MCP_ENV.has(k.toUpperCase()) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) && typeof v === "string" && v.length <= 8192) {
-        configured[k] = v;
-      }
-    }
-    const proc = spawn(this.cfg.command, this.cfg.args ?? [], {
+    const { command, args, env: resolvedEnv, referenced } = resolveMcpLaunch(this.cfg);
+    if (referenced.length) audit({ tool: "mcp.secrets", note: `${this.name} <- ${referenced.join(",")}` });
+    const proc = spawn(command, args, {
       // Env allowlist: pass PATH/HOME/system basics, plus the server's own vars.
       env: {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? process.env.USERPROFILE ?? "",
         SystemRoot: process.env.SystemRoot ?? "",
         TEMP: process.env.TEMP ?? "",
-        ...configured,
+        ...resolvedEnv,
       },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -183,6 +180,31 @@ class McpServer {
   stop() {
     if (this.proc) { try { this.proc.kill(); } catch { /* already dead */ } this.proc = null; this.ready = false; }
   }
+}
+
+// Turn a configured server (command/args/env) into the values actually
+// spawned: "${secrets:*}" references resolved through the BYOK keychain at
+// start (tokens live sealed in secrets.json, never in config.json or a log),
+// executable-resolution env keys blocked, oversized values dropped. Exported
+// for tests. A missing or unreadable referenced secret THROWS - the start
+// fails with the reason; a server must not launch with a blank token.
+export function resolveMcpLaunch(cfg: { command: string; args?: string[]; env?: Record<string, string> }): {
+  command: string; args: string[]; env: Record<string, string>; referenced: string[];
+} {
+  const BLOCKED_MCP_ENV = new Set(["PATH", "PATHEXT", "NODE_OPTIONS", "ELECTRON_RUN_AS_NODE"]);
+  const referenced = new Set<string>();
+  const res = (v: string): string => {
+    if (!hasSecretRefs(v)) return v;
+    for (const m of v.matchAll(/\$\{secrets:([A-Za-z0-9_-]{1,32})/g)) referenced.add(m[1]);
+    return resolveSecretRefs(v);
+  };
+  const env: Record<string, string> = {};
+  for (const [k, raw] of Object.entries(cfg.env ?? {})) {
+    if (BLOCKED_MCP_ENV.has(k.toUpperCase()) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || typeof raw !== "string") continue;
+    const v = res(raw);
+    if (v.length <= 8192) env[k] = v;
+  }
+  return { command: res(cfg.command), args: (cfg.args ?? []).map(res), env, referenced: [...referenced].sort() };
 }
 
 const servers = new Map<string, McpServer>();

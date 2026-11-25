@@ -389,6 +389,26 @@ export function deleteBackup(name: string): { ok: boolean; error?: string } {
   }
 }
 
+// --- secret references (MCP server config, and future surfaces) ------------
+// "${secrets:<provider>}" -> the stored apiKey; "${secrets:<provider>:baseUrl}"
+// or ":model" -> that field. Resolved when an MCP server starts, so a token
+// lives sealed in secrets.json, never in config.json or a log. A missing or
+// unreadable secret throws - the server start fails with the reason instead
+// of launching with a blank token.
+const SECRET_REF = /\$\{secrets:([A-Za-z0-9_-]{1,32})(?::(apiKey|baseUrl|model))?\}/g;
+export function hasSecretRefs(v: unknown): boolean {
+  return typeof v === "string" && v.includes("${secrets:");
+}
+export function resolveSecretRefs(value: string): string {
+  return value.replace(SECRET_REF, (_full, provider: string, field?: string) => {
+    const secret = readSecret(provider);
+    if (!secret) throw new SecretError("invalid", `no secret stored for "${provider}" - save one under Models > BYOK secrets`);
+    const v = secret[(field ?? "apiKey") as "apiKey" | "baseUrl" | "model"];
+    if (typeof v !== "string" || !v) throw new SecretError("invalid", `the secret "${provider}" has no ${field ?? "apiKey"} - edit it under Models > BYOK secrets`);
+    return v;
+  });
+}
+
 // Providers offered to the composer's picker (and to profiles): a key, a base
 // URL and a model that this runtime can actually read. A sealed key counts
 // only when decrypting it was CONFIRMED here - on a runtime with no keychain

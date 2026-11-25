@@ -6,6 +6,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fetch as ufetch } from "undici";
+import { pinnedAgent, resolveHostAddrs } from "./dnspin";
 import { audit } from "./audit";
 
 export type ModelInfo = { id: string; openaiId?: string; capabilities?: string[] };
@@ -180,9 +182,15 @@ export async function chatOpenAI(
   const system = THINK_HINTS[opts.think ?? "medium"] ?? THINK_HINTS.medium;
   try {
     const streaming = Boolean(opts.onDelta);
-    let res: globalThis.Response;
+    // Pin the connection to the configured endpoint's resolved addresses: the
+    // URL is the operator's, the resolution is not - a rebinding resolver must
+    // not receive the Authorization header. LAN endpoints (llama-server,
+    // LM Studio, vLLM) resolve normally: pinning is per resolved address, and
+    // loopback/LAN hosts are first-class BYOK endpoints.
+    const ips = await resolveHostAddrs(new URL(url).hostname);
+    let res: Awaited<ReturnType<typeof ufetch>>;
     try {
-      res = await fetch(url, {
+      res = await ufetch(url, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
         body: JSON.stringify({
@@ -193,6 +201,7 @@ export async function chatOpenAI(
           ...(opts.tools?.length ? { tools: opts.tools } : {}),
         }),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
+        dispatcher: pinnedAgent(ips),
       });
     } catch (e) {
       if ((e as Error)?.name === "TimeoutError") {
