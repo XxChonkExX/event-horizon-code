@@ -254,7 +254,7 @@ export default function ModelManager() {
             >{probeFor() === p.provider ? "close" : "models"}</button>
             <button
               disabled={busy() || !p.hasKey || !p.hasBaseUrl || !p.model}
-              title="One 1-token completion on this endpoint, through the same call the agent makes"
+              title="One small completion (128 tokens max) through the same call the agent makes - thinking models can take a minute on some providers"
               onClick={() => void testProvider(p.provider)}
             >test</button>
             <button disabled={busy() || (!p.hasKey && !p.hasBaseUrl)} onClick={() => void removeSecret(p.provider)}>

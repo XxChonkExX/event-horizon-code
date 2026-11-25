@@ -75,7 +75,11 @@ calls `safeStorage` directly - there is no IPC hop to secure.
   (kept under `~/.eventhorizon/backups/<timestamp>/secrets.json`, listed in
   the panel, deletable there once moved somewhere safe). A **models** probe
   lists the endpoint's own catalog (`GET /models` on the provider, pinned
-  connection): click a model to set it as that provider's model.
+  connection): click a model to set it as that provider's model. The **test**
+  button sends a 128-token-budget completion with a 120 s timeout: thinking
+  models (GLM on NIM measured) take 24-84 s per request regardless of budget,
+  and a 1-token probe is the slowest shape (the single token is spent on
+  reasoning), so the test measures the KEY, not the model's speed.
 - **Verified on Windows, against the built app on this machine.**
   - `secrets:test:electron`: the module inside real Electron, two launches
     sharing one profile - the key sealed in launch one decrypts in launch two.

@@ -1504,8 +1504,13 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       if (!secret?.apiKey || !secret.baseUrl) return sendJson(res, 200, { ok: false, latencyMs: 0, error: `no key or base URL stored for "${provider}"` });
       const model = (url.searchParams.get("model") ?? "").trim().slice(0, 200) || secret.model || "";
       if (!model) return sendJson(res, 200, { ok: false, latencyMs: 0, error: `no model set for "${provider}" - save one under Models > BYOK secrets` });
+      // A tiny max_tokens probe is pathological for THINKING models (measured
+      // on NIM's glm-5.3-flash: max_tokens=1 took 84 s and returned empty
+      // content, because the single token is spent on reasoning). A small
+      // real budget (128) plus a generous timeout tests the KEY, not the
+      // model's speed.
       const t0 = Date.now();
-      const r = await chatOpenAI(model, [{ role: "user", content: "Reply with the single word: ok" }], { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: "low", numPredict: 1, timeoutMs: 30_000 });
+      const r = await chatOpenAI(model, [{ role: "user", content: "Reply with the single word: ok" }], { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: "low", numPredict: 128, timeoutMs: 120_000 });
       const latencyMs = Date.now() - t0;
       audit({ tool: "secrets.test", note: `${provider} ok=${r.ok} model=${model.slice(0, 60)} ms=${latencyMs}` });
       return sendJson(res, 200, { ok: r.ok, model, latencyMs, ...(r.ok ? {} : { error: String(r.error ?? "request failed").slice(0, 240) }) });
