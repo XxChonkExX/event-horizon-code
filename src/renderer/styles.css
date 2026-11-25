@@ -490,6 +490,13 @@ aside.chat h3 { margin: 10px 12px 4px; color: var(--accent2); }
 }
 .send-btn:hover:not(:disabled) { border-color: var(--accent); }
 .send-btn:disabled { opacity: 0.45; }
+/* Composer mic button (STT): a quiet rounded button next to Send; the note
+   under it tells the user what the mic button is doing (voice input). */
+.stt-btn { padding: 11px 13px; font-size: 16px; border-color: var(--border); border-radius: 10px; }
+.stt-btn:hover:not(:disabled) { border-color: var(--accent); }
+.stt-btn:disabled { opacity: 0.45; }
+.stt-note { font-size: 11px; color: var(--dim); display: inline-block; }
+.stt-note-on { color: var(--accent); }
 aside.chat .model-row { display: flex; gap: 6px; padding: 0 12px 8px; color: var(--dim); align-items: center; }
 aside.chat .model-row select {
   flex: 1; background: var(--panel2); color: var(--text);

@@ -260,6 +260,98 @@ export default function ChatColumn(props: {
       } catch { /* status unavailable - the dropdown still lists the catalog */ }
     })();
   });
+  // ---- Speech to text (composer mic) ----
+  // Records from the microphone (MediaRecorder -> webm), converts to 16 kHz
+  // mono WAV in-page, POSTs to /api/sensory/transcribe (whisper sidecar) and
+  // inserts the transcript into the composer input - press Enter to send.
+  const [sttBusy, setSttBusy] = createSignal(false);
+  const [sttNote, setStdNote] = createSignal("");
+  let sttNoteTimer: ReturnType<typeof setTimeout> | undefined;
+  const sttFlash = (msg: string) => {
+    setStdNote(msg);
+    clearTimeout(sttNoteTimer);
+    sttNoteTimer = setTimeout(() => setStdNote(""), 6000);
+  };
+
+  function encodeWav(samples: Int16Array): Uint8Array {
+    const dataSize = samples.length * 2;
+    const buf = new Uint8Array(44 + dataSize);
+    const dv = new DataView(buf.buffer);
+    buf.set([0x52, 0x49, 0x46, 0x46], 0); dv.setUint32(4, 36 + dataSize, true); buf.set([0x57, 0x41, 0x56, 0x45], 8); // RIFF / WAVE
+    buf.set([0x66, 0x6d, 0x74, 0x20], 12); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); // fmt, PCM, mono
+    dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+    buf.set([0x64, 0x61, 0x74, 0x61], 36); dv.setUint32(40, dataSize, true);
+    for (let i = 0; i < samples.length; i++) dv.setInt16(44 + i * 2, samples[i]!, true);
+    return buf;
+  }
+  function bytesToBase64(bytes: Uint8Array): string {
+    let s = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+    return btoa(s);
+  }
+  // Decode browser audio, mix to mono, resample to 16 kHz - the backend wants
+  // 16 kHz mono WAV (transcribe()).
+  async function sttToSamples16kMono(blob: Blob): Promise<{ wavBase64: string }> {
+    const ctx = new AudioContext();
+    try {
+      const data = await ctx.decodeAudioData(await blob.arrayBuffer());
+      const numCh = Math.max(1, Math.min(data.numberOfChannels, 2));
+      const total = Math.max(1, Math.round((data.duration ?? 0) * 16000));
+      const out = new Int16Array(total);
+      const at = data.length;
+      for (let i = 0; i < total; i++) {
+        const pos = Math.min((at / Math.max(1, total)) * i, Math.max(0, at - 1));
+        const i0 = Math.floor(pos); const i1 = Math.min(i0 + 1, Math.max(0, at - 1));
+        const frac = pos - i0;
+        let sum = 0;
+        for (let ch = 0; ch < numCh; ch++) {
+          const c = data.getChannelData(ch);
+          sum += (c[i0] ?? 0) * (1 - frac) + (c[i1] ?? 0) * frac;
+        }
+        out[i] = Math.max(-32768, Math.min(32767, Math.round((sum / numCh) * 32767)));
+      }
+      return { wavBase64: bytesToBase64(encodeWav(out)) };
+    } finally {
+      void ctx.close();
+    }
+  }
+
+  const sttRecord = async (): Promise<void> => {
+    if (sttBusy()) return;
+    sttFlash("listening… - tab again when you are done");
+    setSttBusy(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : undefined;
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      const chunks: Blob[] = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      rec.start();
+      const stopped = new Promise<void>((resolve) => { rec.onstop = () => resolve(); });
+      sttFlash("recording… - tap again to transcribe");
+      await stopped;
+      stream.getAudioTracks().forEach((t) => t.stop());
+      sttFlash("transcribing with whisper…");
+      const samples = await sttToSamples16kMono(new Blob(chunks, { type: "audio/webm" }));
+      const r = await apiFetch("/api/sensory/transcribe", { method: "POST", body: JSON.stringify({ audioBase64: samples.wavBase64 }) });
+      const d = (await r.json()) as { ok: boolean; text?: string; error?: string };
+      if (d.ok && d.text?.trim()) {
+        const cur = props.input();
+        props.setInput(cur ? cur.trimEnd() + " " + d.text.trim() : d.text.trim());
+        sttFlash("inserted into the composer - press Enter to send");
+      } else {
+        sttFlash(d.error ? `transcription failed: ${String(d.error).slice(0, 120)}` : "no transcript from the audio");
+      }
+    } catch {
+      sttFlash("microphone unavailable - check your OS/browser permissions");
+    } finally {
+      setSttBusy(false);
+      clearTimeout(sttNoteTimer);
+      setTimeout(() => setStdNote(""), 6000);
+    }
+  };
+
   const setByokModel = async (model: string) => {
     const provider = byokProvider();
     if (!provider || !model) return;
@@ -484,6 +576,14 @@ export default function ChatColumn(props: {
           placeholder="Describe the task...  (/think:high to raise reasoning)"
           class="composer-input"
         />
+        <button
+          class="stt-btn"
+          disabled={sttBusy()}
+          title="Voice input: record from your microphone, then the transcript is inserted into the composer (whisper.cpp ears, POST /api/sensory/transcribe)"
+          aria-label="Microphone - record a voice message"
+          onClick={() => void sttRecord()}
+        >{sttBusy() ? "recording…" : "🎤"}</button>
+        <span class="stt-note" classList={{ "stt-note-on": Boolean(sttNote()) }}>{sttNote()}</span>
         <button class="send-btn" disabled={props.sending?.()} onClick={() => { props.onSend(); requestAnimationFrame(grow); }}>Send</button>
       </div>
       <div class="model-row">
