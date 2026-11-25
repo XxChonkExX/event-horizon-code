@@ -82,9 +82,15 @@ calls `safeStorage` directly - there is no IPC hop to secure.
     on Linux (WSL2, Ubuntu 26.04): 86 checks including the `0600` file and
     `0700` backup-folder modes.
 - **Not verified.** The Linux *keyring* path (libsecret/kwallet) and macOS
-  (Keychain): the same Electron API, untested here - this machine's WSL2 has
-  no secret service and lacks the libraries Electron needs. The proof to run
-  on each: `npm run secrets:test:electron` inside a graphical session.
+  (Keychain): the same Electron API, untested in a real graphical session. The
+  proof to run on each: `npm run secrets:test:electron` inside a graphical
+  session. A first attempt in WSL2 (Ubuntu 26.04, gnome-keyring 50,
+  libsecret 0.21.7, secret service on the session bus, a collection created,
+  unlocked and aliased `default`) still reported
+  `safeStorage.isEncryptionAvailable() === false` on every
+  `--password-store` backend, including `basic` - do NOT read that as "the
+  Linux keychain is broken"; it is an Electron/Chromium-in-WSLg result, and
+  the meaningful proof is a real desktop session (Omarchy/Strix).
 - **First-launch window: closed (settle-before-seal).** On a brand-new
   profile, Chromium writes the profile's wrapping key about 10 s after launch,
   or at once on a normal close - not when a value is sealed - and offers no
