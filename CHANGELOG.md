@@ -5,6 +5,7 @@ Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
 ## [Unreleased]
 
+- **Fixed: the DNS pin broke the BYOK lane on Node/Electron with autoSelectFamily** (found by the operator's own key tests: every provider test failed `endpoint unreachable: fetch failed` in the new install). Node's happy-eyeballs lookup path (`options.all === true`) consumes the ARRAY callback form; the pin served the single-address form -> `ERR_INVALID_IP_ADDRESS` on every pinned fetch. `dnspin.pinnedAgent` now serves both contracts (proven against the real openrouter.ai endpoint from plain node, and netpin:test on loopback). webfetch shared the same latent bug via the extracted helper - fixed together.
 - **BYOK model catalog probe**: `GET /api/secrets/:provider/models` fetches the provider's own `/models` (pinned connection, operator base URL only, model ids are public catalog data). The Models panel gains a **models** button per provider: the endpoint's catalog appears as a list; clicking a model sets it as that provider's model. Smoke-covered offline via a local stub.
 
 ## [0.0.3e] - 2026-11-25

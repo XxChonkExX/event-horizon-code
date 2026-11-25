@@ -33,12 +33,24 @@ export async function resolveHostAddrs(hostname: string): Promise<string[]> {
 
 // An undici Agent whose lookup returns ONLY the pinned addresses - the socket
 // cannot connect elsewhere, whatever DNS says later.
+//
+// The callback must serve BOTH Node lookup contracts (found empirically on
+// Node 26: serving the wrong form is ERR_INVALID_IP_ADDRESS -> "fetch failed"):
+//   - the autoSelectFamily path calls with options.all === true and consumes
+//     the ARRAY form;
+//   - the single path (explicit family) calls with all falsy and consumes
+//     (address, family).
 export function pinnedAgent(ips: string[]): Agent {
   return new Agent({
     connect: {
-      lookup(_hostname, _opts, callback) {
-        const ip = ips[Math.floor(Math.random() * ips.length)]!;
-        callback(null, ip, ip.includes(":") ? 6 : 4);
+      lookup(_hostname, options, callback) {
+        const addrs = ips.map((ip) => ({ address: ip, family: ip.includes(":") ? 6 : 4 }));
+        if (options && options.all === true) {
+          callback(null, addrs);
+          return;
+        }
+        const pick = addrs[Math.floor(Math.random() * addrs.length)]!;
+        callback(null, pick.address, pick.family);
       },
     },
   });
