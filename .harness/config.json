@@ -75,8 +75,14 @@
     "worktreePerSession": true
   },
   "sensory": {
-    "stt": { "bin": "", "model": "" },
-    "tts": { "bin": "", "voice": "" },
+    "stt": {
+      "bin": "",
+      "model": ""
+    },
+    "tts": {
+      "bin": "",
+      "voice": ""
+    },
     "candidateDirs": [],
     "notes": [
       "Ears (STT) = whisper.cpp + a ggml model; mouth (TTS) = piper + a voice. Nothing is bundled or downloaded automatically (house rule): drop binaries into resources/sensory or ~/.eventhorizon/sensory, or set explicit paths here.",
@@ -111,7 +117,8 @@
     "port": 8901,
     "ggufDirs": [
       "F:/llmtrainingpipeline",
-      "G:/New folder"
+      "G:/New folder",
+      "/home/chonke/Downloads/gemmae4b"
     ],
     "gpu": {
       "deviceIndex": 0,
@@ -123,7 +130,7 @@
     "notes": [
       "chatTemplate selects a canonical tool-capable Jinja template: \"auto\" detects the model family (qwen3, deepseek, gemma4, glm, granite, llama3, ...), or pin a family id / file / path. This restores tool calling when a GGUF's embedded template was stripped (supports_tools=false). Templates vendored from llama.cpp (MIT).",
       "ctx caps the KV cache (llama-server otherwise uses the model's 40k+ trained context and can OOM alongside other GPU work).",
-      "gpu.heapFraction is the share of VRAM the Chonk pool reserves up front — lower it when other processes hold VRAM.",
+      "gpu.heapFraction is the share of VRAM the Chonk pool reserves up front \u2014 lower it when other processes hold VRAM.",
       "Agnostic defaults are always scanned first: ~/.eventhorizon/models + ./models (created by runtime:init).",
       "ggufDirs below are machine-specific ADDITIONS. Users add folders via Model Manager > Choose folder.",
       "binaryPath is machine-specific; leave empty on other machines to use the packaged resources/engine binary ladder.",
@@ -145,7 +152,7 @@
     "notes": [
       "MCP client is live: stdio JSON-RPC 2.0, tools namespaced mcp_<server>_<tool> and merged into the agent toolset.",
       "Shape: { \"name\": { \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \".\"], \"env\": {} } }",
-      "Servers spawn with an env allowlist (PATH/HOME/TEMP + their own vars) and are killed with the server process — no orphans.",
+      "Servers spawn with an env allowlist (PATH/HOME/TEMP + their own vars) and are killed with the server process \u2014 no orphans.",
       "Tool output is treated as untrusted data. Per-call approval follows the permissions block."
     ]
   },

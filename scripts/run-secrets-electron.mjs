@@ -101,10 +101,17 @@ app.whenReady().then(async () => {
       check("Electron safeStorage decrypts the stored blob to the key", direct === KEY);
       const r = s.readSecret("openai");
       check("module decrypt roundtrip", r && r.apiKey === KEY && r.baseUrl === BASE);
-      // Two encryptions of the same key differ (fresh nonce per seal).
+      // Two encryptions of the same key: DPAPI/Keychain produce a fresh nonce
+      // per seal; the Linux v11 libsecret backend is DETERMINISTIC (verified
+      // live on GNOME/Wayland - see docs/ENCRYPTION.md). Assert the seal
+      // everywhere; assert ciphertext difference only on randomizing
+      // platforms.
       const second = await s.writeSecret("anthropic", { apiKey: KEY });
       const blob2 = JSON.parse(fs.readFileSync(file, "utf8")).anthropic.apiKey;
-      check("each seal produces distinct ciphertext", second.ok && blob2 !== blob);
+      const randomizedSeal = process.platform !== "linux";
+      check("each seal decrypts (and differs where the backend randomizes)",
+        second.ok && Boolean(blob2) && (randomizedSeal ? blob2 !== blob : true),
+        JSON.stringify({ ok: second.ok === true, randomizedSeal, sameCiphertext: blob2 === blob }));
       // Tamper -> refused, never a garbage key.
       const tampered = blob.slice(0, -6) + "//////";
       check("tamper actually changed the blob", tampered !== blob);
@@ -165,7 +172,20 @@ app.whenReady().then(async () => {
       const row = s.secretsStatus().providers.find((p) => p.provider === "openai");
       check("status reports the stored key decryptable", Boolean(row) && row.encrypted === true && row.decryptable === true, JSON.stringify(row));
       const re = await s.writeSecret("openai", { baseUrl: BASE, apiKey: KEY });
-      check("re-saving gives different ciphertext that still decrypts", re.ok === true && JSON.parse(fs.readFileSync(file, "utf8")).openai.apiKey !== process.env.EH_SEC_BLOB && s.readSecret("openai").apiKey === KEY);
+      // Chromium's v11 libsecret backend on Linux encrypts DETERMINISTICALLY:
+      // same plaintext -> byte-identical ciphertext (verified live on
+      // GNOME/Wayland, Strix box: encryptString(x) === encryptString(x), both
+      // decrypt). DPAPI (Windows) and the macOS Keychain randomize. Assert
+      // decryptability everywhere; assert the ciphertext CHANGED only on
+      // platforms whose backend randomizes. Equality of ciphertext leaks
+      // equality of plaintext (documented in docs/ENCRYPTION.md) - it never
+      // leaks the key itself.
+      const reBlob = JSON.parse(fs.readFileSync(file, "utf8")).openai.apiKey;
+      const reRead = s.readSecret("openai");
+      const randomized = process.platform !== "linux";
+      check("re-saving decrypts (and differs where the backend randomizes)",
+        re.ok === true && Boolean(reRead) && reRead.apiKey === KEY && (randomized ? reBlob !== process.env.EH_SEC_BLOB : true),
+        JSON.stringify({ ok: re.ok === true, randomized, sameCiphertext: reBlob === process.env.EH_SEC_BLOB, decrypts: reRead ? reRead.apiKey === KEY : false }));
     } else if (s.encryptionAvailable() && phase === "crash-open") {
       const sealPid = Number(process.env.EH_SEC_CRASH_PID);
       check("a different process than the one that crashed", Number.isFinite(sealPid) && sealPid !== process.pid, sealPid + " vs " + process.pid);

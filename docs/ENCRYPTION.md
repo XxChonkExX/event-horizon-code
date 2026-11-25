@@ -135,8 +135,20 @@ the interface it needs.
 
 - E1: **implemented** (2026-11-24). Verified on Windows (module in real
   Electron across launches, built app end to end, panel flows) and the module's
-  POSIX behaviour on Linux (WSL2); the Linux keyring path and macOS are pending
-  proofs on their own machines. The first-launch window is closed by
-  settle-before-seal (above).
+  POSIX behaviour on Linux (WSL2); macOS is pending its own machine.
+  **Linux keyring proof: POSITIVE** (2026-11-24, Strix — native Ubuntu 26.04,
+  GNOME on Wayland, real graphical session): `safeStorage.isEncryptionAvailable()`
+  true, backend `gnome_libsecret` (v11 prefix). Cross-process seal → decrypt,
+  crash-seal (key saved moments before an abrupt exit on a brand-new profile)
+  decrypts in the next process, nothing plaintext on disk. The WSL2 negative
+  above is confirmed as an Electron/Chromium-in-WSLg result, not a Linux
+  result.
+  **Platform fact (probed, cited in the test):** the v11 libsecret backend is
+  DETERMINISTIC — `encryptString(x)` twice returns byte-identical ciphertext
+  (both decrypt). DPAPI and Keychain randomize. Consequence: an attacker with
+  the file can see *equality* of sealed plaintexts (the same key re-saved, or
+  two providers sharing a key) but never the key material, and the ciphertext
+  remains bound to the OS user account. The electron test asserts ciphertext
+  difference only on randomizing platforms.
 - E2: research item; tracked with the runtime-supervision work.
 - E3: blocked on the Mission Control lane; primitives chosen.
