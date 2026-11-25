@@ -3,6 +3,7 @@
 // exercises the core endpoints, then kills the whole process tree (Windows-safe).
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -228,6 +229,30 @@ async function main() {
   if (bkDel.status !== 200 || bkDel.body?.ok !== true || (await fetchJson("/api/secrets/backups")).body?.length !== 0) fail("a listed backup can be deleted by name", bkDel.body);
   const secDel = await fetchJson("/api/secrets/smokeprov", { method: "DELETE" });
   if (secDel.status !== 200 || secDel.body?.ok !== true) fail("delete a stored secret", secDel.body);
+  // Model probe: the provider's own /models, offline via a local stub server.
+  const stub = http.createServer((req, res) => {
+    if ((req.url ?? "").endsWith("/models")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "m-b" }, { id: "m-a" }] }));
+      return;
+    }
+    res.writeHead(404); res.end("{}");
+  });
+  const stubPort = await new Promise<number>((resolve) => { const s = stub.listen(0, "127.0.0.1", () => resolve((s.address() as { port: number }).port)); });
+  const stubSave = await fetchJson("/api/secrets", { method: "POST", body: JSON.stringify({ provider: "stubprov", baseUrl: `http://127.0.0.1:${stubPort}/v1`, apiKey: "k" }) });
+  if (stubSave.status !== 200 || stubSave.body?.ok !== true) fail("save a provider for the model probe", stubSave.body);
+  const probe = await fetchJson("/api/secrets/stubprov/models");
+  if (probe.status !== 200 || probe.body?.ok !== true || JSON.stringify(probe.body?.models) !== JSON.stringify(["m-a", "m-b"])) {
+    fail("the model probe returns the endpoint's catalog (sorted)", probe.body);
+  }
+  const probeGhost = await fetchJson("/api/secrets/ghost/models");
+  if (probeGhost.status !== 200 || probeGhost.body?.ok !== false || !/no key or base URL/.test(probeGhost.body?.error ?? "")) {
+    fail("a model probe without a stored key states it", probeGhost.body);
+  }
+  const stubDel = await fetchJson("/api/secrets/stubprov", { method: "DELETE" });
+  if (stubDel.status !== 200 || stubDel.body?.ok !== true) fail("delete the stub provider", stubDel.body);
+  stub.close();
+  console.log("[smoke] ok  /api/secrets/<provider>/models (probe + sorted catalog + stated errors)");
   // A key sealed by the desktop app, read by a runtime with no keychain: the
   // prompt fails with the reason (the loop's shape for a failed model call:
   // the text lands in `reply`, the run record gets `error`) - not a generic

@@ -19,6 +19,8 @@ import { contained } from "./wsguard";
 import { getAuditPath, auditHealth } from "./audit";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels, modelCapabilities, chatOpenAI } from "./router";
+import { fetch as ufetch } from "undici";
+import { pinnedAgent, resolveHostAddrs } from "./dnspin";
 import { searchEngram, verifyArithmetic } from "./engram";
 import {
   createSession, listTodos, addTodo, loadMessages,
@@ -1507,6 +1509,33 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       const latencyMs = Date.now() - t0;
       audit({ tool: "secrets.test", note: `${provider} ok=${r.ok} model=${model.slice(0, 60)} ms=${latencyMs}` });
       return sendJson(res, 200, { ok: r.ok, model, latencyMs, ...(r.ok ? {} : { error: String(r.error ?? "request failed").slice(0, 240) }) });
+    }
+    // The provider's own model catalog, straight from its endpoint
+    // (OpenAI-compatible /models): lets the panel offer real model ids instead
+    // of a typed guess. Goes to the operator's base URL only; the response
+    // carries model ids (public catalog data), never the key.
+    if (req.method === "GET" && url.pathname.startsWith("/api/secrets/") && url.pathname.endsWith("/models")) {
+      const provider = decodeURIComponent(url.pathname.slice("/api/secrets/".length, -"/models".length));
+      if (!validProviderId(provider)) return sendJson(res, 400, { ok: false, error: "invalid provider id" });
+      let secret: ReturnType<typeof readSecret> = null;
+      try { secret = readSecret(provider); } catch (e) { return sendJson(res, 200, { ok: false, error: String((e as Error).message ?? e).slice(0, 240) }); }
+      if (!secret?.apiKey || !secret.baseUrl) return sendJson(res, 200, { ok: false, error: `no key or base URL stored for "${provider}"` });
+      try {
+        const listUrl = `${secret.baseUrl.replace(/\/+$/, "")}/models`;
+        const ips = await resolveHostAddrs(new URL(listUrl).hostname);
+        const r = await ufetch(listUrl, { headers: { authorization: `Bearer ${secret.apiKey}` }, signal: AbortSignal.timeout(20_000), dispatcher: pinnedAgent(ips) });
+        const text = await r.text();
+        let j: { data?: Array<{ id?: unknown }> } | null = null;
+        try { j = JSON.parse(text); } catch { j = null; }
+        const models = Array.isArray(j?.data)
+          ? j.data.map((m) => (typeof m?.id === "string" ? m.id : null)).filter((id): id is string => Boolean(id)).sort()
+          : [];
+        if (!models.length) return sendJson(res, 200, { ok: false, error: `the endpoint returned no model list (status ${r.status})` });
+        audit({ tool: "secrets.models", note: `${provider} count=${models.length}` });
+        return sendJson(res, 200, { ok: true, provider, count: models.length, models });
+      } catch (e) {
+        return sendJson(res, 200, { ok: false, error: `model list failed: ${String((e as Error).message ?? e).slice(0, 200)}` });
+      }
     }
     if (req.method === "DELETE" && url.pathname.startsWith("/api/secrets/")) {
       const provider = decodeURIComponent(url.pathname.slice("/api/secrets/".length));

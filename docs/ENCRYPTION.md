@@ -73,7 +73,9 @@ calls `safeStorage` directly - there is no IPC hop to secure.
   lane. The panel shows each provider's endpoint and model, offers the
   1-token test, and gates "Encrypt stored keys" behind a plaintext backup
   (kept under `~/.eventhorizon/backups/<timestamp>/secrets.json`, listed in
-  the panel, deletable there once moved somewhere safe).
+  the panel, deletable there once moved somewhere safe). A **models** probe
+  lists the endpoint's own catalog (`GET /models` on the provider, pinned
+  connection): click a model to set it as that provider's model.
 - **Verified on Windows, against the built app on this machine.**
   - `secrets:test:electron`: the module inside real Electron, two launches
     sharing one profile - the key sealed in launch one decrypts in launch two.

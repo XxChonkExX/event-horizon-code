@@ -43,6 +43,10 @@ export default function ModelManager() {
   const [encOpen, setEncOpen] = createSignal(false);
   const [backupPath, setBackupPath] = createSignal<string | null>(null);
   const [encSkipArm, setEncSkipArm] = createSignal(false);
+  // Per-provider model catalog: "models" probes the endpoint's /models and the
+  // list offers click-to-set (writes the provider's model via /api/secrets).
+  const [probeFor, setProbeFor] = createSignal("");
+  const [probeModels, setProbeModels] = createSignal<string[]>([]);
 
   const plainCount = () => (sec()?.providers ?? []).filter((p) => p.hasKey && !p.encrypted).length;
 
@@ -79,6 +83,31 @@ export default function ModelManager() {
       const secs = Math.round((d.latencyMs ?? 0) / 100) / 10;
       setSecNote(d.ok ? `${provider}: key works (${d.model}, ${secs}s round trip)` : `${provider}: ${d.error ?? "test failed"}`);
     } catch { setSecNote("test failed - server unreachable"); } finally { setBusy(false); }
+  };
+
+  // "What models does this endpoint offer?" - the provider's own /models.
+  const probeProviderModels = async (provider: string) => {
+    if (probeFor() === provider) { setProbeFor(""); setProbeModels([]); return; }
+    setBusy(true);
+    try {
+      const r = await apiFetch(`/api/secrets/${encodeURIComponent(provider)}/models`);
+      const d = (await r.json()) as { ok: boolean; models?: string[]; error?: string };
+      if (!d.ok) { setSecNote(`${provider}: ${d.error ?? "model probe failed"}`); return; }
+      setProbeFor(provider);
+      setProbeModels(d.models ?? []);
+      setSecNote(`${provider}: ${d.models?.length ?? 0} models on the endpoint - click one to set it as this provider's model`);
+    } catch { setSecNote("model probe failed - server unreachable"); } finally { setBusy(false); }
+  };
+
+  const setProviderModel = async (provider: string, model: string) => {
+    setBusy(true);
+    try {
+      const r = await apiFetch("/api/secrets", { method: "POST", body: JSON.stringify({ provider, model }) });
+      const d = (await r.json()) as { ok: boolean; error?: string };
+      if (!d.ok) { setSecNote(`save failed: ${d.error ?? "?"}`); return; }
+      setSecNote(`${provider}: model set to ${model}`);
+      await refreshSecrets();
+    } catch { setSecNote("save failed - server unreachable"); } finally { setBusy(false); }
   };
 
   const saveBackup = async () => {
@@ -205,6 +234,7 @@ export default function ModelManager() {
       <Show when={sec()?.headlessNote}><p class="session-meta">{sec()!.headlessNote}</p></Show>
       <ul class="sensory-list">
         <For each={sec()?.providers ?? []}>{(p) => (
+          <>
           <li class="session-meta secret-row">
             <span class="secret-provider">
               <span>{p.provider}{p.model ? ` - ${p.model}` : " (no model set)"}</span>
@@ -218,6 +248,11 @@ export default function ModelManager() {
               {p.encrypted ? (p.decryptable === false ? "encrypted - undecryptable here" : "encrypted") : "plaintext"}
             </span>
             <button
+              disabled={busy() || !p.hasKey || !p.hasBaseUrl}
+              title="List the models this endpoint offers (GET /models on the provider)"
+              onClick={() => void probeProviderModels(p.provider)}
+            >{probeFor() === p.provider ? "close" : "models"}</button>
+            <button
               disabled={busy() || !p.hasKey || !p.hasBaseUrl || !p.model}
               title="One 1-token completion on this endpoint, through the same call the agent makes"
               onClick={() => void testProvider(p.provider)}
@@ -226,6 +261,20 @@ export default function ModelManager() {
               {armRemove() === p.provider ? "confirm remove" : "remove"}
             </button>
           </li>
+          <Show when={probeFor() === p.provider}>
+            <li class="session-meta">
+              <select
+                size={6}
+                style={{ width: "100%" }}
+                value={p.model ?? ""}
+                onChange={(e) => void setProviderModel(p.provider, e.target.value)}
+              >
+                <For each={probeModels()}>{(m) => <option value={m}>{m}{m === p.model ? "   <- current" : ""}</option>}</For>
+              </select>
+              <span class="secret-sub">click a model to set it as this provider's model</span>
+            </li>
+          </Show>
+          </>
         )}</For>
       </ul>
       {/* Compact on purpose: the panel body is capped at 26vh (styles.css

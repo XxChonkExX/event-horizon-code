@@ -3,6 +3,10 @@
 All notable changes to Event Horizon Code. Newest first.
 Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
+## [Unreleased]
+
+- **BYOK model catalog probe**: `GET /api/secrets/:provider/models` fetches the provider's own `/models` (pinned connection, operator base URL only, model ids are public catalog data). The Models panel gains a **models** button per provider: the endpoint's catalog appears as a list; clicking a model sets it as that provider's model. Smoke-covered offline via a local stub.
+
 ## [0.0.3e] - 2026-11-25
 
 - **BYOK keys are sealed with the OS keychain** (Electron `safeStorage`: DPAPI on Windows, Keychain on macOS, libsecret/kwallet on Linux). New `src/server/secrets.ts`, `/api/secrets*`, and a BYOK section in the Models panel: save a key, see how each stored key is kept, seal existing plaintext values in place, two-step remove. Where no keychain is reachable (the headless runtime, Linux without a keyring) a saved key stays plaintext and the panel says so in warning colour - never a silent downgrade, and a sealed key is refused with the reason rather than guessed at. Keys are never returned by the status API, never shown after saving, never logged.
