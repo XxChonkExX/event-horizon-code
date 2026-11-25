@@ -81,16 +81,15 @@ calls `safeStorage` directly - there is no IPC hop to secure.
   - The BYOK secrets module (not the keychain path) also passes its node suite
     on Linux (WSL2, Ubuntu 26.04): 86 checks including the `0600` file and
     `0700` backup-folder modes.
-- **Not verified.** The Linux *keyring* path (libsecret/kwallet) and macOS
-  (Keychain): the same Electron API, untested in a real graphical session. The
-  proof to run on each: `npm run secrets:test:electron` inside a graphical
-  session. A first attempt in WSL2 (Ubuntu 26.04, gnome-keyring 50,
-  libsecret 0.21.7, secret service on the session bus, a collection created,
-  unlocked and aliased `default`) still reported
-  `safeStorage.isEncryptionAvailable() === false` on every
-  `--password-store` backend, including `basic` - do NOT read that as "the
-  Linux keychain is broken"; it is an Electron/Chromium-in-WSLg result, and
-  the meaningful proof is a real desktop session (Omarchy/Strix).
+- **Verified per platform.** Windows: DPAPI, this machine, end to end. Linux:
+  **POSITIVE** on native GNOME/Wayland (Strix, commit c2fd5b9) - safeStorage
+  available, backend `gnome_libsecret` v11, cross-process seal -> decrypt,
+  crash-seal survives an abrupt exit; see the platform fact below. macOS
+  (Keychain): still pending its own machine. A WSL2 attempt (Ubuntu 26.04,
+  gnome-keyring 50, libsecret 0.21.7, service on the session bus, collection
+  created/unlocked/aliased `default`) reported
+  `isEncryptionAvailable() === false` on every `--password-store` backend -
+  confirmed as an Electron/Chromium-in-WSLg result, NOT a Linux gap.
 - **First-launch window: closed (settle-before-seal).** On a brand-new
   profile, Chromium writes the profile's wrapping key about 10 s after launch,
   or at once on a normal close - not when a value is sealed - and offers no
