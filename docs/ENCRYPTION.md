@@ -59,7 +59,13 @@ calls `safeStorage` directly - there is no IPC hop to secure.
   Linux, where the backup folder is `0700`. The audit log records provider
   names and storage state only. Agent tools cannot read or write the file
   wherever `EH_SECRETS_FILE` puts it: `safePath` compares the resolved path
-  and the shell rule refuses its name.
+  and the shell rule refuses its name. The BYOK lane pins its connections to
+  the configured endpoint's resolved addresses (shared `src/server/dnspin.ts`,
+  the same pin webfetch uses): defense in depth - a same-user local process
+  cannot relocate the key by poisoning DNS; the configured base URL remains
+  the operator's authority (a first-resolution hijack is out of scope, by
+  design; there is no "right" answer to pin to). Cross-host redirects fail to
+  connect honestly. `netpin:test`.
 - **In the workbench.** A stored provider (base URL + key + model) appears in
   the composer's picker as `byok:<provider>` and in profiles the same way;
   selecting it routes the turn through that endpoint, and a missing or
