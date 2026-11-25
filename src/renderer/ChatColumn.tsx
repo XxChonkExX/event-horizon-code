@@ -7,7 +7,7 @@
 // ledger, the markdown answer, and a collapsible thinking section.
 
 import { createSignal, For, Show, onMount, onCleanup, createMemo, createEffect } from "solid-js";
-import { apiJson } from "./api";
+import { apiJson, apiFetch } from "./api";
 import { openContextMenu } from "./ContextMenu";
 import { whenVoicesReady, refreshSystemVoices, pickDefaultVoice, speakSystem, speakViaServer, stopSpeaking, stopAudio, speechSupported, type SpeechVoice } from "./speech";
 
@@ -232,6 +232,45 @@ export default function ChatColumn(props: {
     })();
   });
   const CAP_LABEL: Record<string, string> = { vision: "eyes", audio: "ears", tools: "tools", thinking: "thinking", completion: "", embedding: "embed", insert: "fim" };
+
+  // ---- BYOK model quick-switch ----
+  // When the selected model is byok:<provider>, fetch that endpoint's own
+  // /models catalog (cached per provider) and offer a dropdown under the
+  // model selector; picking one updates the provider's stored model on the
+  // fly (the next turn uses it).
+  const BYOK_PREFIX = "byok:";
+  const byokProvider = () => (props.model().startsWith(BYOK_PREFIX) ? props.model().slice(BYOK_PREFIX.length) : "");
+  const [byokCatalog, setByokCatalog] = createSignal<Record<string, string[]>>({});
+  const [byokCurrent, setByokCurrent] = createSignal<Record<string, string>>({});
+  const [byokNote, setByokNote] = createSignal("");
+  let byokNoteTimer: ReturnType<typeof setTimeout> | undefined;
+  const byokFlash = (msg: string) => { setByokNote(msg); clearTimeout(byokNoteTimer); byokNoteTimer = setTimeout(() => setByokNote(""), 6000); };
+  createEffect(() => {
+    const provider = byokProvider();
+    if (!provider || byokCatalog()[provider]) return;
+    void (async () => {
+      try {
+        const cat = await apiJson<{ ok: boolean; models?: string[]; error?: string }>(`/api/secrets/${encodeURIComponent(provider)}/models`);
+        setByokCatalog((c) => ({ ...c, [provider]: cat.ok && Array.isArray(cat.models) ? cat.models : [] }));
+      } catch { setByokCatalog((c) => ({ ...c, [provider]: [] })); }
+      try {
+        const st = await apiJson<{ providers?: Array<{ provider: string; model: string | null }> }>("/api/secrets/status");
+        const row = st.providers?.find((p) => p.provider === provider);
+        if (row) setByokCurrent((c) => ({ ...c, [provider]: row.model ?? "" }));
+      } catch { /* status unavailable - the dropdown still lists the catalog */ }
+    })();
+  });
+  const setByokModel = async (model: string) => {
+    const provider = byokProvider();
+    if (!provider || !model) return;
+    try {
+      const r = await apiFetch("/api/secrets", { method: "POST", body: JSON.stringify({ provider, model }) });
+      const d = (await r.json()) as { ok: boolean; error?: string };
+      if (!d.ok) { byokFlash(`failed: ${d.error ?? "?"}`); return; }
+      setByokCurrent((c) => ({ ...c, [provider]: model }));
+      byokFlash(`${provider}: model set to ${model} - the next turn uses it`);
+    } catch { byokFlash("save failed - server unreachable"); }
+  };
 
   // ---- speech: platform default adapter, with a swappable voice ----
   const [voices, setVoices] = createSignal<SpeechVoice[]>([]);
@@ -461,6 +500,20 @@ export default function ChatColumn(props: {
           <option value="max">max</option>
         </select>
       </div>
+      <Show when={byokProvider()}>
+        <div class="byok-row">
+          <span>byok models</span>
+          <Show
+            when={(byokCatalog()[byokProvider()] ?? []).length > 0}
+            fallback={<span class="session-meta">{(byokCatalog()[byokProvider()] ?? []).length === 0 && byokCatalog()[byokProvider()] ? "the endpoint returned no model catalog" : "fetching the endpoint's model catalog..."}</span>}
+          >
+            <select value={byokCurrent()[byokProvider()] ?? ""} onChange={(e) => void setByokModel(e.target.value)}>
+              <For each={byokCatalog()[byokProvider()]}>{(m) => <option value={m}>{m}{m === byokCurrent()[byokProvider()] ? "  <- current" : ""}</option>}</For>
+            </select>
+            <span class="session-meta">{byokNote()}</span>
+          </Show>
+        </div>
+      </Show>
       <div class="opts-row">
         <span title="Output token budget - reasoning models spend this on thinking first; the harness auto-doubles it and forces a conclusion if exhausted.">tokens</span>
         <input
