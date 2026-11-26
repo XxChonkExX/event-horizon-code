@@ -99,7 +99,8 @@ git push origin 0.0.4a
 - Windows compositor: under heavy GPU load a window can present a stale frame; a single click recovers it. All in-app triggers found so far are fixed; the machine-level trigger is under investigation (see `docs/GPU.md`).
 - The detonation lane needs an OS sandbox backend (WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS) and refuses plainly without one. The microVM (`sbx`) is optional and not shipped.
 - Speech-to-text needs whisper.cpp and a language model. They are never bundled: the Sensory panel offers them as an optional, checksum-verified download on Windows; on Linux and macOS install the engine with a package manager or build it.
-- Linux AppImage/deb were last packaged and verified at 0.0.3d; macOS is not packaged yet and runs from source. State exactly which platforms a release's artifacts cover.
+- macOS is not packaged and runs from source. State exactly which platforms a release's artifacts cover.
+- **Linux packages from this machine (WSL, done for 0.0.4a):** clone the tag onto the Linux filesystem (`git clone <repo> ~/build/event-horizon-code`), `npm ci`, `npm run build`, then `npx electron-builder --linux AppImage deb rpm` - never `npm run pack` there, which needs a Linux engine build (`rpm` wants `apt install rpm` once). To smoke-launch under WSLg, give the app its own `HOME` and `EH_WORKSPACE`, start it with `setsid nohup` and `--no-sandbox --disable-gpu --remote-debugging-port=<port>`, and drive it with a script run *inside* WSL (the port is not reachable from Windows). Remove the throwaway home afterwards.
 
 ## Verifying the real window (added 2026-11-25)
 

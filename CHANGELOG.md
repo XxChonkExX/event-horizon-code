@@ -5,7 +5,10 @@ Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
 ## [Unreleased]
 
-- Nothing yet.
+- **Linux installers for 0.0.4a published** (AppImage, deb, rpm) from the same commit as the Windows ones (`739c68e`), built on Ubuntu 26.04 in WSL and launched under WSLg: runtime healthy on 0.0.4, editor and terminal present, camera refused, clipboard granted, no chat overflow. Engine-less as before.
+- Design documents, nothing implemented: `docs/SENSORS.md` (camera window and agent presence, detection, lidar, RF/EM, a ROS 2 bridge for robotics) and `docs/BROWSER.md` (a minimal, hardened browser window).
+- **Fixed - on `main`, not in the 0.0.4a artifacts:** the Toolchain Doctor showed its Windows install footnotes on every platform.
+- **Hardened - on `main`, not in the 0.0.4a artifacts:** the permission *check* stage now refuses any webContents that is not one of ours, and any sub-frame - the rule the *request* stage already applied. Unreachable in 0.0.4a (remote frames and navigation are blocked); closed ahead of any embedded web content (`docs/BROWSER.md`, step S4.0).
 
 ## [0.0.4a] - 2026-11-25 - speech-to-text, optional downloads, UI/UX sweep
 
@@ -47,7 +50,7 @@ README, PRIVACY, SECURITY (egress inventory extended with the download and link 
 
 ### Known issues
 
-- Linux and macOS: no in-app engine download yet (the Linux asset is a tar.gz; macOS ships none). Install whisper.cpp with a package manager or build it - it is found on `PATH` - and models still download from the panel. Linux AppImage/deb were last packaged and verified at 0.0.3d; **this release publishes Windows installers only**.
+- Linux and macOS: no in-app engine download yet (the Linux asset is a tar.gz; macOS ships none). Install whisper.cpp with a package manager or build it - it is found on `PATH` - and models still download from the panel. Linux AppImage/deb/rpm were added to this release on 2026-11-26 from the same commit (see Unreleased for how they were checked); they ship engine-less.
 - The macOS keyring proof is still pending.
 - A real voice through a real microphone was not machine-tested (no speech source at the agent's end): capture, metering, release and the full transcription path are verified separately; say the word if anything feels off.
 - The 0.0.3e assets on GitHub are the `b05fcc0` build and contain the clipboard regression above; 0.0.4a supersedes them.
