@@ -4,6 +4,8 @@ out/
 *.log
 .eventhorizon/
 .harness/secrets.json
+# SOP run records are runtime state (persisted per run), never source.
+.harness/sops/runs/
 engrams/index.db
 engrams/store/
 .git-commit-msg.txt

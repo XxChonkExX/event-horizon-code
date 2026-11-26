@@ -792,12 +792,12 @@ export async function runTool(
       // realm boundary, and the vm timeout did not cover async continuations.
       // The batch preserves the tool's purpose (fewer round trips) with no
       // model-written code executing in-process. Arbitrary JS still exists via
-      // tier=execute/redteam (detonation lane; refuses plainly without sbx).
+      // tier=execute/redteam (detonation lane; refuses plainly without an OS sandbox backend).
       const opsRaw = (args as { ops?: unknown }).ops;
       if (!Array.isArray(opsRaw) || opsRaw.length === 0 || opsRaw.length > 16) {
         return {
           ok: false,
-          error: 'run_js (clean tier) takes ops: 1..16 read-only operations, e.g. {"ops":[{"op":"glob","pattern":"*.ts"},{"op":"read","path":"src/index.ts"},{"op":"grep","pattern":"TODO","path":"src"}]}. ops: read | ls | grep | glob. For arbitrary code use tier="execute" (detonation lane, requires sbx).',
+          error: 'run_js (clean tier) takes ops: 1..16 read-only operations, e.g. {"ops":[{"op":"glob","pattern":"*.ts"},{"op":"read","path":"src/index.ts"},{"op":"grep","pattern":"TODO","path":"src"}]}. ops: read | ls | grep | glob. For arbitrary code use tier="execute" (detonation lane - needs an OS sandbox backend: WSL2 on Windows, bubblewrap on Linux, Seatbelt on macOS).',
           out: "",
         };
       }

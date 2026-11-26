@@ -14,7 +14,9 @@
 // Source discovery (first hit wins):
 //   EH_ENGINE_SRC            - directory containing llama-server(.exe) [+ DLLs]
 //   ./chonkllama.cpp/...     - sibling checkout of the fork, if present
-//   C:/Users/mikeh/.../chonkllama.cpp/build-vk/bin/Release  - this dev machine
+//
+// No absolute dev-machine path is listed here and none is written into the
+// manifest: the manifest ships inside the installer.
 //
 // The list below is deliberately small: llama-server + the DLLs it needs at
 // load time + mtmd (vision) + llama-tts (speech). Test binaries, bench and
@@ -55,8 +57,6 @@ const CANDIDATES = [
   process.env.EH_ENGINE_SRC ?? "",
   path.join(REPO, "..", "chonkllama.cpp", "build-vk", "bin", "Release"),
   path.join(REPO, "..", "chonkllama.cpp", "build", "bin"),
-  "C:/Users/mikeh/Documents/New OpenCode Project/chonkllama.cpp/build-vk/bin/Release",
-  "C:/Users/mikeh/Documents/New OpenCode Project/chonkllama.cpp/build/bin",
 ].filter(Boolean);
 
 const sha256 = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
@@ -152,7 +152,8 @@ for (const { name, full } of found) {
 const manifest = {
   note: "Event Horizon Code bundled engine. Pinned chonkllama.cpp (chonk-buffer) build; SHA-256 verified at packaging time.",
   chonkllama: { branch: "chonk-buffer", commit },
-  source: src,
+  // How the build was found - a route name, never an absolute path (this file ships).
+  source: overrideSrc ? "--from" : src === process.env.EH_ENGINE_SRC ? "EH_ENGINE_SRC" : "sibling chonkllama.cpp checkout",
   files: entries,
   platform: process.platform,
   produced: new Date().toISOString(),

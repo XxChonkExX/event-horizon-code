@@ -55,8 +55,7 @@ mac:
     - zip
 
 win:
-  # NSIS only. MSI requires a real .ico (WiX LGHT0094 otherwise); add the msi
-  # target back once an icon is supplied in build/.
+  # NSIS + MSI. MSI needs the real .ico in build/ (WiX LGHT0094 without it).
   target:
     - nsis
     - msi

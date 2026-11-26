@@ -12,7 +12,7 @@ The whole pipeline is hand-driven and verifiable. Nothing auto-publishes; no tel
 
 ```pwsh
 npm run typecheck        # tsc --noEmit
-npm test                 # 20 stages — must be ALL PASS
+npm test                 # 21 stages - must be ALL PASS
 npm run test:integration # end-to-end smoke against a fresh headless server — must be ALL PASS
 ```
 
@@ -25,7 +25,7 @@ node scripts/prepare-engine.mjs            # discovers the build, copies, writes
 node scripts/prepare-engine.mjs --verify   # re-verify resources/engine/ in place
 ```
 
-- Source discovery order: `EH_ENGINE_SRC` → sibling `./chonkllama.cpp` checkout → the dev machine path.
+- Source discovery order: `EH_ENGINE_SRC` → sibling `./chonkllama.cpp` checkout (`build-vk/bin/Release`, then `build/bin`). The manifest records which route was used, never an absolute path.
 - Ships only: `llama-server(.exe)`, `llama-tts(.exe)`, load-time DLLs, `mtmd` (vision). No test/bench tools.
 - `resources/engine/` is gitignored — binaries never enter the repository.
 - **If staging fails, the build fails.** Do not release with a stale or missing engine.
@@ -36,7 +36,8 @@ node scripts/prepare-engine.mjs --verify   # re-verify resources/engine/ in plac
   ubuntu, after installing Electron's shared libraries. If the smoke stage
   hangs, check that `scripts/smoke-test.ts` spawns its child with
   `detached: true` on POSIX (the group-kill depends on it).
-- `release.yml`: on `v*` tags (or manual dispatch) the `test` job runs the full
+- `release.yml`: on release tags (`0.*`; legacy `v*` still matches) or manual
+  dispatch the `test` job runs the full
   suite on Windows and **gates** the `build` job. The build job skips packaging
   with a clear notice when the `ENGINE_URL` repository secret is not configured
   (no red X, no empty installer) — for an alpha released from locally verified
@@ -59,7 +60,7 @@ npm run pack:dir     # electron-vite build + engine staging + electron-builder -
 - Windows installer (optional per release): `npm run pack` → `dist/*.exe` NSIS installer + MSI. Icon artwork lives at `build/icon.png` (256px) — electron-builder bakes it into the exe/installer and synthesizes the Windows .ico from it. MSI is configured (`electron-builder.yml` -> `win.target`) and is built beside the NSIS installer.
 - **Path-with-spaces note**: if the checkout lives under a path containing spaces, `@electron/rebuild` warns while rebuilding `better-sqlite3`; the build still completes (prebuilt binaries are used). Build from a space-free path if a native rebuild ever actually fails.
 - Verified working 2026-11-16: engine staged (10 files, SHA-verified, chonkllama `eda0e233a`), RC launched from `win-unpacked`, spawned its own runtime, health green, sessions loaded from the shared store.
-- Cosmetic warnings to expect (not failures): default Electron icon (no icon set yet), no code-signing certificate, dynamic-import notice for `renderer/api.ts`.
+- Cosmetic warnings to expect (not failures): no code-signing certificate, dynamic-import notice for `renderer/api.ts`, and on Linux electron-builder's `desktopName` notice.
 
 ## 4. Release-candidate checklist (run against win-unpacked, not dev)
 
@@ -98,7 +99,7 @@ git push origin 0.0.4a
 
 - Windows compositor: under heavy GPU load a window can present a stale frame; a single click recovers it. All in-app triggers found so far are fixed; the machine-level trigger is under investigation (see `docs/GPU.md`).
 - The detonation lane needs an OS sandbox backend (WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS) and refuses plainly without one. The microVM (`sbx`) is optional and not shipped.
-- Speech-to-text needs whisper.cpp and a language model. They are never bundled: the Sensory panel offers them as an optional, checksum-verified download on Windows; on Linux and macOS install the engine with a package manager or build it.
+- Speech-to-text needs whisper.cpp and a language model. They are never bundled: the Sensory panel offers them as an optional, checksum-verified download on Windows (x64, ARM64) and on Linux x64 (since 0.0.4b); on macOS install the engine with a package manager or build it.
 - macOS is not packaged and runs from source. State exactly which platforms a release's artifacts cover.
 - **Linux packages from this machine (WSL, done for 0.0.4a):** clone the tag onto the Linux filesystem (`git clone <repo> ~/build/event-horizon-code`), `npm ci`, `npm run build`, then `npx electron-builder --linux AppImage deb rpm` - never `npm run pack` there, which needs a Linux engine build (`rpm` wants `apt install rpm` once). To smoke-launch under WSLg, give the app its own `HOME` and `EH_WORKSPACE`, start it with `setsid nohup` and `--no-sandbox --disable-gpu --remote-debugging-port=<port>`, and drive it with a script run *inside* WSL (the port is not reachable from Windows). Remove the throwaway home afterwards.
 

@@ -94,7 +94,7 @@ export function buildDetonatePlan(worktree: string, tier: DetonateTier, artifact
     artifactPath,
     args,
     env: { EH_DETONATE: "1", EH_NETWORK: "off", EH_CREDENTIALS: "0" },
-    steps: artifactPath ? [...steps, `artifact (metadata only - delivery NOT implemented): ${artifactPath}`] : steps,
+    steps: artifactPath ? [...steps, `artifact: ${artifactPath} - delivered into the guest as a private copy; the host file is removed after the run`] : steps,
   };
 }
 

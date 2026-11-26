@@ -22,7 +22,7 @@ export const TOOL_SPECS: ToolDef[] = [
     type: "function",
     function: {
       name: "run_js",
-      description: "Batch read-only tool calling: declare 1-16 operations (read/ls/grep/glob with paths/patterns) and get every result in one round trip. Declarative only - the clean tier executes NO model-written code. ok reflects whether EVERY operation succeeded. For arbitrary code use tier=execute/redteam (detonation lane via sbx; refuses plainly if sbx is not installed; artifact delivery into the VM is not yet implemented).",
+      description: "Batch read-only tool calling: declare 1-16 operations (read/ls/grep/glob with paths/patterns) and get every result in one round trip. Declarative only - the clean tier executes NO model-written code. ok reflects whether EVERY operation succeeded. For arbitrary code use tier=execute/redteam (detonation lane in the OS sandbox - WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS; refuses plainly if none is available; the code runs from a private copy delivered into the guest, never from the host file).",
       parameters: {
         type: "object",
         properties: {
