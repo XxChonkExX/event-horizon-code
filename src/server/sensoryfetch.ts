@@ -19,6 +19,7 @@ import { allowedDownloadHop, allowedExternalUrl } from "../shared/externals";
 import { audit } from "./audit";
 import { SENSORY_CATALOG } from "./sensory-catalog";
 import { sensoryDir } from "./sensory";
+import { readTarGz } from "./targz";
 import { readZip } from "./unzip";
 
 export { SENSORY_CATALOG };
@@ -43,6 +44,7 @@ export type CatalogItem = {
   platform?: NodeJS.Platform;
   arch?: string;
   zip?: boolean;
+  tarGz?: boolean;
   keep?: RegExp;
   langs?: "en" | "multi";
 };
@@ -122,10 +124,33 @@ export async function installItem(it: CatalogItem, io: { dir: string; signal: Ab
     const actual = await sha256File(part);
     if (actual !== it.sha256) throw new Error(`checksum mismatch (expected ${it.sha256.slice(0, 12)}, got ${actual.slice(0, 12)}) - the file was deleted and nothing was installed`);
     set("installing");
-    if (it.zip) {
-      const kept = readZip(fs.readFileSync(part), { maxBytes: 128 * 1024 * 1024 }).filter((e) => it.keep?.test(e.name));
-      if (!kept.some((e) => e.name === it.file)) throw new Error("the archive does not contain the expected program");
-      for (const e of kept) fs.writeFileSync(path.join(dir, e.name), e.data);
+    if (it.zip || it.tarGz) {
+      // Archives: keep only the allowlisted programs and libraries, flat, and
+      // (tar) restore the unix mode and the symlinks the loader needs.
+      const entries = it.zip
+        ? readZip(fs.readFileSync(part), { maxBytes: 128 * 1024 * 1024 }).map((e) => ({ name: e.name, mode: 0o755, type: "file" as const, link: undefined as string | undefined, data: e.data }))
+        : readTarGz(fs.readFileSync(part), { maxBytes: 256 * 1024 * 1024 });
+      const kept = entries.filter((e) => (e.type === "symlink" || e.type === "file") && it.keep?.test(e.name));
+      if (!kept.some((e) => e.type === "file" && e.name === it.file)) throw new Error("the archive does not contain the expected program");
+      for (const e of kept.sort((a, b) => (a.type === "symlink" ? 1 : 0) - (b.type === "symlink" ? 1 : 0))) {
+        const dest = path.join(dir, e.name);
+        if (e.type === "symlink" && e.link) {
+          try { fs.unlinkSync(dest); } catch { /* did not exist */ }
+          try {
+            fs.symlinkSync(e.link, dest);
+          } catch {
+            // Where symlinks are refused (some filesystems, Windows without
+            // developer mode), a copy of the target serves the dynamic loader
+            // just as well. The target may itself be a link installed a moment
+            // ago - links are written last, so it is already a real file.
+            const target = path.resolve(dir, e.link);
+            const root = path.resolve(dir);
+            if (!target.startsWith(root + path.sep)) throw new Error("tar: link target escapes the install directory");
+            fs.copyFileSync(target, dest);
+          }
+        }
+        else if (e.data) fs.writeFileSync(dest, e.data, { mode: (e.mode & 0o777) || 0o644 });
+      }
     } else {
       fs.renameSync(part, path.join(dir, it.file));
     }

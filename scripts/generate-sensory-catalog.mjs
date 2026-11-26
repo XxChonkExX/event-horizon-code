@@ -21,6 +21,7 @@ const models = {
 const engines = {
   "whisper-bin-x64.zip": ["whisper-win-x64", "whisper.cpp for Windows x64", "x64"],
   "whisper-bin-win-cpu-arm64.zip": ["whisper-win-arm64", "whisper.cpp for Windows ARM64", "arm64"],
+  "whisper-bin-ubuntu-x64.tar.gz": ["whisper-linux-x64", "whisper.cpp for Linux x64", "x64"],
 };
 const esc = (s) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 const L = [];
@@ -40,7 +41,14 @@ L.push("export const SENSORY_CATALOG: CatalogItem[] = [");
 for (const [asset, [id, label, arch]] of Object.entries(engines)) {
   const a = gh.assets.find((x) => x.name === asset);
   if (!a || !a.digest) throw new Error("missing asset/digest " + asset);
-  L.push(`  { id: ${JSON.stringify(id)}, kind: "engine", label: ${JSON.stringify(label)}, note: "Official CPU build. Installs whisper-cli and its runtime DLLs; nothing else from the archive is kept.", file: "whisper-cli.exe", platform: "win32", arch: ${JSON.stringify(arch)}, zip: true, keep: /^(whisper-cli\\.exe|whisper\\.dll|ggml.*\\.dll|llama\\.dll)$/,`);
+  const linux = asset.endsWith(".tar.gz");
+  const note = linux
+    ? "Official CPU build (Ubuntu; runs on most glibc distributions). Installs whisper-cli and its libraries; nothing else from the archive is kept."
+    : "Official CPU build. Installs whisper-cli and its runtime DLLs; nothing else from the archive is kept.";
+  const fields = linux
+    ? 'file: "whisper-cli", platform: "linux", tarGz: true, keep: /^(whisper-cli|lib.*\\.so.*)$/'
+    : 'file: "whisper-cli.exe", platform: "win32", zip: true, keep: /^(whisper-cli\\.exe|whisper\\.dll|ggml.*\\.dll|llama\\.dll)$/';
+  L.push(`  { id: ${JSON.stringify(id)}, kind: "engine", label: ${JSON.stringify(label)}, note: ${JSON.stringify(note)}, ${fields},`);
   L.push(`    url: WHISPER + ${JSON.stringify(asset)}, size: ${a.size}, sha256: ${JSON.stringify(a.digest.replace("sha256:", ""))} },`);
 }
 for (const [file, [id, label, note]] of Object.entries(models)) {

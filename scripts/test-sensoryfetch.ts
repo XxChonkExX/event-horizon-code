@@ -13,6 +13,7 @@ import zlib from "node:zlib";
 import { allowedDownloadHop, allowedExternalUrl, INSTALL_PAGES } from "../src/shared/externals";
 import { cleanTranscript, modelRank, pickModel } from "../src/server/sensory";
 import { catalogStatus, download, FetchError, installItem, startFetch, type CatalogItem, type FetchJob, type FetchPhase } from "../src/server/sensoryfetch";
+import { readTarGz } from "../src/server/targz";
 import { readZip } from "../src/server/unzip";
 
 let failures = 0;
@@ -74,6 +75,36 @@ const idle = (): AbortSignal => new AbortController().signal;
 const mk = (id: string, bytes: Buffer, extra: Partial<CatalogItem> = {}): CatalogItem =>
   ({ id, kind: "model", label: id, note: "", file: `${id}.bin`, url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/x.bin", size: bytes.length, sha256: sha(bytes), ...extra });
 
+// A tiny ustar writer, so the tar.gz reader is tested against real archive bytes.
+function tarHeader(name: string, size: number, mode: number, type: string, link = ""): Buffer {
+  const h = Buffer.alloc(512);
+  h.write(name.slice(0, 100), 0);
+  h.write(mode.toString(8).padStart(7, "0") + "\0", 100);
+  h.write("0000000\0", 108); h.write("0000000\0", 116);
+  h.write(size.toString(8).padStart(11, "0") + "\0", 124);
+  h.write("00000000000\0", 136);
+  // ustar typeflags: "0" file, "2" symlink, "5" directory.
+  h.write(type === "symlink" ? "2" : type, 156);
+  h.write(link.slice(0, 100), 157);
+  h.write("ustar\0", 257); h.write("00", 263);
+  let sum = 0; for (let i = 0; i < 512; i++) sum += i >= 148 && i < 156 ? 32 : h[i];
+  h.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+  return h;
+}
+function makeTar(entries: Array<{ name: string; data?: Buffer; mode?: number; type?: string; link?: string }>): Buffer {
+  const parts: Buffer[] = [];
+  for (const e of entries) {
+    const size = e.data?.length ?? 0;
+    parts.push(tarHeader(e.name, size, e.mode ?? 0o644, e.type ?? "0", e.link ?? ""));
+    if (size) { parts.push(e.data!); const pad = (512 - (size % 512)) % 512; if (pad) parts.push(Buffer.alloc(pad)); }
+  }
+  parts.push(Buffer.alloc(1024));
+  return Buffer.concat(parts);
+}
+function makeTarGz(entries: Array<{ name: string; data?: Buffer; mode?: number; type?: string; link?: string }>): Buffer {
+  return zlib.gzipSync(makeTar(entries));
+}
+
 async function main(): Promise<void> {
   console.log("[ehc] sensory download tests");
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-sensoryfetch-"));
@@ -110,6 +141,7 @@ async function main(): Promise<void> {
   const cat = catalogStatus();
   check("catalog has engine rows and language models", cat.items.some((i) => i.kind === "engine") && cat.items.filter((i) => i.kind === "model").length >= 6);
   check("every catalog row is pinned with a size and a 64-hex sha256", cat.items.every((i) => i.size > 1000 && /^[0-9a-f]{64}$/.test(i.sha256)));
+  check("the catalog has a Linux engine row (tar.gz, platform linux)", cat.items.some((i) => i.id === "whisper-linux-x64" && i.tarGz === true && i.platform === "linux" && i.file === "whisper-cli"));
   check("every catalog URL is https on github.com or huggingface.co", cat.items.every((i) => /^https:\/\/(github\.com|huggingface\.co)\//.test(i.url) && allowedExternalUrl(i.url) !== null));
   const nope = await rejects(() => startFetch("nope"));
   check("an unknown id is refused with a 400-style error", nope !== "");
@@ -131,6 +163,23 @@ async function main(): Promise<void> {
   check("zip64 is refused", /zip64/.test(await rejects(() => readZip(zip64))));
   check("truncated archives are refused", (await rejects(() => readZip(zip.subarray(0, zip.length - 40)))) !== "");
   check("size caps hold", /beyond the size cap/.test(await rejects(() => readZip(zip, { maxBytes: 1000 }))));
+
+  // 3b. tar.gz reader (the Linux engine ships as one).
+  const tgz = makeTarGz([
+    { name: "whisper-bin-ubuntu-x64/whisper-cli", data: a, mode: 0o755 },
+    { name: "whisper-bin-ubuntu-x64/libwhisper.so.1.9.6", data: b, mode: 0o755 },
+    { name: "whisper-bin-ubuntu-x64/libwhisper.so.1", type: "symlink", link: "libwhisper.so.1.9.6" },
+    { name: "whisper-bin-ubuntu-x64/libwhisper.so", type: "symlink", link: "libwhisper.so.1" },
+    { name: "whisper-bin-ubuntu-x64/", type: "5" },
+  ]);
+  const te = readTarGz(tgz);
+  check("tar.gz: the program and library decode, names are flattened, symlinks are kept", te.length === 4 && te[0]!.name === "whisper-cli" && te[0]!.data!.equals(a) && te[0]!.mode === 0o755
+    && te.some((e) => e.type === "symlink" && e.name === "libwhisper.so.1" && e.link === "libwhisper.so.1.9.6")
+    && te.some((e) => e.type === "symlink" && e.name === "libwhisper.so" && e.link === "libwhisper.so.1"));
+  check("tar.gz: traversal is refused", /unsafe entry name/.test(await rejects(() => readTarGz(makeTarGz([{ name: "../evil", data: a, type: "0" }])))));
+  const badTar = Buffer.from(makeTar([{ name: "whisper-bin-ubuntu-x64/whisper-cli", data: a, mode: 0o755 }])); badTar[200] = badTar[200] ^ 0xff; // byte 200 sits inside the first header
+  check("a corrupted tar header is refused", /checksum/.test(await rejects(() => readTarGz(zlib.gzipSync(badTar)))));
+  check("tar.gz: an oversize archive is refused", /beyond the size cap/.test(await rejects(() => readTarGz(makeTarGz([{ name: "big", data: Buffer.alloc(6000) }]), { maxBytes: 1000 }))));
 
   // 4. Download loop against a loopback stub (the allow hook is test-only).
   const payload = crypto.randomBytes(300_000);
@@ -195,6 +244,22 @@ async function main(): Promise<void> {
   const wrongZip = makeZip([{ name: "Release/other.exe", data: a }]);
   const w = await run({ ...mk("wrongzip", wrongZip, { kind: "engine", file: "whisper-cli.exe", zip: true, keep }) }, wrongZip);
   check("an archive without the expected program installs nothing", w.phase === "error" && /does not contain/.test(w.error ?? ""));
+  const tarBytes = makeTarGz([
+    { name: "whisper-bin-ubuntu-x64/whisper-cli", data: a, mode: 0o755 },
+    { name: "whisper-bin-ubuntu-x64/libwhisper.so.1.9.6", data: b, mode: 0o755 },
+    { name: "whisper-bin-ubuntu-x64/libwhisper.so", type: "symlink", link: "libwhisper.so.1" },
+    { name: "whisper-bin-ubuntu-x64/test-evil", data: a, mode: 0o755 },
+  ]);
+  const tl = await run(mk("engine-linux", tarBytes, { kind: "engine", file: "whisper-cli", tarGz: true, keep: /^(whisper-cli|lib.*\.so.*)$/ }), tarBytes);
+  const execOk = process.platform === "win32" ? true : (fs.statSync(path.join(dir, "whisper-cli")).mode & 0o100) !== 0; // Windows fakes mode by extension
+  check("a tar.gz engine installs the binary (executable) and its libraries, nothing else", tl.phase === "done"
+    && fs.existsSync(path.join(dir, "whisper-cli")) && execOk
+    && fs.existsSync(path.join(dir, "libwhisper.so.1.9.6"))
+    && !fs.existsSync(path.join(dir, "test-evil")), tl.error ?? "");
+  const soStat = fs.lstatSync(path.join(dir, "libwhisper.so"));
+  check("the loader link resolves: a symlink where they work, a copy where refused", soStat.isSymbolicLink()
+    ? fs.readlinkSync(path.join(dir, "libwhisper.so")) === "libwhisper.so.1"
+    : soStat.isFile() && fs.readFileSync(path.join(dir, "libwhisper.so")).equals(fs.readFileSync(path.join(dir, "libwhisper.so.1.9.6"))));
 
   // 6. Model choice and transcript cleaning.
   const M = ["/s/ggml-tiny.en.bin", "/s/ggml-base.en.bin", "/s/ggml-small.bin", "/s/ggml-small.en.bin"];

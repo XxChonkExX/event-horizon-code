@@ -34,7 +34,7 @@ Press the microphone button in the composer to record; press it again to transcr
 
 **Nothing here happens without you.** The app never downloads, installs or reports anything on its own. Three ways to get the two pieces (the `whisper-cli` engine and a `ggml-*.bin` language model):
 
-1. **Optional download (Windows x64 / ARM64)** - Sensory panel → **download**. The engine comes from the official whisper.cpp release on GitHub, the models from the project's own Hugging Face repository. Every row is pinned - URL, size, the SHA-256 the source publishes - and a file that does not match is deleted, never installed. One at a time, progress, cancel. Files land in `~/.eventhorizon/sensory/`.
+1. **Optional download (Windows x64 / ARM64, Linux x64)** - Sensory panel → **download**. The engine comes from the official whisper.cpp release on GitHub (Windows zips; on Linux the official Ubuntu build, a tar.gz whose loader symlinks are re-created on install), the models from the project's own Hugging Face repository. Every row is pinned - URL, size, the SHA-256 the source publishes - and a file that does not match is deleted, never installed. One at a time, progress, cancel. Files land in `~/.eventhorizon/sensory/`.
 2. **Your package manager or your own build** - Homebrew (`brew install whisper-cpp`), Arch (`pacman -S whisper.cpp`), or built from source. Event Horizon finds `whisper-cli` on `PATH`. Models still come from the panel, or drop any `ggml-*.bin` into the sensory folder by hand.
 3. **By config** - `.harness/config.json` → `sensory.stt.{bin,model,language}` points at exact paths.
 

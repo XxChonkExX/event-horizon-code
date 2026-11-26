@@ -11,10 +11,12 @@ const WHISPER = "https://github.com/ggml-org/whisper.cpp/releases/download/b5907
 export const WHISPER_RELEASE_URL = "https://github.com/ggml-org/whisper.cpp/releases/tag/b5907";
 
 export const SENSORY_CATALOG: CatalogItem[] = [
-  { id: "whisper-win-x64", kind: "engine", label: "whisper.cpp for Windows x64", note: "Official CPU build. Installs whisper-cli and its runtime DLLs; nothing else from the archive is kept.", file: "whisper-cli.exe", platform: "win32", arch: "x64", zip: true, keep: /^(whisper-cli\.exe|whisper\.dll|ggml.*\.dll|llama\.dll)$/,
+  { id: "whisper-win-x64", kind: "engine", label: "whisper.cpp for Windows x64", note: "Official CPU build. Installs whisper-cli and its runtime DLLs; nothing else from the archive is kept.", file: "whisper-cli.exe", platform: "win32", zip: true, keep: /^(whisper-cli\.exe|whisper\.dll|ggml.*\.dll|llama\.dll)$/,
     url: WHISPER + "whisper-bin-x64.zip", size: 9168428, sha256: "ecca07b277d943e9b9f4712856a144b857271a6b333104e511e1988e80db582b" },
-  { id: "whisper-win-arm64", kind: "engine", label: "whisper.cpp for Windows ARM64", note: "Official CPU build. Installs whisper-cli and its runtime DLLs; nothing else from the archive is kept.", file: "whisper-cli.exe", platform: "win32", arch: "arm64", zip: true, keep: /^(whisper-cli\.exe|whisper\.dll|ggml.*\.dll|llama\.dll)$/,
+  { id: "whisper-win-arm64", kind: "engine", label: "whisper.cpp for Windows ARM64", note: "Official CPU build. Installs whisper-cli and its runtime DLLs; nothing else from the archive is kept.", file: "whisper-cli.exe", platform: "win32", zip: true, keep: /^(whisper-cli\.exe|whisper\.dll|ggml.*\.dll|llama\.dll)$/,
     url: WHISPER + "whisper-bin-win-cpu-arm64.zip", size: 4379517, sha256: "4e522946827dcbc517d3cd7ee8d6cfe760e8143076924ac8513622694aa3ccfd" },
+  { id: "whisper-linux-x64", kind: "engine", label: "whisper.cpp for Linux x64", note: "Official CPU build (Ubuntu; runs on most glibc distributions). Installs whisper-cli and its libraries; nothing else from the archive is kept.", file: "whisper-cli", platform: "linux", tarGz: true, keep: /^(whisper-cli|lib.*\.so.*)$/,
+    url: WHISPER + "whisper-bin-ubuntu-x64.tar.gz", size: 10413708, sha256: "a6199027fe5b4239c84171d2bca4c0ff44ec86a515494d5a39b237b212d429bd" },
   { id: "tiny.en", kind: "model", label: "Tiny - English", note: "Fastest; rough.", file: "ggml-tiny.en.bin", langs: "en",
     url: HF + "ggml-tiny.en.bin", size: 77704715, sha256: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f" },
   { id: "base.en", kind: "model", label: "Base - English", note: "Quick; fine for short commands.", file: "ggml-base.en.bin", langs: "en",

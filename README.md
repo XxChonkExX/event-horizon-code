@@ -62,7 +62,7 @@ No Ollama? You don't need it. The model ladder works without it on every platfor
 
 Ollama is a *convenience*, not a requirement (native Linux/macOS/Windows builds exist if you want it).
 
-Roadmap (post-alpha): macOS packaging, in-app speech downloads for Linux and macOS, and engine staging for Linux in the packer. Speech-to-text shipped in 0.0.4a; the Omarchy shell plugin in 0.0.3d. Designs for the next step - a camera window and sensor suite ([`docs/SENSORS.md`](docs/SENSORS.md)) and a minimal hardened browser window ([`docs/BROWSER.md`](docs/BROWSER.md)) - are written up and await a decision; nothing in them is implemented. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
+Roadmap (post-alpha): macOS packaging, in-app speech downloads for macOS, and engine staging for Linux/macOS in the packer (Linux can download in-app since 0.0.4b). Speech-to-text shipped in 0.0.4a; the Omarchy shell plugin in 0.0.3d. Designs for the next step - a camera window and sensor suite ([`docs/SENSORS.md`](docs/SENSORS.md)) and a minimal hardened browser window ([`docs/BROWSER.md`](docs/BROWSER.md)) - are written up and await a decision; nothing in them is implemented. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
 
 ## Quick start
 
@@ -109,7 +109,7 @@ Verified end to end on Windows; the Linux keyring proof is verified natively on 
 
 It needs two pieces, and **neither is bundled**: the `whisper-cli` engine and a language model. Three ways to get them, none required for anything else in the app:
 
-1. **Optional download** (Windows x64 / ARM64) - Sensory panel → **download**. The engine comes from the official whisper.cpp release, the models from the project's own repository. Each is pinned to its exact size and published SHA-256 and verified before it is installed; one at a time, with progress and cancel. `Small - English` is the recommended model for English (about 5× faster than real time on a CPU); multilingual models cover about 100 languages. Nothing is downloaded until you click, and no request is made before that.
+1. **Optional download** (Windows x64 / ARM64, Linux x64) - Sensory panel → **download**. The engine comes from the official whisper.cpp release, the models from the project's own repository. Each is pinned to its exact size and published SHA-256 and verified before it is installed; one at a time, with progress and cancel. `Small - English` is the recommended model for English (about 5× faster than real time on a CPU); multilingual models cover about 100 languages. Nothing is downloaded until you click, and no request is made before that.
 2. **Your package manager or build** - `brew install whisper-cpp`, `pacman -S whisper.cpp`, or built from source. `whisper-cli` on `PATH` is found automatically.
 3. **By hand** - drop `whisper-cli` / `whisper-cli.exe` and any `ggml-*.bin` into `~/.eventhorizon/sensory/`, or point `.harness/config.json` → `sensory.stt.{bin,model,language}` at them.
 
