@@ -10,28 +10,43 @@
 
 import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
-import { chatOpenAI } from "./router";
+import { chat as ollamaChat, chatOpenAI, listModels, modelCapabilities, type ChatMessage } from "./router";
 import { readSecret, secretsStatus } from "./secrets";
 
 export type CameraLanes = {
   engine: { baseUrl: string } | null;
+  /** Ollama models that Ollama itself reports as vision-capable. */
+  ollama: { models: string[] } | null;
   byok: Array<{ provider: string; baseUrl: string | null; model: string | null }>;
   /** The camera window is open with the camera on and checking in. */
   windowLive: boolean;
 };
 
-/** Where a frame could go. Provider endpoints only - never a key. Only providers that could actually answer. */
-export function cameraLanes(): CameraLanes {
+/**
+ * Where a frame could go. Provider endpoints only - never a key. Ollama is a
+ * local lane (frames stay on this machine), so it needs no consent; only its
+ * vision-capable models are offered.
+ */
+export async function cameraLanes(): Promise<CameraLanes> {
   let byok: CameraLanes["byok"] = [];
   try {
     byok = secretsStatus().providers
       .filter((p) => p.hasKey && p.baseUrl)
       .map((p) => ({ provider: p.provider, baseUrl: p.baseUrl, model: p.model }));
   } catch { /* no secrets file: no BYOK lanes */ }
+  let ollama: CameraLanes["ollama"] = null;
+  try {
+    const vision: string[] = [];
+    for (const m of await listModels()) {
+      try {
+        if ((await modelCapabilities(m.id, { engineBase: null })).capabilities.includes("vision")) vision.push(m.id);
+      } catch { /* a model that cannot be probed is not offered */ }
+    }
+    if (vision.length) ollama = { models: vision };
+  } catch { /* Ollama not reachable */ }
   const base = engineEndpoint();
-  return { engine: base ? { baseUrl: base } : null, byok, windowLive: cameraWindowLive() };
+  return { engine: base ? { baseUrl: base } : null, ollama, byok, windowLive: cameraWindowLive() };
 }
-
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
 
 // ---- one fresh frame, on request ----
@@ -92,7 +107,7 @@ export function frameFromDataUrl(dataUrl: string): { mime: string; bytes: number
 export async function look(args: {
   image: string;
   question: string;
-  lane: "engine" | "byok";
+  lane: "engine" | "ollama" | "byok";
   provider?: string;
   /** The user's explicit yes to the frame leaving this computer. */
   allowRemote?: boolean;
@@ -104,16 +119,24 @@ export async function look(args: {
   const frame = frameFromDataUrl(image);
   if (!frame) return { ok: false, error: "the frame must be a JPEG, PNG or WebP data URL under 2 MB" };
 
-  let baseUrl: string;
-  let apiKey = "local";
-  let model: string;
-  let laneNote: string;
+  const messages: ChatMessage[] = [{ role: "user", content: question, images: [image] }];
+  let laneNote = "";
+  let answer: { ok: boolean; content?: string; error?: string };
+
   if (args.lane === "engine") {
     const base = engineEndpoint();
-    if (!base) return { ok: false, error: "the local engine is not running - start a vision model in the Models panel, or choose BYOK Vision" };
-    baseUrl = base;
-    model = "engine";
+    if (!base) return { ok: false, error: "the local engine is not running - start a vision model in the Models panel, or choose Ollama / BYOK Vision" };
     laneNote = "engine (this machine)";
+    answer = await chatOpenAI("engine", messages, { baseUrl: base, apiKey: "local", think: "low", numPredict: 180, timeoutMs: 60_000 });
+  } else if (args.lane === "ollama") {
+    // Local like the engine: the frame stays on this machine, so no consent gate.
+    const model = String(args.provider ?? "");
+    const installed = await listModels();
+    if (!installed.some((m) => m.id === model)) {
+      return { ok: false, error: `that Ollama model is not installed - pick a vision-capable model in the camera window (EHC never downloads models)` };
+    }
+    laneNote = `ollama ${model.slice(0, 60)} (this machine)`;
+    answer = await ollamaChat(model, messages, { think: "low", numPredict: 180, timeoutMs: 120_000, numCtx: 8192 });
   } else {
     let secret: ReturnType<typeof readSecret> = null;
     try { secret = args.provider ? readSecret(args.provider) : null; } catch { /* unreadable: treated as absent */ }
@@ -123,20 +146,16 @@ export async function look(args: {
       audit({ tool: "camera.look", note: `REFUSED byok ${String(args.provider ?? "").slice(0, 40)}: no consent given` });
       return { ok: false, needsConsent: true, error: "a BYOK Vision look sends this camera frame to your provider - it leaves this computer. Allow it first." };
     }
-    baseUrl = secret.baseUrl;
-    apiKey = secret.apiKey;
-    model = secret.model ?? "";
     let host = secret.baseUrl;
     try { host = new URL(secret.baseUrl).host; } catch { /* keep the raw text */ }
     laneNote = `byok ${String(args.provider ?? "").slice(0, 40)} -> ${host}`;
+    answer = await chatOpenAI(secret.model ?? "", messages, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: "low", numPredict: 180, timeoutMs: 60_000 });
   }
   audit({ tool: "camera.look", note: `${laneNote}, ${frame.bytes} bytes, ${question.length} chars${args.initiator ? ` [${args.initiator}]` : ""}` });
-  const r = await chatOpenAI(model, [{ role: "user", content: question, images: [image] }], { baseUrl, apiKey, think: "low", numPredict: 180, timeoutMs: 60_000 });
-  if (!r.ok) return { ok: false, error: String(r.error ?? "the vision model did not answer").slice(0, 300) };
-  const text = (r.content ?? "").trim();
+  if (!answer.ok) return { ok: false, error: String(answer.error ?? "the vision model did not answer").slice(0, 300) };
+  const text = (answer.content ?? "").trim();
   return text ? { ok: true, text } : { ok: false, error: "the model returned no text - it may not support images" };
 }
-
 /**
  * The agent's look (`camera_look` tool). Two rules make it safe to hand to a
  * model: it can only happen while the USER has the camera on (the window is

@@ -12,7 +12,7 @@ Event Horizon as an organism. Every part is local-first and opt-in, and follows 
 | **Ears** | whisper.cpp sidecar - official CPU build + a language model, both an optional one-click download | local CLI (`whisper-cli`) | ✅ wired (`/api/sensory/transcribe`, composer mic button) |
 | **Mouth** | Piper or Kokoro (onnx, small, CPU) | local CLI/HTTP sidecar | 📋 Phase S2 |
 | **Skin/proprioception** | AgentWatch runtime posture (ports, processes, drivers) | `aw posture` | ✅ Phase B wired |
-| **Presence / camera** | camera window -> vision model (the engine's multimodal lane, or BYOK Vision with explicit consent) + a 2D agent presence | `/api/sensors/camera/*` | ✅ wired (S3a) - rest proposed, [SENSORS.md](SENSORS.md) |
+| **Presence / camera** | camera window -> vision model (the engine's vision lane, **Ollama** locally, or BYOK Vision with explicit consent) + a 2D agent presence | `/api/sensors/camera/*` | ✅ wired (S3a) - rest proposed, [SENSORS.md](SENSORS.md) |
 | **Range / radio** | lidar (ROS 2 drivers), SDR direction finding, depth | sensor bus, ROS 2 bridge | 📋 proposed - [SENSORS.md](SENSORS.md) |
 | **Web** | a minimal, hardened browser window | Electron `WebContentsView`, own session | 📋 proposed - [BROWSER.md](BROWSER.md) |
 

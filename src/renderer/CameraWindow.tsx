@@ -11,7 +11,7 @@ import { createSignal, onCleanup, onMount, For, Show } from "solid-js";
 import { apiFetch, apiJson } from "./api";
 
 type Lane = { provider: string; baseUrl: string | null; model: string | null };
-type Lanes = { engine: { baseUrl: string } | null; byok: Lane[] };
+type Lanes = { engine: { baseUrl: string } | null; ollama: { models: string[] } | null; byok: Lane[] };
 type Dev = { id: string; label: string };
 
 const DEV_KEY = "ehc.cameraDeviceId";
@@ -34,7 +34,7 @@ export default function CameraWindow() {
   const [devId, setDevId] = createSignal(stored(DEV_KEY));
   const [mirrored, setMirrored] = createSignal(stored(MIRROR_KEY) === "1");
   const [lanes, setLanes] = createSignal<Lanes | null>(null);
-  const [lane, setLane] = createSignal<"engine" | "byok">("engine");
+  const [lane, setLane] = createSignal<"engine" | "ollama" | "byok">("engine");
   const [provider, setProvider] = createSignal("");
   // The frame-leaves-the-computer switch. Session-only on purpose.
   const [consent, setConsent] = createSignal(false);
@@ -185,14 +185,16 @@ export default function CameraWindow() {
     const image = grabFrame();
     if (!image) return flash("Start the camera first.");
     const remote = lane() === "byok";
+    const localOllama = lane() === "ollama";
     const p = provider();
     const dest = remote ? (lanes()?.byok.find((x) => x.provider === p) ?? null) : null;
     if (remote && !dest) return flash("Choose a BYOK provider first.");
+    if (localOllama && !p) return flash("Choose an Ollama vision model first.");
     setBusy(true); setAnswer(""); setNote("");
     try {
       const r = await apiFetch("/api/sensors/camera/look", {
         method: "POST",
-        body: JSON.stringify({ image, question: question(), lane: lane(), provider: remote ? p : undefined, allowRemote: remote ? consent() : undefined }),
+        body: JSON.stringify({ image, question: question(), lane: lane(), provider: remote || localOllama ? p : undefined, allowRemote: remote ? consent() : undefined }),
       });
       const d = (await r.json()) as { ok: boolean; text?: string; error?: string };
       if (d.ok && d.text) setAnswer(d.text); else flash(d.error ?? "No answer.");
@@ -218,13 +220,15 @@ export default function CameraWindow() {
   };
 
   const remoteOn = () => lane() === "byok" && consent();
+  const ollamaModels = () => lanes()?.ollama?.models ?? [];
+  const ollamaReady = () => ollamaModels().length > 0;
   const dest = () => lanes()?.byok.find((x) => x.provider === provider()) ?? null;
   const host = () => { try { return new URL(dest()?.baseUrl ?? "").host; } catch { return dest()?.baseUrl ?? ""; } };
   const engineReady = () => Boolean(lanes()?.engine);
 
   onMount(() => {
     void refreshDevices();
-    void apiJson<Lanes>("/api/sensors/camera/lanes").then(setLanes).catch(() => setLanes({ engine: null, byok: [] }));
+    void apiJson<Lanes>("/api/sensors/camera/lanes").then(setLanes).catch(() => setLanes({ engine: null, ollama: null, byok: [] }));
   });
   onCleanup(() => { clearTimeout(noteTimer); stop(); });
 
@@ -262,10 +266,17 @@ export default function CameraWindow() {
         <div class="cam-eyes">
           <div class="cam-lane">
             <span class="session-meta">vision</span>
-            <select class="cam-dev" value={lane()} onChange={(e) => setLane(e.target.value === "byok" ? "byok" : "engine")}>
+            <select class="cam-dev" value={lane()} onChange={(e) => { setLane(e.target.value === "byok" ? "byok" : e.target.value === "ollama" ? "ollama" : "engine"); setConsent(false); }}>
               <option value="engine" disabled={!engineReady()}>on this machine (engine){engineReady() ? "" : " - not running"}</option>
+              <option value="ollama" disabled={!ollamaReady()}>Ollama (local, on this machine){ollamaReady() ? ` - ${ollamaModels().length} vision model${ollamaModels().length === 1 ? "" : "s"}` : " - no vision model"}</option>
               <option value="byok" disabled={(lanes()?.byok.length ?? 0) === 0}>BYOK Vision{lanes() && lanes()!.byok.length === 0 ? " - no provider saved" : ""}</option>
             </select>
+            <Show when={lane() === "ollama"}>
+              <select class="cam-dev" value={provider()} onChange={(e) => setProvider(e.target.value)} title="The local Ollama model that will describe the frame">
+                <option value="">choose a model</option>
+                <For each={ollamaModels()}>{(m) => <option value={m}>{m}</option>}</For>
+              </select>
+            </Show>
             <Show when={lane() === "byok"}>
               <select class="cam-dev" value={provider()} onChange={(e) => { setProvider(e.target.value); setConsent(false); }} title="Where a frame would be sent">
                 <option value="">choose a provider</option>
@@ -275,8 +286,8 @@ export default function CameraWindow() {
           </div>
           <div class="cam-lane">
             <input class="cam-q" type="text" value={question()} placeholder="Ask about this frame... (empty: describe it)" onKeyDown={(e) => { if (e.key === "Enter" && !busy() && live()) void look(); }} />
-            <button class="cam-look" disabled={busy() || !live() || (lane() === "byok" && !consent())} onClick={() => void look()}>
-              {busy() ? "Looking…" : lane() === "byok" ? `Send frame to ${host()} and ask` : "Look"}
+            <button class="cam-look" disabled={busy() || !live() || (lane() === "byok" && !consent()) || (lane() === "ollama" && !provider())} onClick={() => void look()}>
+              {busy() ? "Looking…" : lane() === "byok" ? `Send frame to ${host()} and ask` : lane() === "ollama" ? `Look with ${provider() || "Ollama"}` : "Look"}
             </button>
           </div>
           <Show when={answer()}><p class="cam-answer">{answer()}</p></Show>

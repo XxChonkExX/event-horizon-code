@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   check("garbage is refused", frameFromDataUrl("not a data url") === null && frameFromDataUrl("data:image/jpeg;base64,") === null);
 
   // 2. Lanes list endpoints and models - never a key.
-  const lanes = cameraLanes();
+  const lanes = await cameraLanes();
   check("the BYOK lane lists the saved provider with its endpoint and model", lanes.byok.some((p) => p.provider === "stub" && p.baseUrl === `${base}/v1` && p.model === "vision-stub"), JSON.stringify(lanes.byok));
   check("the lane list never carries the key", !JSON.stringify(lanes).includes("test-key-123"));
   check("the engine lane is absent while no engine runs", lanes.engine === null);
@@ -97,6 +97,12 @@ async function main(): Promise<void> {
   const older = requestFrame(5000);
   const newer = requestFrame(5000);
   check("a newer request supersedes the older one", (await older) === null && takeFrameRequest() === true && deliverFrame(jpeg).ok && (await newer) === jpeg);
+
+  // 6b. The Ollama lane is local-only and never downloads: a model that is not
+  // installed is refused before any request. (EH_OLLAMA_URL is deliberately
+  // not pointed at the stub - the real Ollama on this machine answers.)
+  const ollamaLook = await look({ image: jpeg, question: q, lane: "ollama", provider: "not-an-installed-model" });
+  check("the Ollama lane refuses an uninstalled model and never downloads", ollamaLook.ok === false && /never downloads/.test(ollamaLook.error ?? ""), ollamaLook.error ?? "");
 
   // 7. The camera_look tool: the user's approval first, and never a remote lane.
   const { cameraPoll, cameraWindowLive } = await import("../src/server/sensors");

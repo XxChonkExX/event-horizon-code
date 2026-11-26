@@ -1398,7 +1398,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     // A frame only leaves this machine with the user's explicit consent - the
     // gate is in sensors.ts, not only in the UI.
     if (req.method === "GET" && url.pathname === "/api/sensors/camera/lanes") {
-      return sendJson(res, 200, cameraLanes());
+      return sendJson(res, 200, await cameraLanes());
     }
     if (req.method === "POST" && url.pathname === "/api/sensors/camera/look") {
       let raw = "";
@@ -1410,7 +1410,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const r = await look({
             image: b.image,
             question: String(b.question ?? ""),
-            lane: b.lane === "byok" ? "byok" : "engine",
+            lane: b.lane === "byok" ? "byok" : b.lane === "ollama" ? "ollama" : "engine",
             provider: typeof b.provider === "string" ? b.provider : undefined,
             allowRemote: b.allowRemote === true,
           });
