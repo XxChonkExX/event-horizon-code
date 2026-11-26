@@ -8,7 +8,7 @@
 // "Checking toolchain..." forever.
 
 import { createSignal, onMount, For, Show } from "solid-js";
-import { apiJson } from "./api";
+import { apiJson, openExternal } from "./api";
 
 type ToolCheck = {
   lang: string;
@@ -17,6 +17,9 @@ type ToolCheck = {
   ok: boolean;
   version: string;
   error?: string;
+  /** Official install page, present only for a missing tool that has one. */
+  install?: string;
+  installNote?: string;
 };
 
 export default function ToolchainDoctor() {
@@ -95,7 +98,19 @@ export default function ToolchainDoctor() {
                   </summary>
                   <ul>
                     <For each={items}>
-                      {(i) => <li class={i.ok ? "doctor-ok" : "doctor-warn"}>{i.ok ? "OK " : "MISS"} {i.cmd} - {i.version || i.error}</li>}
+                      {(i) => (
+                        <li class={i.ok ? "doctor-ok" : "doctor-warn"}>
+                          {i.ok ? "OK " : "MISS"} {i.cmd} - {i.version || i.error}
+                          <Show when={!i.ok && i.install}>
+                            <button
+                              class="install-link"
+                              title={`${i.installNote ? `${i.installNote} ` : ""}Opens the official install page in your browser. Nothing is installed by Event Horizon.`}
+                              onClick={() => void openExternal(i.install!)}
+                            >install</button>
+                          </Show>
+                          <Show when={!i.ok && i.installNote}>&nbsp;- <span class="session-meta">{i.installNote}</span></Show>
+                        </li>
+                      )}
                     </For>
                   </ul>
                 </details>

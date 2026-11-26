@@ -20,6 +20,7 @@ declare global {
       eventTicket: () => Promise<string>;
       fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => Promise<{ ok: boolean; error?: string }>;
     revealInFolder: (path: string, root?: string) => Promise<{ ok: boolean; error?: string }>;
+    openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>;
     onContextMenu: (cb: (p: { x: number; y: number }) => void) => void;
     };
   }
@@ -93,6 +94,13 @@ export async function revealInFolder(rel: string, root?: string): Promise<{ ok: 
 }
 
 export const canReveal = (): boolean => typeof window !== "undefined" && Boolean(window.eventhorizon?.revealInFolder);
+
+// Open an official install page in the user's own browser. Main enforces the
+// allowlist (https + known host) whatever the page asks for.
+export async function openExternal(url: string): Promise<{ ok: boolean; error?: string }> {
+  if (typeof window !== "undefined" && window.eventhorizon?.openExternal) return window.eventhorizon.openExternal(url);
+  return { ok: false, error: "not available outside the desktop app" };
+}
 
 export async function pickFolder(): Promise<string | null> {
   if (typeof window !== "undefined" && window.eventhorizon?.pickFolder) {

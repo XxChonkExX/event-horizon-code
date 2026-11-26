@@ -40,6 +40,7 @@ import { familyCatalog, detectTemplate, resolveTemplate, templateDir, listTempla
 import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
+import { CATALOG_LINKS, catalogStatus, cancelFetch, fetchState, startFetch, FetchError } from "./sensoryfetch";
 import { listVoices, speak, ttsDoctor } from "./tts";
 import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } from "./agentrun";
 import { APP_VERSION } from "../shared/version";
@@ -1384,11 +1385,34 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       req.on("data", (c) => { raw += c; });
       req.on("end", async () => {
         try {
-          const b = JSON.parse(raw || "{}") as { audioBase64?: string; language?: string };
+          const b = JSON.parse(raw || "{}") as { audioBase64?: string; language?: string; model?: string };
           if (!b.audioBase64) return sendJson(res, 400, { error: "audioBase64 (16 kHz mono WAV) required" });
-          const r = await transcribe(b.audioBase64, { language: b.language });
+          const r = await transcribe(b.audioBase64, { language: b.language, model: b.model });
           sendJson(res, r.ok ? 200 : 400, r);
         } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+    // Optional downloads, only ever on a user's click. The catalog is pinned
+    // (sensoryfetch.ts); this surface just reports it and runs one job.
+    if (req.method === "GET" && url.pathname === "/api/sensory/catalog") {
+      return sendJson(res, 200, { ...catalogStatus(), links: CATALOG_LINKS, job: fetchState() });
+    }
+    if (req.method === "GET" && url.pathname === "/api/sensory/fetch/status") {
+      return sendJson(res, 200, { job: fetchState() });
+    }
+    if (url.pathname === "/api/sensory/fetch" && (req.method === "POST" || req.method === "DELETE")) {
+      let raw = "";
+      req.on("data", (c) => { raw += c; if (raw.length > 4096) raw = "{"; });
+      req.on("end", () => {
+        try {
+          if (req.method === "DELETE") return sendJson(res, 200, { ok: cancelFetch(), job: fetchState() });
+          const b = JSON.parse(raw || "{}") as { id?: unknown };
+          if (typeof b.id !== "string") return sendJson(res, 400, { ok: false, error: "id required" });
+          return sendJson(res, 200, { ok: true, job: startFetch(b.id) });
+        } catch (e) {
+          return sendJson(res, e instanceof FetchError ? e.status : 400, { ok: false, error: String((e as Error).message ?? e).slice(0, 200) });
+        }
       });
       return;
     }

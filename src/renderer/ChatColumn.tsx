@@ -261,33 +261,92 @@ export default function ChatColumn(props: {
     })();
   });
   // ---- Speech to text (composer mic) ----
-  // Records from the microphone (MediaRecorder -> webm), converts to 16 kHz
-  // mono WAV in-page, POSTs to /api/sensory/transcribe (whisper sidecar) and
-  // inserts the transcript into the composer input - press Enter to send.
-  const [sttBusy, setSttBusy] = createSignal(false);
-  const [sttNote, setStdNote] = createSignal("");
-  // Mic selector: some users have several input devices; let them pick one.
-  // "default" = the browser's default device.
-  const [micDevices, setMicDevices] = createSignal<{ id: string; label: string }[]>([]);
-  const [micSel, setMicSel] = createSignal("default");
-  async function refreshMicDevices() {
-    try {
-      const ds = await navigator.mediaDevices.enumerateDevices();
-      const inputs = ds
-        .filter((d) => d.kind === "audioinput")
-        .map((d, i) => ({ id: d.deviceId || `input-${i}`, label: d.label || `Microphone ${i + 1}` }));
-      setMicDevices(inputs);
-      // Keep the selection valid; fall back to the browser default.
-      setMicSel((cur) => (cur !== "default" && inputs.some((m) => m.id === cur) ? cur : "default"));
-    } catch { /* enumerate failing is fine - the mic button reports it on press */ }
-  }
-  // First-time fill; re-listed when the mic is pressed (devices can change).
-  onMount(() => { void refreshMicDevices(); });
+  // Press the mic: records from the selected input (MediaRecorder -> webm).
+  // Press again: stops, converts to 16 kHz mono WAV in-page, POSTs it to
+  // /api/sensory/transcribe (whisper.cpp, on this machine) and inserts the
+  // transcript into the composer - it is never auto-sent. The level meter and
+  // the clock show the capture is live; recording stops by itself at the cap.
+  type SttPhase = "idle" | "recording" | "transcribing";
+  const STT_MAX_SECS = 60;
+  const [sttPhase, setSttPhase] = createSignal<SttPhase>("idle");
+  const [sttNote, setSttNote] = createSignal("");
+  const [sttSecs, setSttSecs] = createSignal(0);
+  const [sttLevel, setSttLevel] = createSignal(0);
+  const [earsReady, setEarsReady] = createSignal<boolean | null>(null);
   let sttNoteTimer: ReturnType<typeof setTimeout> | undefined;
-  const sttFlash = (msg: string) => {
-    setStdNote(msg);
+  let sttTicker: ReturnType<typeof setInterval> | undefined;
+  let sttRec: MediaRecorder | null = null;
+  let sttStream: MediaStream | null = null;
+  let sttMeter: AudioContext | null = null;
+  let sttAnalyser: AnalyserNode | null = null;
+  let sttChunks: Blob[] = [];
+  let sttStartedAt = 0;
+  const sttFlash = (msg: string, ms = 8000) => {
     clearTimeout(sttNoteTimer);
-    sttNoteTimer = setTimeout(() => setStdNote(""), 6000);
+    setSttNote(msg);
+    sttNoteTimer = setTimeout(() => setSttNote(""), ms);
+  };
+  const sttClock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+  // Mic picker: users with several inputs choose one; "default" is the OS
+  // default. Entries without a deviceId are Chromium's pre-permission
+  // placeholders, not devices. The choice is remembered, like the TTS voice.
+  type MicDev = { id: string; label: string };
+  // "" means the OS default ("default mic"). Chromium gives the OS's default
+  // and communications endpoints the ids "default" and "communications", so
+  // they are ordinary choices here and "" can never collide with a real id.
+  const MIC_KEY = "ehc.micDeviceId";
+  // Chromium labels Windows endpoints "Default - Microphone (X) (046d:0aaa)";
+  // the picker keeps the role and the product, drops the ids.
+  const prettyMic = (raw: string, i: number): string =>
+    raw.replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "").replace(/^Default\s*-\s*/i, "Default · ").replace(/^Communications\s*-\s*/i, "Comms · ") || `Microphone ${i + 1}`;
+  const [micDevices, setMicDevices] = createSignal<MicDev[]>([]);
+  const [micSel, setMicSel] = createSignal(localStorage.getItem(MIC_KEY) ?? "");
+  const chooseMic = (id: string): void => {
+    setMicSel(id);
+    try { localStorage.setItem(MIC_KEY, id); } catch { /* storage unavailable */ }
+  };
+  async function refreshMicDevices(): Promise<void> {
+    try {
+      const inputs: MicDev[] = (await navigator.mediaDevices.enumerateDevices())
+        .filter((d) => d.kind === "audioinput" && d.deviceId)
+        .map((d, i) => ({ id: d.deviceId, label: prettyMic(d.label, i) }));
+      // Reuse the row objects of unchanged devices so the picker's options are
+      // not torn down and rebuilt on every refresh.
+      setMicDevices((prev) => inputs.map((d) => prev.find((p) => p.id === d.id && p.label === d.label) ?? d));
+      // A remembered device that is gone (unplugged) falls back to the default.
+      if (inputs.length && micSel() && !inputs.some((m) => m.id === micSel())) chooseMic("");
+    } catch { /* enumeration failing is fine - the mic button reports it on press */ }
+  }
+  // whisper.cpp present? Asked on mount for the button's look and again at
+  // press time, so installing it while the app is open needs no restart.
+  const ears = async (): Promise<boolean> => {
+    try {
+      const s = await apiJson<{ ears?: { ready?: boolean } }>("/api/sensory/status");
+      setEarsReady(Boolean(s.ears?.ready));
+    } catch { setEarsReady(null); }
+    return earsReady() === true;
+  };
+  onMount(() => {
+    void refreshMicDevices();
+    void ears();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refreshMicDevices);
+    // whisper.cpp installed by hand while the app was open: re-check on focus.
+    window.addEventListener("focus", ears);
+  });
+  onCleanup(() => {
+    navigator.mediaDevices?.removeEventListener?.("devicechange", refreshMicDevices);
+    window.removeEventListener("focus", ears);
+  });
+
+  // Secondary settings (token budget, auto-approve, speech) fold away so the
+  // composer stays compact on a small screen. What they change stays visible
+  // as flags on the model row, so a folded-away "auto-approve" is never a
+  // surprise.
+  const [optsOpen, setOptsOpen] = createSignal(localStorage.getItem("ehc.composerOptions") === "1");
+  const toggleOpts = (): void => {
+    setOptsOpen((v) => !v);
+    try { localStorage.setItem("ehc.composerOptions", optsOpen() ? "1" : "0"); } catch { /* storage unavailable */ }
   };
 
   function encodeWav(samples: Int16Array): Uint8Array {
@@ -307,72 +366,164 @@ export default function ChatColumn(props: {
     for (let i = 0; i < bytes.length; i += CHUNK) s += String.fromCharCode(...bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
     return btoa(s);
   }
-  // Decode browser audio, mix to mono, resample to 16 kHz - the backend wants
-  // 16 kHz mono WAV (transcribe()).
-  async function sttToSamples16kMono(blob: Blob): Promise<{ wavBase64: string }> {
-    const ctx = new AudioContext();
-    try {
-      const data = await ctx.decodeAudioData(await blob.arrayBuffer());
-      const numCh = Math.max(1, Math.min(data.numberOfChannels, 2));
-      const total = Math.max(1, Math.round((data.duration ?? 0) * 16000));
-      const out = new Int16Array(total);
-      const at = data.length;
-      for (let i = 0; i < total; i++) {
-        const pos = Math.min((at / Math.max(1, total)) * i, Math.max(0, at - 1));
-        const i0 = Math.floor(pos); const i1 = Math.min(i0 + 1, Math.max(0, at - 1));
-        const frac = pos - i0;
-        let sum = 0;
-        for (let ch = 0; ch < numCh; ch++) {
-          const c = data.getChannelData(ch);
-          sum += (c[i0] ?? 0) * (1 - frac) + (c[i1] ?? 0) * frac;
-        }
-        out[i] = Math.max(-32768, Math.min(32767, Math.round((sum / numCh) * 32767)));
-      }
-      return { wavBase64: bytesToBase64(encodeWav(out)) };
-    } finally {
-      void ctx.close();
+  // Decode the capture straight to 16 kHz (the platform resampler does the
+  // rate conversion) and mix down to mono 16-bit - what transcribe() expects.
+  async function sttToWav16kMono(blob: Blob): Promise<Int16Array> {
+    const off = new OfflineAudioContext(1, 1, 16000);
+    const data = await off.decodeAudioData(await blob.arrayBuffer());
+    const chs = Array.from({ length: data.numberOfChannels }, (_, c) => data.getChannelData(c));
+    const out = new Int16Array(data.length);
+    for (let i = 0; i < data.length; i++) {
+      let sum = 0;
+      for (const c of chs) sum += c[i] ?? 0;
+      out[i] = Math.max(-32768, Math.min(32767, Math.round((sum / chs.length) * 32767)));
     }
+    return out;
   }
 
-  const sttRecord = async (): Promise<void> => {
-    if (sttBusy()) return;
-    sttFlash("listening… - tap again when you are done");
-    setSttBusy(true);
+  // Frees the capture (mic indicator off, meter closed). Safe to repeat.
+  function sttRelease(): void {
+    clearInterval(sttTicker); sttTicker = undefined;
+    const meter = sttMeter; sttMeter = null; sttAnalyser = null;
+    if (meter) void meter.close().catch(() => { /* already closed */ });
+    const stream = sttStream; sttStream = null;
+    stream?.getTracks().forEach((t) => t.stop());
+    setSttLevel(0);
+  }
+  function sttAttachMeter(stream: MediaStream): void {
     try {
-      await refreshMicDevices();
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      sttMeter = ctx; sttAnalyser = analyser;
+    } catch { /* the meter is optional */ }
+  }
+  function sttReadLevel(): number {
+    if (!sttAnalyser) return 0;
+    const buf = new Uint8Array(sttAnalyser.fftSize);
+    sttAnalyser.getByteTimeDomainData(buf);
+    let peak = 0;
+    for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i]! - 128));
+    return Math.min(100, Math.round((peak / 128) * 100));
+  }
+
+  const sttStart = async (): Promise<void> => {
+    try {
       const gUM: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-      if (micSel() !== "default") gUM.deviceId = micSel();
+      // Only a device that is in the picker right now may be requested; an
+      // empty or stale id would make getUserMedia fail with a constraint error.
+      const pick = micSel();
+      if (pick && micDevices().some((m) => m.id === pick)) gUM.deviceId = { exact: pick };
       const stream = await navigator.mediaDevices.getUserMedia({ audio: gUM });
-      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : undefined;
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((m) => MediaRecorder.isTypeSupported(m));
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-      const chunks: Blob[] = [];
-      rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      sttStream = stream; sttRec = rec; sttChunks = []; sttStartedAt = Date.now();
+      rec.ondataavailable = (e) => { if (e.data.size > 0) sttChunks.push(e.data); };
+      // Second press (or the cap) calls stop(); the final chunk lands first.
+      rec.onstop = () => { sttRelease(); void sttFinish(); };
       rec.start();
-      const stopped = new Promise<void>((resolve) => { rec.onstop = () => resolve(); });
-      sttFlash("recording… - tap again to transcribe");
-      await stopped;
-      stream.getAudioTracks().forEach((t) => t.stop());
-      sttFlash("transcribing with whisper…");
-      const samples = await sttToSamples16kMono(new Blob(chunks, { type: "audio/webm" }));
-      const r = await apiFetch("/api/sensory/transcribe", { method: "POST", body: JSON.stringify({ audioBase64: samples.wavBase64 }) });
+      sttAttachMeter(stream);
+      setSttPhase("recording"); setSttSecs(0); setSttLevel(0);
+      sttTicker = setInterval(() => {
+        const elapsed = (Date.now() - sttStartedAt) / 1000;
+        setSttLevel(sttReadLevel());
+        setSttSecs(Math.floor(elapsed));
+        if (elapsed >= STT_MAX_SECS) sttToggle();
+      }, 200);
+      // Labels only exist once capture permission has been granted.
+      void refreshMicDevices();
+    } catch (e) {
+      sttRelease();
+      setSttPhase("idle");
+      const err = e as { name?: string; message?: string };
+      const why = err?.name === "NotAllowedError" ? "access was denied - allow microphones for this app in Windows Settings > Privacy & security > Microphone"
+        : err?.name === "NotFoundError" ? "no microphone was found on this machine"
+        : err?.name === "OverconstrainedError" ? "the selected microphone is not available - pick another next to the mic button"
+        : String(err?.message ?? err).slice(0, 140);
+      sttFlash(`Microphone unavailable (${err?.name ?? "error"}): ${why}`, 12000);
+    }
+  };
+
+  const sttFinish = async (): Promise<void> => {
+    const chunks = sttChunks; sttChunks = [];
+    const type = sttRec?.mimeType || "audio/webm";
+    sttRec = null;
+    const secs = (Date.now() - sttStartedAt) / 1000;
+    if (!chunks.length || secs < 0.4) {
+      setSttPhase("idle");
+      sttFlash("Nothing was captured - press the mic, speak, then press it again to transcribe");
+      return;
+    }
+    setSttPhase("transcribing");
+    sttFlash("Transcribing…", 120_000);
+    try {
+      const wav = encodeWav(await sttToWav16kMono(new Blob(chunks, { type })));
+      const language = localStorage.getItem("ehc.sttLanguage") || undefined;
+      const model = localStorage.getItem("ehc.sttModel") || undefined;
+      const r = await apiFetch("/api/sensory/transcribe", { method: "POST", body: JSON.stringify({ audioBase64: bytesToBase64(wav), language, model }) });
       const d = (await r.json()) as { ok: boolean; text?: string; error?: string };
       if (d.ok && d.text?.trim()) {
         const cur = props.input();
         props.setInput(cur ? cur.trimEnd() + " " + d.text.trim() : d.text.trim());
-        sttFlash("inserted into the composer - press Enter to send");
+        grow();
+        taRef?.focus();
+        sttFlash("Transcript inserted - edit it if needed, then press Enter to send");
       } else {
-        sttFlash(d.error ? `transcription failed: ${String(d.error).slice(0, 120)}` : "no transcript from the audio");
+        sttFlash(d.error ? `Transcription failed: ${String(d.error).slice(0, 180)}` : "No speech was detected in the recording");
       }
     } catch (e) {
-      const err = e as { name?: string; message?: string };
-      sttFlash(`microphone unavailable (${err?.name ?? "error"}): ${err?.message ? String(err.message).slice(0, 140) : "check OS/browser permissions"}`);
+      sttFlash(`Transcription failed: ${String((e as Error)?.message ?? e).slice(0, 180)}`);
     } finally {
-      setSttBusy(false);
-      clearTimeout(sttNoteTimer);
-      setTimeout(() => setStdNote(""), 6000);
+      setSttPhase("idle");
     }
   };
 
+  // Discard the recording without transcribing.
+  const sttCancel = (): void => {
+    const rec = sttRec;
+    if (!rec) return;
+    rec.onstop = null;
+    sttChunks = [];
+    try { if (rec.state !== "inactive") rec.stop(); } catch { /* already stopped */ }
+    sttRec = null;
+    sttRelease();
+    setSttPhase("idle");
+    sttFlash("Recording discarded");
+  };
+
+  const sttToggle = async (): Promise<void> => {
+    const phase = sttPhase();
+    if (phase === "transcribing") return;
+    if (phase === "recording") {
+      // Second press (or the 60 s cap): stop -> final chunk -> onstop -> sttFinish.
+      setSttPhase("transcribing");
+      try { sttRec?.state !== "inactive" && sttRec?.stop(); } catch { sttRelease(); setSttPhase("idle"); }
+      return;
+    }
+    setSttPhase("transcribing"); // holds the button while the mic is being opened
+    if (!(await ears())) {
+      setSttPhase("idle");
+      sttFlash("Speech-to-text needs whisper.cpp and a language model. The Sensory panel has optional downloads - nothing installs unless you click it.", 16000);
+      // Take the user straight to where that lives.
+      window.dispatchEvent(new CustomEvent("ehc:want-panel", { detail: { id: "sensory" } }));
+      return;
+    }
+    await sttStart();
+  };
+  const sttTitle = () => earsReady() === false
+    ? "Speech-to-text is not set up yet - click for how to enable it (optional download)"
+    : sttPhase() === "recording"
+      ? "Recording - click to stop and transcribe"
+      : "Voice input: click to record from your microphone, click again to transcribe with whisper.cpp on this machine";
+  // Never leave the microphone open if the composer goes away mid-recording.
+  onCleanup(() => {
+    clearTimeout(sttNoteTimer);
+    const rec = sttRec;
+    sttRec = null;
+    if (rec) { rec.onstop = null; try { if (rec.state !== "inactive") rec.stop(); } catch { /* already stopped */ } }
+    sttRelease();
+  });
   const setByokModel = async (model: string) => {
     const provider = byokProvider();
     if (!provider || !model) return;
@@ -590,26 +741,41 @@ export default function ChatColumn(props: {
       <div class="composer">
         <textarea
           ref={taRef}
-          rows={1}
+          rows={3}
           value={props.input()}
           onInput={(e) => { props.setInput(e.target.value); setSlashOpen(true); setSlashIdx(0); grow(); }}
           onKeyDown={keydown}
           placeholder="Describe the task...  (/think:high to raise reasoning)"
           class="composer-input"
         />
-        <select class="stt-dev" value={micSel()} onChange={(e) => setMicSel(e.target.value)} title="Microphone: pick the input device when you have several" aria-label="Microphone input device">
-          <option value="default">default</option>
-          <For each={micDevices()}>{(m) => <option value={m.id} selected={m.id === micSel()}>{m.label}</option>}</For>
-        </select>
-        <button
-          class="stt-btn"
-          disabled={sttBusy()}
-          title="Voice input: record from your microphone, then the transcript is inserted into the composer (whisper.cpp ears, POST /api/sensory/transcribe)"
-          aria-label="Microphone - record a voice message"
-          onClick={() => void sttRecord()}
-        >{sttBusy() ? "recording…" : "🎤"}</button>
-        <span class="stt-note" classList={{ "stt-note-on": Boolean(sttNote()) }}>{sttNote()}</span>
-        <button class="send-btn" disabled={props.sending?.()} onClick={() => { props.onSend(); requestAnimationFrame(grow); }}>Send</button>
+        <div class="composer-tools">
+          <button
+            class="stt-btn"
+            classList={{ "stt-btn-rec": sttPhase() === "recording", "stt-btn-off": earsReady() === false }}
+            disabled={sttPhase() === "transcribing"}
+            title={sttTitle()}
+            aria-label={sttPhase() === "recording" ? "Stop recording and transcribe" : "Record a voice message"}
+            onClick={() => void sttToggle()}
+          >{sttPhase() === "recording" ? "■" : sttPhase() === "transcribing" ? "…" : "🎤"}</button>
+          <Show when={sttPhase() === "recording"}>
+            <span class="stt-level" title="Microphone level"><i style={{ width: `${sttLevel()}%` }} /></span>
+            <span class="stt-clock">{sttClock(sttSecs())}</span>
+            <button class="stt-x" title="Discard the recording" aria-label="Discard the recording" onClick={sttCancel}>✕</button>
+          </Show>
+          <select
+            class="stt-dev"
+            value={micSel()}
+            disabled={sttPhase() !== "idle"}
+            onChange={(e) => chooseMic(e.target.value)}
+            title="Microphone - pick the input device when you have several"
+            aria-label="Microphone input device"
+          >
+            <option value="">default mic</option>
+            <For each={micDevices()}>{(m) => <option value={m.id}>{m.label}</option>}</For>
+          </select>
+          <span class="stt-note" classList={{ "stt-note-on": Boolean(sttNote()) }} title={sttNote()}>{sttNote()}</span>
+          <button class="send-btn" disabled={props.sending?.()} onClick={() => { props.onSend(); requestAnimationFrame(grow); }}>Send</button>
+        </div>
       </div>
       <div class="model-row">
         <span>model</span>
@@ -624,6 +790,21 @@ export default function ChatColumn(props: {
           <option value="high">high</option>
           <option value="max">max</option>
         </select>
+        {/* The settings that change what the agent may do stay visible even
+            while the options are folded away. */}
+        <Show when={props.autoApprove()}>
+          <span class="opt-flag opt-flag-warn" title="The agent may run edit, write and bash tools without asking each time. Switch it off under options.">auto-approve</span>
+        </Show>
+        <Show when={autoSpeak()}>
+          <span class="opt-flag" title="Replies are read aloud with the selected voice.">speaking</span>
+        </Show>
+        <button
+          class="opt-toggle"
+          classList={{ "opt-toggle-on": optsOpen() }}
+          title="Token budget, auto-approve tools and speech"
+          aria-expanded={optsOpen()}
+          onClick={toggleOpts}
+        >options {optsOpen() ? "▴" : "▾"}</button>
       </div>
       <Show when={byokProvider()}>
         <div class="byok-row">
@@ -639,30 +820,28 @@ export default function ChatColumn(props: {
           </Show>
         </div>
       </Show>
-      <div class="opts-row">
-        <span title="Output token budget - reasoning models spend this on thinking first; the harness auto-doubles it and forces a conclusion if exhausted.">tokens</span>
-        <input
-          type="number" min="64" max="8192" step="128"
-          value={props.tokens()}
-          onChange={(e) => props.setTokens(Number(e.target.value))}
-          class="ehc-tokens"
-        />
-        <label class="ehc-auto" title="Let the agent run edit/write/bash tools without asking each time (read/ls/grep/glob are always allowed).">
-          <input type="checkbox" checked={props.autoApprove()} onChange={(e) => props.setAutoApprove(e.target.checked)} />
-          auto-approve tools
-        </label>
-        <label class="ehc-auto" title="Read every reply aloud using the selected speech adapter.">
-          <input type="checkbox" checked={autoSpeak()} onChange={(e) => { setAutoSpeak(e.target.checked); localStorage.setItem("ehc.autoSpeak", e.target.checked ? "1" : "0"); }} />
-          speak replies
-        </label>
-      </div>
-      {/* Voice picker: shown once we know the plan. The OS voice list can be
-          empty (Chromium populates it late), so the row stays usable with a
-          default entry and a refresh. */}
-      <Show when={ttsAdapter() !== "" || voices().length > 0}>
-        <div class="voice-row" title={`speech: ${ttsAdapter() || "auto"} - ${ttsNote()}`}>
-          <span class="session-meta">voice</span>
+      {/* Secondary settings fold away so the composer stays compact on a
+          small screen. */}
+      <Show when={optsOpen()}>
+        <div class="opts-row">
+          <span title="Output token budget - reasoning models spend this on thinking first; the harness auto-doubles it and forces a conclusion if exhausted.">tokens</span>
+          <input
+            type="number" min="64" max="8192" step="128"
+            value={props.tokens()}
+            onChange={(e) => props.setTokens(Number(e.target.value))}
+            class="ehc-tokens"
+          />
+          <label class="ehc-auto" title="Let the agent run edit/write/bash tools without asking each time (read/ls/grep/glob are always allowed).">
+            <input type="checkbox" checked={props.autoApprove()} onChange={(e) => props.setAutoApprove(e.target.checked)} />
+            auto-approve tools
+          </label>
+          <label class="ehc-auto" title="Read every reply aloud using the selected speech adapter.">
+            <input type="checkbox" checked={autoSpeak()} onChange={(e) => { setAutoSpeak(e.target.checked); localStorage.setItem("ehc.autoSpeak", e.target.checked ? "1" : "0"); }} />
+            speak replies
+          </label>
+          <span class="session-meta" title={`speech: ${ttsAdapter() || "auto"} - ${ttsNote()}`}>voice</span>
           <select
+            class="voice-pick"
             value={voiceURI()}
             onChange={(e) => { setVoiceURI(e.target.value); localStorage.setItem("ehc.ttsVoice", e.target.value); }}
           >

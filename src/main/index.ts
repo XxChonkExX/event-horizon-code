@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import { startLocalServer } from "../server/index";
 import { contained } from "../server/wsguard";
 import { audit } from "../server/audit";
+import { allowedExternalUrl } from "../shared/externals";
 
 type Runtime = { baseUrl: string; password: string; port: number };
 let runtime: Runtime | null = null;
@@ -104,11 +105,6 @@ app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
 
-// Media capture: Electron denies permission requests by default (no browser
-// dialog), and the composer mic button reported NotAllowedError ("Permission
-// denied") without a handler. The handler lives on the session and is set
-// inside whenReady below.
-
 // Shared hardening for every window we open. The compositor has died on this
 // machine while a training workload was grabbing the GPU; when it does, the
 // window holds a ruined frame and is unresponsive. A reload costs a second,
@@ -117,6 +113,7 @@ app.commandLine.appendSwitch("disable-background-timer-throttling");
 // restored windows painted white before the first frame landed (OpenCode's
 // white-flash fix, PR #28247). EHC's document-level canvas is #0b0b10.
 const WINDOW_BACKGROUND = "#0b0b10";
+const trustedContents = new Set<number>();
 
 // Sweep-3 EH: privileged IPC must only ever answer OUR renderer. A compromised
 // or future-untrusted frame gets nothing - most importantly not runtime:info,
@@ -163,6 +160,11 @@ function isTrustedRenderer(e: Electron.IpcMainInvokeEvent): boolean {
 }
 
 function hardenWindow(win: BrowserWindow, label: string): void {
+  // Only windows built here (main + pop-outs) may ever capture audio; the
+  // permission handlers below check membership, not URLs.
+  const contentsId = win.webContents.id;
+  trustedContents.add(contentsId);
+  win.webContents.once("destroyed", () => trustedContents.delete(contentsId));
   // Right-click relay (context menu refactor): the renderer's DOM contextmenu
   // event proved unreliable in packaged builds - the in-page menu worked in a
   // plain browser (same bundle) but never appeared in the installed app.
@@ -227,15 +229,23 @@ app.whenReady().then(async () => {
     app.exit(1);
     return;
   }
-  // Media capture: Electron denies permission requests by default (no browser
-  // dialog), and the composer mic button reported NotAllowedError ("Permission
-  // denied") without a handler. Approve media capture here; everything else
-  // stays denied - the workbench has no flow that needs it. (Camera is not
-  // used by any flow today, and the same approval applies if it ever is.)
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(permission === "media" || permission === "mediaKeySystem");
+  // Permissions. Electron grants every request by default; keep that for
+  // windows WE opened (clipboard copy/paste, microphone, ...) with one
+  // deliberate exception: the CAMERA is never granted - only the microphone,
+  // for the composer's speech-to-text. A webContents that is not one of ours
+  // gets nothing. The check handler answers "ask" for video so the request
+  // lands in the request handler, where it is refused. Denying by default here
+  // is a trap: a deny-all handler silently broke clipboard copy and terminal
+  // paste in 0.0.3e.
+  session.defaultSession.setPermissionCheckHandler((_wc, permission, _origin, details) =>
+    permission !== "media" || details.mediaType === "audio");
+  session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
+    const media = details as Electron.MediaAccessPermissionRequest;
+    const types = permission === "media" ? (media.mediaTypes ?? []) : [];
+    const allow = trustedContents.has(wc.id) && !types.includes("video") && (permission !== "media" || types.includes("audio"));
+    if (!allow) audit({ tool: "permission.deny", note: `${permission} [${types.join(",")}] ${String((details as Electron.PermissionRequest).requestingUrl ?? "").slice(0, 80)}` });
+    callback(allow);
   });
-  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === "media" || permission === "mediaKeySystem");
   runtime = await resolveRuntime();
   ipcMain.handle("runtime:info", (e) => {
     if (!isTrustedRenderer(e)) throw new Error("Untrusted IPC sender");
@@ -426,6 +436,17 @@ app.whenReady().then(async () => {
   // "Reveal in file manager" (Explorer / Finder / xdg): same containment
   // discipline as fs:op - the path must resolve inside the session's validated
   // worktree, so a renderer can never pop an arbitrary host location.
+  // An install page or a project link opens in the user's OWN browser, and
+  // only if it is https on an allowlisted host (shared/externals.ts) - page
+  // content can never turn a link into an arbitrary address.
+  ipcMain.handle("shell:openExternal", async (e, url: unknown) => {
+    if (!isTrustedRenderer(e)) return { ok: false, error: "Untrusted IPC sender" };
+    const safe = typeof url === "string" ? allowedExternalUrl(url) : null;
+    if (!safe) return { ok: false, error: "not an allowed address" };
+    audit({ tool: "shell.openExternal", note: safe.slice(0, 120) });
+    await shell.openExternal(safe);
+    return { ok: true };
+  });
   ipcMain.handle("shell:reveal", (e, p: unknown, root?: string) => {
     if (!isTrustedRenderer(e)) return { ok: false, error: "rejected sender" };
     const rootGuard = contained(process.cwd(), typeof root === "string" && root ? root : ".");

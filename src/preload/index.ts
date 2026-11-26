@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("eventhorizon", {
   eventTicket: () => ipcRenderer.invoke("events:ticket") as Promise<string>,
   fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => ipcRenderer.invoke("fs:op", op, root) as Promise<{ ok: boolean; error?: string }>,
   revealInFolder: (path: string, root?: string) => ipcRenderer.invoke("shell:reveal", path, root) as Promise<{ ok: boolean; error?: string }>,
+  openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url) as Promise<{ ok: boolean; error?: string }>,
   onContextMenu: (cb: (p: { x: number; y: number }) => void) => {
     ipcRenderer.on("context:menu", (_e, p: { x: number; y: number }) => cb(p));
   },

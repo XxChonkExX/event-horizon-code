@@ -82,7 +82,11 @@ export default function App() {
   // version counter that forces session-bound components (Terminal PTY,
   // Monaco worktree content) to remount on an in-place switch.
   const [sessionSig, setSessionSig] = createSignal(session);
-  const [sessionVersion, setSessionVersion] = createSignal(0);
+  // Starts at 1, not 0: the keyed wrappers below mount the editor and the
+  // terminal only while this is truthy. At 0 neither existed on the boot
+  // session - files opened as tabs with no editor behind them - until the
+  // first session switch bumped it.
+  const [sessionVersion, setSessionVersion] = createSignal(1);
   // Operator command surface: global pause + capabilities.
   const [agentsPaused, setAgentsPaused] = createSignal(false);
   const fetchRuntimePause = async (): Promise<void> => {
@@ -161,8 +165,28 @@ export default function App() {
     // shown; the PTY itself consumes the cd request on mount or live.
     const onWantTerminal = () => setOpen((o) => ({ ...o, terminal: true }));
     window.addEventListener("ehc:want-terminal", onWantTerminal);
-    onCleanup(() => { window.removeEventListener("ehc-toast", onToast); window.removeEventListener("ehc:want-terminal", onWantTerminal); });
+    // A child asks for a panel by id (the composer's speech-setup path opens
+    // the Sensory panel). The tab strip scrolls so the tab is actually seen.
+    const onWantPanel = (ev: Event) => {
+      const i = PANELS.findIndex((p) => p.id === (ev as CustomEvent<{ id?: string }>).detail?.id);
+      if (i < 0) return;
+      setOpen((o) => ({ ...o, panels: true }));
+      setPanelTab(i);
+      try { localStorage.setItem("ehc.panelTab", String(i)); } catch { /* private mode */ }
+      revealPanelTab();
+    };
+    window.addEventListener("ehc:want-panel", onWantPanel);
+    revealPanelTab();
+    onCleanup(() => {
+      window.removeEventListener("ehc-toast", onToast);
+      window.removeEventListener("ehc:want-terminal", onWantTerminal);
+      window.removeEventListener("ehc:want-panel", onWantPanel);
+    });
   });
+  const revealPanelTab = (): void => {
+    requestAnimationFrame(() => panelTabsRef?.querySelector(".panel-tab-on")?.scrollIntoView({ inline: "nearest", block: "nearest" }));
+  };
+  let panelTabsRef: HTMLDivElement | undefined;
 
   // (Re)load everything that is per-session: history, live streams. Called on
   // boot and on every in-place switch.
@@ -542,13 +566,24 @@ export default function App() {
         </Show>
         <Show when={open().panels}>
           <div class="panels">
-            <div class="panel-tabs" role="tablist">
+            <div
+              class="panel-tabs"
+              role="tablist"
+              ref={panelTabsRef}
+              // A vertical wheel scrolls the strip horizontally while it has
+              // room to move, so tabs off the edge stay reachable.
+              onWheel={(e) => {
+                const el = e.currentTarget;
+                if (el.scrollWidth <= el.clientWidth) return;
+                if ((e.deltaY > 0 && el.scrollLeft + el.clientWidth < el.scrollWidth - 1) || (e.deltaY < 0 && el.scrollLeft > 0)) el.scrollLeft += e.deltaY;
+              }}
+            >
               <For each={PANELS}>{(p, i) => (
                 <button
                   class="panel-tab"
                   classList={{ "panel-tab-on": panelTab() === i() }}
                   role="tab"
-                  onClick={() => { setPanelTab(i()); localStorage.setItem("ehc.panelTab", String(i())); }}
+                  onClick={(e) => { setPanelTab(i()); localStorage.setItem("ehc.panelTab", String(i())); e.currentTarget.scrollIntoView({ inline: "nearest", block: "nearest" }); }}
                 >{p.label}</button>
               )}</For>
             </div>

@@ -1,7 +1,9 @@
-// Event Horizon Code — Toolchain Doctor
-// Probes PATH via languages/*/language.json toolchain.check. No installs. No network.
+// Event Horizon Code - Toolchain Doctor
+// Probes PATH via languages/*/language.json toolchain.check. No installs. No
+// network: a missing tool only gets a link to its official install page.
 
 import { execFile } from "node:child_process";
+import { INSTALL_PAGES, INSTALL_NOTES } from "../shared/externals";
 import type { LanguagePack } from "./lsp";
 
 export type ToolCheck = {
@@ -11,6 +13,9 @@ export type ToolCheck = {
   ok: boolean;
   version: string;
   error?: string;
+  /** Official install page, set only when the tool is missing and one is known. */
+  install?: string;
+  installNote?: string;
 };
 
 function firstToken(check: string): { cmd: string; args: string[] } {
@@ -64,10 +69,15 @@ function probe(pack: LanguagePack, check: string): Promise<ToolCheck> {
         // The real cause often lives in stderr, not err.message: e.g. the WSL
         // launcher's "Catastrophic failure" arrives on stderr.
         error: err ? humanizeError(cmd, `${String((err as Error).message)} ${String(stderr ?? "")}`) : undefined,
+        // A missing tool links to its OFFICIAL install page. Nothing is
+        // installed by the app - the Doctor only says where to get it.
+        install: err ? INSTALL_PAGES[key(cmd)] : undefined,
+        installNote: err ? INSTALL_NOTES[key(cmd)] : undefined,
       });
     });
   });
 }
+const key = (cmd: string): string => cmd.replace(/\.exe$/i, "").toLowerCase();
 
 // Concurrency-limited: ~90 probes at once is a process-creation storm; 6 at a
 // time keeps the machine responsive and still finishes in a few seconds.
