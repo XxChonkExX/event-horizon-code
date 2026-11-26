@@ -1,6 +1,6 @@
 # Sensors and presence (S3) - giving the agent a body beyond ears and mouth
 
-**Status: PROPOSED - a design, nothing implemented.** Researched 2026-11-26; sources at the end. Every number quoted here is from a cited paper or product page, not from a measurement on our hardware. Each phase lists what has to be measured before it can be called done.
+**Status: S3a - the camera window - is implemented on `main` after 0.0.4a. S3b to S3f are a design, nothing implemented.** Researched 2026-11-26; sources at the end. Numbers quoted from the literature are from a cited paper or product page; numbers marked "measured" are from the reference machine.
 
 Operator's direction (2026-11-26): an on-screen agent presence; a camera that lets a vision model see; and a step toward physicalisation - lidar, object detection, RF/EM readers, "advanced state-of-the-art sensors and other possibilities". Privacy and security stay the driving goals: "all the freedom to move, see, hear, speak, understand and act/react - sensors, tools, inference, controls/backstops."
 
@@ -32,7 +32,25 @@ sources                                  bus (loopback, in the server)          
 
 ## 3. Phases
 
-### S3a - Camera window and agent presence (first implementation target)
+### S3a - Camera window and agent presence - **SHIPPED (v1, `main` after 0.0.4a)**
+
+What exists:
+
+- A **camera pop-out window** (`src/renderer/CameraWindow.tsx`, pop-out kind `camera`, opened from the Sensory panel). The camera is off until **Start camera**; a red **CAMERA LIVE** indicator with a clock stays up while it captures; leaving the Camera tab or closing the window stops it.
+- **The camera grant is scoped to that window** (`src/main/index.ts`): it is the only webContents that may capture video, from open to close. Every other window keeps being refused (measured: the main window is refused before and after a camera session).
+- **Look**: one frame (longest side 960 px, JPEG) with a question, to the local engine's multimodal lane by default. `POST /api/sensors/camera/look` (`src/server/sensors.ts`).
+- **BYOK Vision is a loud, explicit opt-in**: the lane lists only providers that have a key, names the endpoint in the consent box, in the button ("Send frame to api.example.com and ask") and in an always-on banner once enabled. Consent lasts until the window closes and is never saved. **The server enforces it too**: a BYOK look without `allowRemote: true` is refused with 403 before any request is made, and the refusal is audited.
+- **Presence tab**: a built-in 2D face (SVG, blinks), or any image or GIF the user picks (kept across runs only if under 1.5 MB).
+
+Measured on the reference machine (Logitech HD Pro Webcam C920 plus a VR headset whose sensor enumerates as a camera):
+
+- Normal start: first frame in 0.5-1.0 s at 1280x720.
+- **The OS default camera was the headset's sensor, which never starts** (`AbortError: Timeout starting video source`). The window therefore tries the default and then the other inputs in turn, says which camera it fell back to, and remembers it: first start 11.2 s (`default -> sensor -> webcam`), every later start 0.5 s straight to the webcam.
+- Attempts are deliberately **not** cut short on a timer: a device stuck starting blocks the next camera start inside Chromium (measured: with 4 s deadlines the working camera missed its own deadline and nothing opened). The button shows **Starting…** and cannot be double-clicked meanwhile.
+
+Not yet: an agent tool (`camera_look`), watches, a generated or inference-driven virtual agent for the Presence tab, and a live check of the engine's vision lane (no vision model was loaded during development - the lane reports "engine not running" honestly).
+
+Design notes still valid for later phases: keep vision answers short (generation is over 85 % of a vision model's latency); measure time from "look" to answer before promising anything.
 
 - **A "camera" pop-out window**, built on the existing pop-out mechanism (`window:popout` gains a third allowlisted kind). It shows the user's camera with the same picker the microphone has, and nothing else on v1.
 - **A deliberate grant, not a default.** Today the camera is refused to every page in the app. The permission handlers would allow video for exactly one webContents - the camera window - and only after the user opened it. Every other window keeps being refused, and a test asserts it.
@@ -107,11 +125,16 @@ Consequences for the design: the camera is a tool the agent asks to use, answers
 - Web content and sensor output are untrusted input to the model (see `docs/BROWSER.md`).
 - Agent-initiated looks and listens are permission `ask`; watches are user-created and visibly listed.
 
-## 6. Decisions for the operator
+## 6. Decisions
 
-1. Which hardware is on hand first? A camera is enough for S3a. A lidar or an SDR decides whether S3c or S3d comes next.
-2. Agent presence: a simple 2D face first (no download), or go straight to a 3D avatar?
-3. Vision on this machine: the bundled engine's multimodal lane, or a BYOK vision model (frames then leave the machine)?
+**Recorded (operator, 2026-11-26):**
+1. **Camera first**, with a Logitech HD Pro Webcam C920 (shipped - S3a above).
+2. **Presence starts simple** (a 2D image or animated image), but must stay open to a fully virtual video/voice agent the user supplies later - generated (for example through ComfyUI) or driven by EHC's own inference.
+3. **BYOK Vision must be loud.** Anything that steps into a privacy lane is authorised by the user and announced. This is the harness's focus: security and deterministic agent controls.
+
+**Still open:**
+4. Which hardware is next - a lidar or an SDR decides whether S3c or S3d comes before the other.
+5. Vision on this machine: confirm the bundled engine's multimodal lane is the default (frames stay local) and BYOK stays opt-in only.
 
 ## Sources
 

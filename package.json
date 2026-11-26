@@ -27,7 +27,7 @@
     "pack": "npm run build && npm run prepare:engine && electron-builder",
     "pack:dir": "npm run build && npm run prepare:engine && electron-builder --dir",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run wsguard:test && npm run acpsec:test && npm run webfetch:test && npm run secrets:test && npm run netpin:test && npm run mcpsecrets:test && npm run templates:test && npm run lsp:test && npm run detonate:test && npm run toolsearch:test && npm run sop:test && npm run sessions:test && npm run runs:test && npm run memory:test && npm run sensory:test && npm run sensoryfetch:test && npm run tts:test && npm run engram:test && npm run test:integration",
+    "test": "npm run typecheck && npm run wsguard:test && npm run acpsec:test && npm run webfetch:test && npm run secrets:test && npm run netpin:test && npm run mcpsecrets:test && npm run templates:test && npm run lsp:test && npm run detonate:test && npm run toolsearch:test && npm run sop:test && npm run sessions:test && npm run runs:test && npm run memory:test && npm run sensory:test && npm run sensoryfetch:test && npm run sensors:test && npm run tts:test && npm run engram:test && npm run test:integration",
     "wsguard:test": "tsx scripts/test-wsguard.ts",
     "acpsec:test": "tsx scripts/test-acp-security.ts",
     "webfetch:test": "tsx scripts/test-webfetch.ts",
@@ -55,6 +55,7 @@
     "memory:test": "tsx scripts/test-memory.ts",
     "sensory:test": "tsx scripts/test-sensory.ts",
     "sensoryfetch:test": "tsx scripts/test-sensoryfetch.ts",
+    "sensors:test": "tsx scripts/test-sensors.ts",
     "tts:test": "tsx scripts/test-tts.ts",
     "prepare:engine": "node scripts/prepare-engine.mjs",
     "prepare:engine:verify": "node scripts/prepare-engine.mjs --verify"

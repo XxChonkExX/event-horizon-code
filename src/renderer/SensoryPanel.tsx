@@ -8,7 +8,7 @@
 // works fully offline without any of it.
 
 import { createSignal, onCleanup, onMount, For, Show } from "solid-js";
-import { apiFetch, apiJson, openExternal } from "./api";
+import { apiFetch, apiJson, openExternal, popoutWindow } from "./api";
 
 type Sidecar = { bin: string | null; asset: string | null; ready: boolean; source: string | null };
 type Status = { ears: Sidecar; mouth: Sidecar; notes: string[]; models: string[] };
@@ -214,6 +214,16 @@ export default function SensoryPanel() {
       </p>
       <div class="checks">
         <button class="cat-btn" title="Opens in your own browser" onClick={() => void link(catalog()?.links.piperRelease)}>piper releases</button>
+      </div>
+
+      <h3>Camera</h3>
+      <p>
+        The camera window looks at something with a vision model, or shows the agent's presence.
+        The camera is off until you start it there, and only that window can open it.
+        Frames stay on this machine unless you turn on <b>BYOK Vision</b> in that window.
+      </p>
+      <div class="checks">
+        <button class="cat-btn" onClick={() => void popoutWindow("camera", "default")}>open camera window</button>
       </div>
 
       <h3>Vision</h3>

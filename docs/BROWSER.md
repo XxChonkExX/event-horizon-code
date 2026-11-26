@@ -94,11 +94,21 @@ Each item is a test before it is a line of code.
 
 Permission denial matrix for the browser session; scheme policy; `window.open` denied; download cancelled; loopback and each private range cancelled (with a loopback stub proving it was never contacted); the workbench's own permissions unchanged; every tool `ask`-gated; site data absent after close.
 
-## 7. Decisions for the operator
+## 7. Decisions
 
-1. Is "agent is driving, every step asks" the right default, or should a session be armed once and then allowed to run with a Stop button?
-2. Keep site data between runs: off by default (recommended) or on?
-3. Should the agent ever log in to sites? Recommended: not in v1.
+**Recorded (operator, 2026-11-26):** both modes ship, and they differ only in how often the user is asked.
+
+| Mode | Behaviour | Who gets it |
+|---|---|---|
+| **Ask every step** (default) | every `navigate` / `click` / `type` waits for the user | core |
+| **Auto-confirm** | one click arms a bounded loop: at most **4 steps** or a fixed time limit, whichever comes first; the driving banner counts down and Stop ends it at once. `type` still asks if the field looks like a login or payment | core |
+| Longer and unattended loops | beyond the 4-step / timed loop | the premium line, not the core |
+
+This keeps the base philosophy - the agent never runs ahead of the user's consent - while leaving room for automation as a paid convenience.
+
+**Still open:**
+1. Keep site data between runs: off by default (recommended) or on?
+2. Should the agent ever log in to sites? Recommended: not in v1.
 
 ## Sources
 

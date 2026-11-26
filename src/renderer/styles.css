@@ -818,6 +818,42 @@ pre {
 .fetch-bar i { display: block; height: 100%; background: var(--accent); transition: width 120ms linear; }
 .sense-policy { font-size: 12px; margin-top: 14px; }
 .toolchain-doctor .install-link { font-size: 12px; padding: 1px 9px; margin-left: 6px; color: var(--accent); }
+/* Camera window (sensors S3). The live and BYOK banners are loud on purpose:
+   the user should never have to wonder whether the camera or a remote lane
+   is on. */
+.popout-root.cam-root { display: flex; flex-direction: column; gap: 10px; padding: 12px; height: 100%; box-sizing: border-box; overflow: auto; }
+.cam-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.cam-head strong { font-size: 14px; color: var(--accent); }
+.cam-tabs { display: inline-flex; gap: 2px; }
+.cam-live { margin-left: auto; font-size: 12px; font-weight: 700; color: var(--bad); background: rgba(248,113,113,0.14); border: 1px solid rgba(248,113,113,0.5); border-radius: 999px; padding: 3px 11px; animation: stt-pulse 1.2s ease-in-out infinite; white-space: nowrap; }
+.cam-remote { flex: 0 0 100%; font-size: 12.5px; font-weight: 700; color: var(--warn); background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.5); border-radius: 8px; padding: 6px 10px; }
+.cam-stage { position: relative; flex: 0 0 auto; aspect-ratio: 16 / 9; width: min(100%, calc(52vh * 16 / 9)); margin: 0 auto; background: #0c0c0f; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.cam-stage video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cam-mirror { transform: scaleX(-1); }
+.cam-off { position: absolute; inset: 0; display: grid; place-items: center; color: var(--dim); font-size: 13px; }
+.cam-bar, .cam-lane { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cam-dev { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font-size: 12.5px; max-width: 280px; min-width: 0; }
+.cam-dev:disabled { opacity: 0.55; }
+.cam-stop { border-color: var(--bad); color: var(--bad); }
+.cam-eyes { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel2); }
+.cam-q { flex: 1 1 240px; min-width: 0; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13.5px; outline: none; }
+.cam-q:focus { border-color: var(--accent); }
+.cam-look { padding: 8px 14px; border-color: var(--accent2); font-weight: 600; white-space: nowrap; }
+.cam-answer { margin: 0; color: var(--text); font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; }
+.cam-consent { padding: 10px 12px; border: 1px solid rgba(251,191,36,0.55); border-radius: 10px; background: rgba(251,191,36,0.07); color: var(--text); font-size: 12.5px; }
+.cam-consent p { margin: 6px 0; color: var(--dim); }
+.cam-consent strong { color: var(--warn); }
+.cam-consent code { color: var(--text); word-break: break-all; }
+.cam-consent-on { border-color: var(--warn); background: rgba(251,191,36,0.14); }
+.cam-consent-box { font-weight: 600; color: var(--text); }
+.cam-presence { display: grid; place-items: center; padding: 12px; background: #0c0c0f; border: 1px solid var(--border); border-radius: 10px; }
+.face { width: min(300px, 52vh); height: auto; animation: cam-bob 5.2s ease-in-out infinite; }
+.face-head { fill: #1d2733; stroke: var(--accent); stroke-width: 3; }
+.face-eye { fill: var(--accent); transform-origin: center; animation: cam-blink 4.6s ease-in-out infinite; }
+.face-mouth { fill: none; stroke: var(--accent); stroke-width: 4; stroke-linecap: round; }
+.face-img { max-width: min(420px, 100%); max-height: 52vh; border-radius: 10px; }
+@keyframes cam-blink { 0%, 91%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.08); } }
+@keyframes cam-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 .review-actions { display: flex; gap: 6px; margin-top: 8px; }
 .review-actions button:first-child { border-color: var(--ok); }
 .review-actions button:last-child { border-color: var(--bad); }

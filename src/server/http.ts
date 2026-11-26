@@ -41,6 +41,7 @@ import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { CATALOG_LINKS, catalogStatus, cancelFetch, fetchState, startFetch, FetchError } from "./sensoryfetch";
+import { cameraLanes, look } from "./sensors";
 import { listVoices, speak, ttsDoctor } from "./tts";
 import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } from "./agentrun";
 import { APP_VERSION } from "../shared/version";
@@ -1390,6 +1391,31 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           const r = await transcribe(b.audioBase64, { language: b.language, model: b.model });
           sendJson(res, r.ok ? 200 : 400, r);
         } catch { sendJson(res, 400, { error: "bad request" }); }
+      });
+      return;
+    }
+    // Camera (sensors S3): which vision lanes exist, and "what is in this frame".
+    // A frame only leaves this machine with the user's explicit consent - the
+    // gate is in sensors.ts, not only in the UI.
+    if (req.method === "GET" && url.pathname === "/api/sensors/camera/lanes") {
+      return sendJson(res, 200, cameraLanes());
+    }
+    if (req.method === "POST" && url.pathname === "/api/sensors/camera/look") {
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { image?: unknown; question?: unknown; lane?: unknown; provider?: unknown; allowRemote?: unknown };
+          if (typeof b.image !== "string") return sendJson(res, 400, { ok: false, error: "image required" });
+          const r = await look({
+            image: b.image,
+            question: String(b.question ?? ""),
+            lane: b.lane === "byok" ? "byok" : "engine",
+            provider: typeof b.provider === "string" ? b.provider : undefined,
+            allowRemote: b.allowRemote === true,
+          });
+          return sendJson(res, r.needsConsent ? 403 : r.ok ? 200 : 400, r);
+        } catch { return sendJson(res, 400, { ok: false, error: "bad request" }); }
       });
       return;
     }

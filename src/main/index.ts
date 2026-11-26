@@ -114,6 +114,7 @@ app.commandLine.appendSwitch("disable-background-timer-throttling");
 // white-flash fix, PR #28247). EHC's document-level canvas is #0b0b10.
 const WINDOW_BACKGROUND = "#0b0b10";
 const trustedContents = new Set<number>();
+const cameraWindows = new Set<number>();
 
 // Sweep-3 EH: privileged IPC must only ever answer OUR renderer. A compromised
 // or future-untrusted frame gets nothing - most importantly not runtime:info,
@@ -164,7 +165,10 @@ function hardenWindow(win: BrowserWindow, label: string): void {
   // permission handlers below check membership, not URLs.
   const contentsId = win.webContents.id;
   trustedContents.add(contentsId);
-  win.webContents.once("destroyed", () => trustedContents.delete(contentsId));
+  // The camera window is the only place the camera may ever be opened, and
+  // only from when the user opens it until it closes.
+  if (label === "popout-camera") cameraWindows.add(contentsId);
+  win.webContents.once("destroyed", () => { trustedContents.delete(contentsId); cameraWindows.delete(contentsId); });
   // Right-click relay (context menu refactor): the renderer's DOM contextmenu
   // event proved unreliable in packaged builds - the in-page menu worked in a
   // plain browser (same bundle) but never appeared in the installed app.
@@ -230,25 +234,25 @@ app.whenReady().then(async () => {
     return;
   }
   // Permissions. Electron grants every request by default; keep that for
-  // windows WE opened (clipboard copy/paste, microphone, ...) with one
-  // deliberate exception: the CAMERA is never granted - only the microphone,
-  // for the composer's speech-to-text. A webContents that is not one of ours
-  // gets nothing. The check handler answers "ask" for video so the request
-  // lands in the request handler, where it is refused. Denying by default here
-  // is a trap: a deny-all handler silently broke clipboard copy and terminal
-  // paste in 0.0.3e.
-  // The check stage must apply the same rule as the request stage. Most web
-  // APIs skip the request entirely when the check already says "granted", so
-  // a webContents that is not ours - or a sub-frame - gets nothing here
-  // either. (No such content can exist today: the renderer's CSP forbids
-  // remote frames and navigation is blocked. This closes the door ahead of
-  // any embedded web content - docs/BROWSER.md, step S4.0.)
-  session.defaultSession.setPermissionCheckHandler((wc, permission, _origin, details) =>
-    Boolean(wc && trustedContents.has(wc.id) && details.isMainFrame) && (permission !== "media" || details.mediaType === "audio"));
+  // windows WE opened (clipboard copy/paste, microphone, ...). A webContents
+  // that is not one of ours, or a sub-frame, gets nothing - at the check
+  // stage as well as the request stage, because most web APIs skip the
+  // request when the check already says "granted". Two captures are scoped
+  // further: the MICROPHONE to our windows (speech-to-text), and the CAMERA
+  // to the camera window alone, from the moment the user opens it until it
+  // closes. Denying by default here is a trap: a deny-all handler silently
+  // broke clipboard copy and terminal paste in 0.0.3e.
+  const ours = (wc: Electron.WebContents | null): boolean => Boolean(wc && trustedContents.has(wc.id));
+  const seesCamera = (wc: Electron.WebContents | null): boolean => Boolean(wc && cameraWindows.has(wc.id));
+  session.defaultSession.setPermissionCheckHandler((wc, permission, _origin, details) => {
+    if (!ours(wc) || !details.isMainFrame) return false;
+    if (permission !== "media") return true;
+    return details.mediaType === "audio" || (details.mediaType === "video" && seesCamera(wc));
+  });
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
-    const media = details as Electron.MediaAccessPermissionRequest;
-    const types = permission === "media" ? (media.mediaTypes ?? []) : [];
-    const allow = trustedContents.has(wc.id) && !types.includes("video") && (permission !== "media" || types.includes("audio"));
+    const types = permission === "media" ? ((details as Electron.MediaAccessPermissionRequest).mediaTypes ?? []) : [];
+    const allow = ours(wc) && (permission !== "media"
+      || ((types.includes("audio") || seesCamera(wc)) && (seesCamera(wc) || !types.includes("video"))));
     if (!allow) audit({ tool: "permission.deny", note: `${permission} [${types.join(",")}] ${String((details as Electron.PermissionRequest).requestingUrl ?? "").slice(0, 80)}` });
     callback(allow);
   });
@@ -268,13 +272,13 @@ app.whenReady().then(async () => {
   });
   // Pop-out windows: terminal / chat in their own OS window, same session.
   // Sweep-3: kind is allowlisted, and only trusted renderers may spawn windows.
-  const POPOUT_KINDS = new Set(["terminal", "chat"]);
+  const POPOUT_KINDS = new Set(["terminal", "chat", "camera"]);
   ipcMain.handle("window:popout", (e, kind: string, sessionId: string, worktree?: string) => {
     if (!isTrustedRenderer(e)) return null;
     if (typeof kind !== "string" || !POPOUT_KINDS.has(kind)) return null;
     if (typeof sessionId !== "string" || sessionId.length > 128) return null;
     const win = new BrowserWindow({
-      width: 980, height: 720,
+      width: kind === "camera" ? 780 : 980, height: kind === "camera" ? 700 : 720,
       title: `Event Horizon - ${kind}`,
       backgroundColor: WINDOW_BACKGROUND,
       autoHideMenuBar: true,

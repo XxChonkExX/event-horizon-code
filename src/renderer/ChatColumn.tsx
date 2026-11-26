@@ -766,7 +766,7 @@ export default function ChatColumn(props: {
             class="stt-dev"
             value={micSel()}
             disabled={sttPhase() !== "idle"}
-            onChange={(e) => chooseMic(e.target.value)}
+            onChange={(e) => { if (document.activeElement === e.currentTarget) chooseMic(e.target.value); }}
             title="Microphone - pick the input device when you have several"
             aria-label="Microphone input device"
           >

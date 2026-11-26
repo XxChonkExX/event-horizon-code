@@ -15,6 +15,7 @@ import MemoryPanel from "./MemoryPanel";
 import SensoryPanel from "./SensoryPanel";
 import FileTree from "./FileTree";
 import MonacoMount from "./MonacoMount";
+import CameraWindow from "./CameraWindow";
 import Terminal from "./Terminal";
 import ActivityBar, { type Panel } from "./ActivityBar";
 import Tabs from "./Tabs";
@@ -489,6 +490,13 @@ export default function App() {
 
   const devPreview = typeof window !== "undefined" && !window.eventhorizon;
   // ---- Pop-out routes: render only the popped-out panel ----
+  if (popoutKind === "camera") {
+    return (
+      <div class="popout-root">
+        <CameraWindow />
+      </div>
+    );
+  }
   if (popoutKind === "terminal") {
     return (
       <div class="popout-root">
