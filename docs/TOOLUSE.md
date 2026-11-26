@@ -174,3 +174,11 @@ resolved the same way. Verified: `glob *.json` returns files with no `fd` instal
 - OpenAI Agents SDK — tools: https://openai.github.io/openai-agents-python/tools/
 - MCP — security best practices: https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices
 - AfterImage `engram_vm` (XxChonkExX) — ti85/rv32/pyvm/m6502 machines
+
+## camera_look - the agent looks through the user's camera
+
+- Permission `ask`. The user approves each use in the Review pane, like any tool.
+- Preconditions the tool states plainly when missing: a **local** vision model must be running (the engine on this machine), and the user must have the camera window open with the camera started. The agent cannot open the camera.
+- Local only. Nothing the agent does can send a frame off the computer: the lane is not an argument, and BYOK Vision remains a button the user presses.
+- One frame per call: requested from the open window, sent to the engine, described, discarded. Nothing is stored; the audit line records lane and byte count.
+- The answer is an observation that can be wrong. Treat it as evidence, not fact.

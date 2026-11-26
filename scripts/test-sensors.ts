@@ -7,7 +7,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { cameraLanes, frameFromDataUrl, look } from "../src/server/sensors";
+import { cameraLanes, deliverFrame, frameFromDataUrl, look, lookFromCamera, requestFrame, takeFrameRequest } from "../src/server/sensors";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -84,6 +84,37 @@ async function main(): Promise<void> {
   // non-frame cases return before the audit line by design.)
   const auditCount = (audit.match(/"tool":\s*"camera\.look"/g) ?? []).length;
   check("each look is audited by lane and size, without the frame or the key", auditCount === 3 && (audit.match(/REFUSED/g) ?? []).length === 2 && audit.includes("127.0.0.1") && !audit.includes(PNG_1x1.slice(0, 20)) && !audit.includes("test-key-123"), `entries=${auditCount} | ${audit.slice(0, 300)}`);
+
+  // 6. The agent's look: one frame on request, and nothing kept.
+  check("no frame is wanted when nobody asked", takeFrameRequest() === false);
+  const wanted = requestFrame(5000);
+  check("a request is announced once", (await takeFrameRequest()) === true && (await takeFrameRequest()) === false);
+  check("a non-frame is refused and the request stays open", deliverFrame("data:image/svg+xml;base64,PHN2Zy8+").ok === false);
+  check("the frame sent in answer resolves the request", deliverFrame(jpeg).ok === true && (await wanted) === jpeg);
+  check("a frame nobody asked for is dropped", deliverFrame(jpeg).ok === false);
+  const unanswered = await requestFrame(120);
+  check("an unanswered request times out cleanly", unanswered === null && takeFrameRequest() === false);
+  const older = requestFrame(5000);
+  const newer = requestFrame(5000);
+  check("a newer request supersedes the older one", (await older) === null && takeFrameRequest() === true && deliverFrame(jpeg).ok && (await newer) === jpeg);
+
+  // 7. The camera_look tool: the user's approval first, and never a remote lane.
+  const { cameraPoll, cameraWindowLive } = await import("../src/server/sensors");
+  const gone = await lookFromCamera({ question: "what is this?", initiator: "agent" });
+  check("with no model the engine check comes first - the camera is never touched for nothing", gone.ok === false && /no local vision model/.test(gone.error ?? "") && takeFrameRequest() === false, gone.error ?? "");
+  check("the camera window counts as live only while it checks in", cameraWindowLive() === false);
+  const pendingLive = requestFrame(5000);
+  check("a poll marks the window live and is offered the request once", cameraPoll().request === true && cameraPoll().request === false && cameraWindowLive() === true);
+  deliverFrame(jpeg);
+  await pendingLive;
+  const noModel = await lookFromCamera({ question: "what is this?", initiator: "agent" });
+  check("window live but no vision model: says the model is missing", noModel.ok === false && /no local vision model/.test(noModel.error ?? ""), noModel.error ?? "");
+  const { runTool } = await import("../src/server/tools");
+  const gated = await runTool("camera_look", {}, process.cwd());
+  check("camera_look needs the user's approval", gated.ok === false && gated.needsApproval === true, JSON.stringify(gated));
+  const approved = await runTool("camera_look", { question: "read the number", initiator: "user", lane: "byok", allowRemote: true }, process.cwd(), { userApproved: true });
+  check("approved but engine off: a stated failure, and tool arguments cannot pick a lane", approved.ok === false && /no local vision model/.test(approved.error ?? "") && takeFrameRequest() === false, approved.error ?? "");
+  check("no request survived the tool calls", takeFrameRequest() === false);
 
   stub.closeAllConnections();
   await new Promise<void>((r) => stub.close(() => r()));

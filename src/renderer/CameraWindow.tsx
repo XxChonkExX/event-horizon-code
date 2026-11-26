@@ -47,8 +47,13 @@ export default function CameraWindow() {
   let video: HTMLVideoElement | undefined;
   let stream: MediaStream | null = null;
   let ticker: ReturnType<typeof setInterval> | undefined;
+  let poller: ReturnType<typeof setInterval> | undefined;
   let noteTimer: ReturnType<typeof setTimeout> | undefined;
   let startedAt = 0;
+  // Bumped by every start and by cancel: a late stream from a superseded
+  // attempt is closed, never shown.
+  let startGen = 0;
+  const streamLabel = (s: MediaStream): string => (s.getVideoTracks()[0]?.label ?? "").replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "");
 
   const flash = (msg: string): void => {
     setNote(msg);
@@ -57,9 +62,29 @@ export default function CameraWindow() {
   };
   const stop = (): void => {
     clearInterval(ticker); ticker = undefined;
+    clearInterval(poller); poller = undefined;
     stream?.getTracks().forEach((t) => t.stop());
     stream = null;
     setLive(false); setSecs(0);
+  };
+  // While live, the window asks ~1.5x per second whether the agent wants a
+  // frame (camera_look tool), and sends one only in answer to that. Nothing is
+  // sent otherwise, and the user sees a note whenever the agent looked.
+  const sendFrame = async (): Promise<void> => {
+    const image = grabFrame();
+    if (!image) return;
+    try {
+      const r = await apiFetch("/api/sensors/camera/frame", { method: "POST", body: JSON.stringify({ image }) });
+      if (r.ok) flash("The agent looked through the camera - answered by the local vision model.");
+    } catch { /* the request times out on its own */ }
+  };
+  const startPolling = (): void => {
+    clearInterval(poller);
+    poller = setInterval(() => {
+      void apiJson<{ request?: boolean }>("/api/sensors/camera/poll", { method: "POST" })
+        .then((r) => (r.request ? sendFrame() : undefined))
+        .catch(() => undefined);
+    }, 700);
   };
   const refreshDevices = async (): Promise<void> => {
     try {
@@ -78,40 +103,54 @@ export default function CameraWindow() {
     const open = async (id: string): Promise<MediaStream> => navigator.mediaDevices.getUserMedia({ video: id ? { ...base, deviceId: { exact: id } } : base });
     // "Could not start" rather than "may not": the device exists but no frames come.
     const unusable = (e: unknown): boolean => ["AbortError", "NotReadableError", "TrackStartError", "OverconstrainedError"].includes((e as { name?: string })?.name ?? "");
+    // Cancelling bumps the generation; anything the old attempt delivers late
+    // is closed instead of shown.
+    const gen = ++startGen;
+    const stale = (s?: MediaStream): boolean => {
+      if (gen === startGen) return false;
+      s?.getTracks().forEach((t) => t.stop());
+      return true;
+    };
     setStarting(true);
     try {
       await refreshDevices();
+      if (stale()) return;
       const list = devices();
       let s: MediaStream | undefined;
       const pick = devId();
       if (pick && list.some((d) => d.id === pick)) {
+        setNote(`Starting ${list.find((d) => d.id === pick)?.label ?? "the camera"}…`);
         s = await open(pick);
       } else {
         // The OS "default" camera is not always one that works: on the
         // reference machine a VR headset's sensor is the default and never
         // starts. Try it, then the other inputs in turn.
         let last: unknown = new Error("No camera was found");
-        // Attempts are NOT cut short on a timer: a device that is stuck
-        // starting blocks the next camera start inside Chromium anyway
-        // (measured - bounding the attempts made the good camera miss its own
-        // deadline). The wait is paid once; the camera that works is remembered.
         for (const id of ["", ...list.map((d) => d.id)]) {
+          setNote(id
+            ? `The default camera did not start - trying ${list.find((d) => d.id === id)?.label ?? "the next camera"}…`
+            : "Starting the default camera… (a device that cannot start takes about 10 seconds to give up)");
           try { s = await open(id); } catch (e) { last = e; if (!unusable(e)) break; continue; }
+          if (stale(s)) return;
           if (id) {
             // Remember the one that works, so the next start goes straight to it.
             setDevId(id); store(DEV_KEY, id);
-            flash(`The default camera did not start - using ${list.find((d) => d.id === id)?.label ?? "another camera"}.`);
           }
           break;
         }
+        if (stale()) return;
         if (!s) throw last;
+        if (!pick) flash(`Using ${streamLabel(s) || "a camera"}.`);
       }
+      if (stale(s)) return;
       stream = s; startedAt = Date.now();
       if (video) video.srcObject = s;
-      setLive(true); setSecs(0);
+      setLive(true); setSecs(0); setNote("");
       ticker = setInterval(() => setSecs(Math.floor((Date.now() - startedAt) / 1000)), 500);
+      startPolling();
       void refreshDevices();
     } catch (e) {
+      if (stale()) return;
       const err = e as { name?: string; message?: string };
       stop();
       flash(err?.name === "NotAllowedError" ? "Camera access was refused - allow cameras for this app in Windows Settings > Privacy & security > Camera"
@@ -119,8 +158,14 @@ export default function CameraWindow() {
         : unusable(e) ? "No camera could be started - check that it is connected and not in use by another app"
         : `Camera unavailable (${err?.name ?? "error"}): ${String(err?.message ?? "").slice(0, 100)}`);
     } finally {
-      setStarting(false);
+      if (gen === startGen) setStarting(false);
     }
+  };
+  const cancel = (): void => {
+    startGen++;
+    stop();
+    setStarting(false);
+    flash("Cancelled.");
   };
   // Leaving the Camera tab stops the capture: no camera on without its
   // preview and indicator in view.
@@ -201,10 +246,10 @@ export default function CameraWindow() {
           <Show when={!live()}><div class="cam-off">Camera is off</div></Show>
         </div>
         <div class="cam-bar">
-          <button classList={{ "cam-stop": live() }} disabled={busy() || starting()} onClick={() => (live() ? stop() : void start())}>
-            {starting() ? "Starting…" : live() ? "Stop camera" : "Start camera"}
+          <button classList={{ "cam-stop": live() || starting() }} disabled={busy()} onClick={() => (live() ? stop() : starting() ? cancel() : void start())}>
+            {starting() ? "Cancel" : live() ? "Stop camera" : "Start camera"}
           </button>
-          <select class="cam-dev" value={devId()} disabled={live()} onChange={(e) => { if (document.activeElement === e.currentTarget) { setDevId(e.target.value); store(DEV_KEY, e.target.value); } }} title="Camera - pick the input device when you have several" aria-label="Camera input device">
+          <select class="cam-dev" value={devId()} disabled={live() || starting()} onChange={(e) => { if (document.activeElement === e.currentTarget) { setDevId(e.target.value); store(DEV_KEY, e.target.value); } }} title="Camera - pick the input device when you have several" aria-label="Camera input device">
             <option value="">default camera</option>
             <For each={devices()}>{(d) => <option value={d.id}>{d.label}</option>}</For>
           </select>

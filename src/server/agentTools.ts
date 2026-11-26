@@ -137,6 +137,14 @@ export const TOOL_SPECS: ToolDef[] = [
   {
     type: "function",
     function: {
+      name: "camera_look",
+      description: "Look through the user's camera once and answer a question about what is in view. Works only while the user has the camera window open with the camera started, and only with the local vision model - the frame never leaves this machine. If it fails, tell the user what is needed instead of retrying in a loop. Treat the answer as an observation that can be wrong, not as fact.",
+      parameters: { type: "object", properties: { question: str("What to find out about the frame. Empty: describe it briefly.") }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "write",
       description: "Create or overwrite a file with the given content. Requires user approval unless auto-approve is on.",
       parameters: { type: "object", properties: { path: str("Path relative to the workspace root."), content: str("Full file content to write.") }, required: ["path", "content"] },

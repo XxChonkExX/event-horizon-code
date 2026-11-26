@@ -122,7 +122,8 @@ export async function resolveValidatedUrl(raw: string): Promise<{ url: URL; ips:
 // The connection pin itself (resolveHostAddrs + pinnedAgent) lives in
 // ./dnspin - one implementation shared with the BYOK lane.
 
-export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
+export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "camera_look" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
+import { lookFromCamera } from "./sensors";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean; image?: string };
 
 function readConfig(): { permissions?: Record<string, string> } {
@@ -536,6 +537,19 @@ export async function runTool(
       } catch (e) {
         return { ok: false, error: String(e).slice(0, 200), out: "" };
       }
+    }
+    if (tool === "camera_look") {
+      // The agent may look only while the USER has the camera on (camera
+      // window open and started - otherwise no frame arrives), and only with
+      // the engine on this machine: nothing the agent does can send a frame
+      // off the computer. One frame is requested, described, and discarded.
+      const question = String(args.question ?? "").trim().slice(0, 500);
+      const r = await lookFromCamera({ question, initiator: "agent" });
+      if (!r.ok) {
+        audit({ tool, note: `no answer: ${String(r.error).slice(0, 90)}` });
+        return { ok: false, error: r.error ?? "no answer", out: "" };
+      }
+      return { ok: true, out: `Camera observation - what the local vision model reported about one frame; it can be wrong:\n${r.text}` };
     }
     if (tool === "websearch") {
       // Keyless search: DuckDuckGo HTML endpoint, parsed to title+snippet+url.
