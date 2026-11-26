@@ -72,7 +72,9 @@ function probe(pack: LanguagePack, check: string): Promise<ToolCheck> {
         // A missing tool links to its OFFICIAL install page. Nothing is
         // installed by the app - the Doctor only says where to get it.
         install: err ? INSTALL_PAGES[key(cmd)] : undefined,
-        installNote: err ? INSTALL_NOTES[key(cmd)] : undefined,
+        // The footnotes are Windows-specific ("also needs the MSVC Build
+        // Tools") - on Linux they read as bad advice.
+        installNote: err && process.platform === "win32" ? INSTALL_NOTES[key(cmd)] : undefined,
       });
     });
   });

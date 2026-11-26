@@ -237,8 +237,14 @@ app.whenReady().then(async () => {
   // lands in the request handler, where it is refused. Denying by default here
   // is a trap: a deny-all handler silently broke clipboard copy and terminal
   // paste in 0.0.3e.
-  session.defaultSession.setPermissionCheckHandler((_wc, permission, _origin, details) =>
-    permission !== "media" || details.mediaType === "audio");
+  // The check stage must apply the same rule as the request stage. Most web
+  // APIs skip the request entirely when the check already says "granted", so
+  // a webContents that is not ours - or a sub-frame - gets nothing here
+  // either. (No such content can exist today: the renderer's CSP forbids
+  // remote frames and navigation is blocked. This closes the door ahead of
+  // any embedded web content - docs/BROWSER.md, step S4.0.)
+  session.defaultSession.setPermissionCheckHandler((wc, permission, _origin, details) =>
+    Boolean(wc && trustedContents.has(wc.id) && details.isMainFrame) && (permission !== "media" || details.mediaType === "audio"));
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
     const media = details as Electron.MediaAccessPermissionRequest;
     const types = permission === "media" ? (media.mediaTypes ?? []) : [];
