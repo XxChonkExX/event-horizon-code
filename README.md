@@ -16,27 +16,29 @@ Ships as an Electron app (Windows, Linux, macOS) with a workbench UI modelled on
 - **SOPs** — repeatable workflows (agent nodes + deterministic script nodes + **human gates** with send-back), adapted from Tencent LoopForge (MIT). Gated by default; **automated mode** available as a preference (gates auto-approve).
 - **Multi-window workbench** - activity bar, tabbed editor (Monaco) with live LSP hover/diagnostics (TypeScript), real integrated PTY with tabs, panel pop-outs, resizable splitters, live token streaming, slash-commands, toasts, right-click menus (copy/paste/select-all; file ops in the sidebar), and a Session log manager (search, sort, hide/restore, bulk delete).
 - **Local memory & engram** — workspace memory (`AGENTS.md`, `.harness/memory.md`), AfterImage engram search/register with typed absence, and an AfterImage verification path for exact claims.
-- **Speech** — text-to-speech adapters (system / engine Pocket-TTS / piper) with swappable voices; speech-to-text (whisper.cpp) surface is implemented and refuses plainly until sidecars are installed.
+- **Speech** — text-to-speech adapters (system / engine Pocket-TTS / piper) with swappable voices, and **speech-to-text in the composer**: press the mic, speak, press again - whisper.cpp transcribes on your machine and the text lands in the composer for review. Several microphones? Pick one. The engine and language models are an optional, checksum-verified download.
 - **Security-first tool use** - per-tool permission gates (`allow`/`ask`/`deny`), shared workspace containment guard (sibling-prefix, traversal and symlink/junction proof, realpath canonicalisation), single-use event-stream tickets (the master password never rides in a URL), bounded request bodies, approval authority that the model cannot self-grant, detonation lane for unclean inputs (`run_js` review/execute/redteam tiers), no telemetry, audit log with rotation and health reporting (`~/.eventhorizon/audit.jsonl`).
-- **One runtime, zero downloads** - the Electron shell attaches to an existing local runtime (or spawns exactly one); two servers on one database cannot happen. Missing models are refused with the command you can run - nothing is ever pulled over the network.
+- **One runtime, no forced downloads** - the Electron shell attaches to an existing local runtime (or spawns exactly one); two servers on one database cannot happen. Missing models are refused with the command you can run; nothing is ever pulled over the network unless you click a download.
+- **Toolchain Doctor with install links** - probes 73 tools across 31 language packs; every missing one gets an `install` link to its official page (Rust, Clang, Ruby, Node, Go, Java, Docker, …). Nothing is installed for you.
 
 ## Known issues (stated, not hidden)
 
 - **Windows compositor**: under heavy GPU load a window can present a stale frame; a single click recovers it. Every in-app trigger found by two independent audits is fixed; the machine-level trigger remains under investigation (`docs/GPU.md`).
-- **Not bundled**: speech-to-text (whisper sidecar), the AfterImage engram (imported via subprocess - see `docs/ENGRAM_INTEGRATION.md`), and the AgentWatch `aw` CLI. The detonation lane uses OS-level sandbox backends (WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS) - if none is available it refuses plainly. Every absent dependency is stated plainly in the UI rather than faked.
+- **Not bundled**: the whisper.cpp speech engine and its models (an optional download, or your package manager), the AfterImage engram (imported via subprocess - see `docs/ENGRAM_INTEGRATION.md`), and the AgentWatch `aw` CLI. The detonation lane uses OS-level sandbox backends (WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS) - if none is available it refuses plainly. Every absent dependency is stated plainly in the UI rather than faked.
 - **Packaging cosmetics**: default Electron icon, no code-signing certificate.
-- **Linux builds**: AppImage + deb are packaged and verified live (0.0.3d); the Windows packer stages the Vulkan engine binaries, while Linux runs use your own llama.cpp/Ollama or the engine from source. An [Omarchy](https://omarchy.org) shell plugin (sessions bar widget + panel) ships in `integrations/omarchy/`.
+- **Linux builds**: AppImage + deb are packaged and verified live (0.0.3d); the Windows packer stages the Vulkan engine binaries, while Linux runs use your own llama.cpp/Ollama or the engine from source. An [Omarchy](https://omarchy.org) shell plugin (sessions bar widget + panel) ships in `integrations/omarchy/`. **0.0.4a publishes Windows installers;** the Linux artifacts are from 0.0.3d and have not been rebuilt since.
 
 ## Release
 
 The full hand-driven pipeline lives in [`docs/RELEASE.md`](docs/RELEASE.md): version bump, pre-flight tests, engine staging with SHA-256 verification, `pack:dir`, a release-candidate checklist, artifact hashing, and the tag/publish template.
 
-**Downloads ([releases](https://github.com/XxChonkExX/event-horizon-code/releases))** - tagged `0.0.3d`, marked latest:
+**Downloads ([releases](https://github.com/XxChonkExX/event-horizon-code/releases))** - tagged `0.0.4a`, marked latest:
 
 | Platform | Artifacts |
 |---|---|
-| Windows 10/11 | NSIS installer + MSI (Vulkan engine staged) |
-| Linux (deb/AppImage) | verified live on Omarchy/Arch |
+| Windows 10/11 | NSIS installer + MSI (Vulkan engine staged) - built and verified for this release |
+| Linux (deb/AppImage) | last built and verified live on Omarchy/Arch at `0.0.3d` |
+| macOS | runs from source; not packaged yet |
 | Source | zip at each tag |
 
 Every release ships a SHA-256 sheet; the binaries are unsigned, so verify before running.
@@ -48,9 +50,9 @@ Every release ships a SHA-256 sheet; the binaries are unsigned, so verify before
 - A model: either a **GGUF** for the bundled engine *(e.g. `huihui-qwen3-4b-abliterated-v2-q8_0.gguf`, `Qwen3-4B`, `DeepSeek-Coder`, `Llama-3-8B-Instruct`, `Gemma-3-12b`)* or **Ollama** or a **BYOK** OpenAI-compatible endpoint.
 - Optional: **Python 3.8+** (AfterImage engram, TI-85 verification), **Ollama**, **ripgrep / fd** (JS fallbacks are built in if absent).
 
-## Zero copy · zero download · zero dependency
+## Zero telemetry · zero cloud · downloads only when you click
 
-The inference stack is yours. EHC **never downloads a model, never copies weights, never installs a dependency on your behalf** - if a model tag is missing, EHC tells you and stops (Ollama's implicit auto-pull is explicitly blocked in the model router).
+The inference stack is yours. EHC **never downloads a model, copies weights or installs a dependency on its own** - if a model tag is missing, EHC tells you and stops (Ollama's implicit auto-pull is explicitly blocked in the model router). The only things it can download are the speech engine and language models offered in the Sensory panel, and only when you click **download**: official sources, exact size and SHA-256 pinned, verified before anything is installed. Every other missing tool gets a link to its official install page instead of an installer. Details: [Speech](#speech-voice-input-and-text-to-speech) and [`docs/PRIVACY.md`](docs/PRIVACY.md).
 
 No Ollama? You don't need it. The model ladder works without it on every platform:
 
@@ -60,7 +62,7 @@ No Ollama? You don't need it. The model ladder works without it on every platfor
 
 Ollama is a *convenience*, not a requirement (native Linux/macOS/Windows builds exist if you want it).
 
-Roadmap (post-alpha): macOS packaging, speech-to-text sidecar, and engine staging for Linux in the packer. The Omarchy shell plugin shipped in 0.0.3d. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
+Roadmap (post-alpha): macOS packaging, in-app speech downloads for Linux and macOS, and engine staging for Linux in the packer. Speech-to-text shipped in 0.0.4a; the Omarchy shell plugin in 0.0.3d. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
 
 ## Quick start
 
@@ -81,7 +83,7 @@ EH_PASS=dev123 npm run serve    # http://127.0.0.1:4126, Basic auth eventhorizon
 curl -u eventhorizon:dev123 http://127.0.0.1:4126/global/health
 ```
 
-**Tests:** `npm test` (≈140 checks: typecheck + LSP + detonation gate + tool-search + SOP + sessions + memory + sensory + TTS).
+**Tests:** `npm test` - 20 stages, all offline: typecheck, containment, secrets, DNS pin, LSP, detonation gate, tool-search, SOPs, sessions, runs, memory, sensory, optional downloads, TTS, engram, then an end-to-end smoke.
 
 ## Engine setup
 
@@ -99,11 +101,26 @@ Everything else is automatic: `GET /api/engine/models` scans `~/.eventhorizon/mo
 ```json
 { "openai": { "baseUrl": "https://api.openai.com/v1", "apiKey": "sk-...", "model": "gpt-4o-mini" } }
 ```
-Verified end to end on Windows (module also tested on Linux); the Linux/macOS keyring proofs are pending — see `docs/ENCRYPTION.md`.
+Verified end to end on Windows; the Linux keyring proof is verified natively on GNOME/Wayland; macOS is pending — see `docs/ENCRYPTION.md`.
+
+## Speech: voice input and text-to-speech
+
+**Voice input.** Press the microphone button in the composer, speak, press it again. The text is inserted into the composer for you to edit - it is never sent on its own. While recording you get a live level meter, a clock and a discard button; recording stops by itself after 60 s. More than one input? The picker next to the button chooses and remembers it.
+
+It needs two pieces, and **neither is bundled**: the `whisper-cli` engine and a language model. Three ways to get them, none required for anything else in the app:
+
+1. **Optional download** (Windows x64 / ARM64) - Sensory panel → **download**. The engine comes from the official whisper.cpp release, the models from the project's own repository. Each is pinned to its exact size and published SHA-256 and verified before it is installed; one at a time, with progress and cancel. `Small - English` is the recommended model for English (about 5× faster than real time on a CPU); multilingual models cover about 100 languages. Nothing is downloaded until you click, and no request is made before that.
+2. **Your package manager or build** - `brew install whisper-cpp`, `pacman -S whisper.cpp`, or built from source. `whisper-cli` on `PATH` is found automatically.
+3. **By hand** - drop `whisper-cli` / `whisper-cli.exe` and any `ggml-*.bin` into `~/.eventhorizon/sensory/`, or point `.harness/config.json` → `sensory.stt.{bin,model,language}` at them.
+
+**Text-to-speech.** A **speak** button on every reply and a voice picker under **options**: the OS voices on Windows, the engine's own TTS on Linux/macOS/ARM, or piper as an optional sidecar.
+
+**Coding toolchains.** The Toolchain Doctor probes 73 tools across 31 language packs. Every missing one gets an **install** link to its official page - Rust, Clang, GCC, Ruby, Node, Python, Go, Java, Kotlin, Swift, Docker and more - with a footnote where Windows needs a second step (Rust also wants the Visual Studio C++ Build Tools). Links open in your browser; the app installs nothing.
 
 ## Security & privacy posture
 
-- **No telemetry, no analytics, no cloud proxy.** All network calls go to endpoints you configure (Ollama on localhost, BYOK, or none).
+- **No telemetry, no analytics, no cloud proxy, no update check.** Traffic leaves this machine only for endpoints you configure (Ollama on localhost, BYOK, or none), for an optional download you click (github.com / huggingface.co, checksum-verified), for an install link you click (opened in your own browser), or for the `websearch` tool you approve.
+- **Microphone only while you record, camera never.** Audio is transcribed on this machine by whisper.cpp and is never stored or uploaded. The app's own windows keep Electron's default permissions (so clipboard copy and terminal paste work); the camera is refused to every page.
 - Local server binds `127.0.0.1` with Basic auth; the Electron shell attaches to an existing runtime (or spawns exactly one) and logs the port. The **renderer never receives the API password** — JSON calls go through a main-process proxy, streams use single-use tickets. User keys live in `.harness/secrets.json` (gitignored), sealed with the OS keychain when saved from the app.
 - **Permission gate** on every tool: `allow` / `ask` / `deny` in `.harness/config.json` (`permissions`). `edit` / `write` / `bash` default to `ask`; the composer's **auto-approve tools** toggle flips them.
 - **Workspace path jail** — tools cannot write outside the workspace; credential files (`.harness/secrets.json`, `.env`) are never agent-readable or agent-writable.
@@ -155,4 +172,4 @@ Roadmap and UI/UX audits: [`docs/ROADMAP.md`](docs/ROADMAP.md) and
 
 ---
 
-Status: **v0.0.3d (alpha)**. Windows (NSIS/MSI, Vulkan engine) and Linux (AppImage/deb, verified live on Omarchy) are packaged; macOS runs from source. Rough edges and deferrals are documented in `docs/`; please file issues.
+Status: **v0.0.4a (alpha)**. Windows is packaged (NSIS/MSI, Vulkan engine). Linux AppImage/deb were last packaged at 0.0.3d (verified live on Omarchy); macOS runs from source. Rough edges and deferrals are documented in `docs/`; please file issues.

@@ -79,3 +79,23 @@ is disabled app-wide. Recovery: single click. Documented in `docs/GPU.md`.
 
 In-place session tabs; non-overlay command launcher; Mission Control panel;
 approval-queue panel; durable Agent Run + timeline; evaluation lab.
+
+## 0.0.4a sweep (2026-11-25) - measured at 1268 x 638 CSS px
+
+The reference display reports 1280 x 720 logical pixels (a 4K panel at 300 %), so the workbench has far less room than the 1440 x 900 default it was drawn against. Every item below was measured in the real window over the DevTools protocol, before and after.
+
+| Finding | Before | After |
+|---|---|---|
+| Editor and terminal on launch | not mounted (a `Show` keyed on a counter that started at 0) | Monaco and the PTY present on first paint |
+| Chat column overflow | Send button 101 px off-screen, picker 408 px wide | overflow 0, picker 190 px |
+| Height left for messages | 143 px of 467 | 243 px (175 px with options open) |
+| Rows under the input | 3 (model/think, tokens/auto-approve/speak, voice) | 1 (model/think + options toggle); the two others fold away |
+| Panel tab strip | visible scrollbar; could be crushed to 22 px | no scrollbar, wheel scrolls, active tab scrolled into view, height pinned |
+| Scrollbars | white tracks in the message list and code blocks | one thin dark style |
+
+Rules that came out of it:
+
+- A setting that changes what the agent may do stays visible even when folded: **auto-approve** and **speaking** are worn as flags on the model row.
+- The composer's input owns its line. Controls never share a line with the text.
+- Nothing in a column may extend past the column: overflow is checked, not eyeballed.
+- Verify in the real window (`--remote-debugging-port`), never in a browser tab.

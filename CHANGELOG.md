@@ -5,9 +5,64 @@ Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
 ## [Unreleased]
 
+- Nothing yet.
+
+## [0.0.4a] - 2026-11-25 - speech-to-text, optional downloads, UI/UX sweep
+
+**Policy change (operator decision): zero telemetry, zero cloud, downloads only when you click.** Nothing is ever fetched, installed or reported on its own; the app is fully usable offline. What is new is that the user can *choose* to download a sidecar or language model from its official source, and gets an official link for anything else.
+
+### Added
+
+- **Speech-to-text works in the composer.** A microphone button: press to record, press again to transcribe with whisper.cpp on your own machine. While recording the button stays pressable and shows a live level meter, a clock and a discard button; recording stops by itself at 60 s. The transcript is inserted into the composer for review - it is never auto-sent. A picker chooses between several inputs and the choice is remembered.
+  - Verified end to end in the real app with a synthetic speech source through the real button, recorder, WAV conversion, server route and whisper.cpp: 13 s of speech transcribed in 2.3 s with no log lines in the text. Real microphones (4 inputs on the test machine) open, meter and release on every path (stop, discard, component teardown).
+- **Optional downloads in the Sensory panel** (`src/server/sensoryfetch.ts`): the whisper.cpp engine for Windows x64 and ARM64, and eight language models (English-only and multilingual, 75 MB to 1.5 GB). Each row is pinned - official URL, exact size, the SHA-256 published by the source - and a file that does not match is deleted, never installed. One download at a time, progress, cancel, 60 s stall timeout. Only `github.com` and `huggingface.co` (and their download CDNs on redirect) are ever contacted, and only after a click. The catalog is generated from the sources' own metadata (`scripts/generate-sensory-catalog.mjs`); all ten pinned files were re-downloaded and matched before release.
+  - Verified in the real app, from the panel's own buttons: engine from github.com (1.3 s), model from huggingface.co with a matching on-disk SHA-256, a 1.4 GB download cancelled mid-flight leaving no file or `.part`, and installed items refusing to download again.
+- **Every missing tool in the Toolchain Doctor has an `install` link** to its official page - 66 commands across the 31 language packs (Rust, Clang, GCC, Ruby, Node, Python, Go, Java, Docker, …), with Windows footnotes where "install it" has a second half (Rust needs the MSVC Build Tools, bash comes with Git for Windows). Links open in your own browser and are checked against an allowlist (`src/shared/externals.ts`) in the main process first. Nothing is bundled or installed by the app.
+- **Spoken language and model choice** in the Sensory panel: 89 languages plus "detect automatically"; a model installed by hand can be picked with **use**. Preferences stay on the machine.
+- `ehc:want-panel` window event: a component can ask the workbench to open a panel by id (the mic button uses it to take you straight to speech setup).
+- Tests: `npm run sensoryfetch:test` (new, ~60 checks, fully offline: allowlist, ZIP reader, download loop against a loopback stub, verify-then-install with injected bytes). `npm run sensory:test` now exercises the real path when whisper.cpp is installed and transcribes a real sample when `EH_STT_SAMPLE=<speech.wav>` is set.
+
+### Fixed
+
+- **The editor and the terminal were missing at launch** since in-place session switching landed (2026-11-18). `sessionVersion` started at `0`, which a `Show` treats as off, and only a session *switch* bumped it - so on the boot session files opened as tabs with no editor behind them, and no shell existed, until you switched sessions. It now starts at 1. Verified: Monaco and the PTY are present on the first paint.
+- **Clipboard copy and terminal paste were broken in the last 0.0.3e build** (`b05fcc0`, published 2026-11-25). The Electron permission handlers added for the microphone denied everything except media, which refused `navigator.clipboard.writeText` / `readText`. Correcting the record: that commit's stated root cause was wrong. Electron **grants** permission requests by default (measured with no handlers: microphone, camera, clipboard and notifications all `granted`), so the app never denied the mic, and the "fix" only removed permissions. The policy now: our own windows keep the default, the camera is never granted, a window we did not open gets nothing. Verified in the real app: clipboard read/write and notifications `granted`, microphone `granted`, camera `getUserMedia` refused with `NotAllowedError`.
+- The mic button could never stop a recording: it was disabled while recording and the second press returned early.
+- `transcribe()` appended whisper.cpp's stderr log lines (`read_audio_data: …`) to the transcript. It reads stdout only, validates that the input is a WAV, caps its length, and reports the real exit status on failure.
+- Speech detection knew three model file names; it now finds any `ggml-*.bin` and `whisper-cli` on `PATH` (package-manager installs), and picks the best installed model, preferring the English-only one when English is selected.
+- **Composer overflowed the chat column** on a 1280×720 logical display: the Send button sat 101 px off-screen and the mic picker expanded to its longest option.
+- The panel tab strip could be crushed to a 22 px clipped band when the editor took its floor.
+- The Sensory panel kept showing "installed" after files were removed by hand; it now re-checks when asked for and when the window regains focus.
+
+### Changed - UI/UX sweep (measured at 1268×638 CSS px, a 4K display at 300 %)
+
+- Composer: the input owns its line and is three lines tall; mic, picker and Send sit on their own row. The token budget, auto-approve and speech controls fold under **options**; the states that change what the agent may do stay visible as flags on the model row (**auto-approve**, **speaking**). The message list grew from 143 px to 243 px.
+- Panel tabs: no visible scrollbar, a vertical wheel scrolls the strip, and the active tab is scrolled into view.
+- One dark scrollbar style throughout (the message list and code blocks showed white tracks).
+- Microphone labels shortened ("Default · Microphone (Logitech PRO X Gaming Headset)").
+- Chat column overflow is 0; nothing in it extends past the window edge.
+
+### Docs
+
+README, PRIVACY, SECURITY (egress inventory extended with the download and link paths, and the camera/microphone policy), SENSORY, RELEASE, NOTICE, AGENTS.md (download policy, test stages) and UIUX-AUDIT brought up to date. PRIVACY previously placed the CSP in the main process (it is a meta tag) and described the detonation lane as a microVM (it is WSL2 namespaces / bubblewrap / Seatbelt; the microVM is optional).
+
+### Known issues
+
+- Linux and macOS: no in-app engine download yet (the Linux asset is a tar.gz; macOS ships none). Install whisper.cpp with a package manager or build it - it is found on `PATH` - and models still download from the panel. Linux AppImage/deb were last packaged and verified at 0.0.3d; **this release publishes Windows installers only**.
+- The macOS keyring proof is still pending.
+- A real voice through a real microphone was not machine-tested (no speech source at the agent's end): capture, metering, release and the full transcription path are verified separately; say the word if anything feels off.
+- The 0.0.3e assets on GitHub are the `b05fcc0` build and contain the clipboard regression above; 0.0.4a supersedes them.
+
+## 0.0.3e re-publish (2026-11-25, later builds)
+
+The 0.0.3e assets were replaced during 2026-11-25 without a new tag. Recorded here because the builds were published:
+
 - **Fixed: the BYOK key test's probe shape was pathological for thinking models.** Measured on NIM's glm-5.3-flash: a `max_tokens=1` probe took **84 s** (the single token spent on reasoning, empty content) and blew the test's 30 s cap, while a real agent budget (1024) finished in 23.8 s - the model's per-request latency dominates, not token count. The test now sends a 128-token budget with a 120 s timeout, so "test" measures the KEY (it reports the real round-trip latency). Also recorded: NIM's `/models` catalog is account-scoped - a listed model can still 404 for chat on the account.
 - **Fixed: the DNS pin broke the BYOK lane on Node/Electron with autoSelectFamily** (found by the operator's own key tests: every provider test failed `endpoint unreachable: fetch failed` in the new install). Node's happy-eyeballs lookup path (`options.all === true`) consumes the ARRAY callback form; the pin served the single-address form -> `ERR_INVALID_IP_ADDRESS` on every pinned fetch. `dnspin.pinnedAgent` now serves both contracts (proven against the real openrouter.ai endpoint from plain node, and netpin:test on loopback). webfetch shared the same latent bug via the extracted helper - fixed together.
 - **BYOK model catalog probe**: `GET /api/secrets/:provider/models` fetches the provider's own `/models` (pinned connection, operator base URL only, model ids are public catalog data). The Models panel gains a **models** button per provider: the endpoint's catalog appears as a list; clicking a model sets it as that provider's model. Smoke-covered offline via a local stub.
+
+- **Panels fill the window** and the composer gained a **BYOK quick-switch** listing the selected provider's own model catalog.
+- **Composer microphone button** posting to `/api/sensory/transcribe` (speech-to-text needed a sidecar and could not stop a recording - see 0.0.4a).
+- Electron session permission handlers were added for the microphone. **The final re-published build (`b05fcc0`) broke clipboard copy and terminal paste** by denying every other permission; fixed in 0.0.4a.
 
 ## [0.0.3e] - 2026-11-25
 
@@ -22,6 +77,12 @@ Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 - **Usage rollup:** `usageSummary` now reports per-model call counts; the Runs panel footer shows total tokens and turns by model.
 - Tests: `secrets:test` (plain node, ~90 checks - also run on Linux/WSL2), `secrets:test:electron` (real keychain: two launches plus a fresh-profile crash scenario, four Electron processes), `/api/secrets` and the BYOK picker/lane in the end-to-end smoke, relocated-file cases in `wsguard:test` and `detonate:test`.
 - Docs: SECURITY.md, PRIVACY.md and ENCRYPTION.md now state exactly what is built and what was verified. PRIVACY.md previously claimed an "encrypted file fallback" that did not exist. Closes audit item 17.
+
+## [0.0.3d] - 2026-11-23 - Linux packaging + Omarchy
+
+- Linux **AppImage and deb packaged and verified live** on Omarchy/Arch (author email added for the deb maintainer field).
+- An **Omarchy shell plugin** ships in `integrations/omarchy/` (sessions-bar widget + panel).
+- README refresh: detonation lane documented with its per-platform sandbox.
 
 ## [0.0.3c] - 2026-11-22 - follow-up audit hardening (assurance truthfulness)
 

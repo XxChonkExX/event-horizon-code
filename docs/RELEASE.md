@@ -5,15 +5,15 @@ The whole pipeline is hand-driven and verifiable. Nothing auto-publishes; no tel
 ## 0. Version bump (by hand)
 
 - Bump `version` in `package.json` directly. **Never** `npm version` (it creates tags/commits we do not want).
-- Mirror the version in `src/preload/index.ts` (`version: "x.y.z"`) if it changed.
+- Mirror it in `src/shared/version.ts` (`APP_VERSION` - the preload and the runtime report this constant) and in `package-lock.json` (the two `version` fields at the top).
 - Update `CHANGELOG.md` with a dated section.
 
 ## 1. Pre-flight (all green or no release)
 
 ```pwsh
 npm run typecheck        # tsc --noEmit
-npm test                 # ≈140 checks across 8 suites — must be ALL PASS
-npm run test:integration # smoke: fresh headless server, 9 checks — must be ALL PASS
+npm test                 # 20 stages — must be ALL PASS
+npm run test:integration # end-to-end smoke against a fresh headless server — must be ALL PASS
 ```
 
 - `git status` must be clean; everything pushed to `main`.
@@ -32,7 +32,7 @@ node scripts/prepare-engine.mjs --verify   # re-verify resources/engine/ in plac
 
 ## 2b. CI workflows (what is expected to happen on GitHub)
 
-- `ci.yml`: on every push/PR it runs the **full** `npm test` (12 stages) on
+- `ci.yml`: on every push/PR it runs the **full** `npm test` on
   ubuntu, after installing Electron's shared libraries. If the smoke stage
   hangs, check that `scripts/smoke-test.ts` spawns its child with
   `detached: true` on POSIX (the group-kill depends on it).
@@ -56,7 +56,7 @@ npm run pack:dir     # electron-vite build + engine staging + electron-builder -
 
 - Produces `dist/win-unpacked/` — this folder IS the release candidate.
 - Run `dist/win-unpacked/Event Horizon Code.exe` and walk the RC checklist below.
-- Windows installer (optional per release): `npm run pack` → `dist/*.exe` NSIS installer + MSI. Icon artwork lives at `build/icon.png` (256px) — electron-builder bakes it into the exe/installer and synthesizes the Windows .ico from it. MSI is intentionally not configured — WiX requires a real `.ico` (`LGHT0094` on `Icon:EventHorizonCodeIcon.exe` otherwise); add the `msi` target back once artwork exists in `build/`.
+- Windows installer (optional per release): `npm run pack` → `dist/*.exe` NSIS installer + MSI. Icon artwork lives at `build/icon.png` (256px) — electron-builder bakes it into the exe/installer and synthesizes the Windows .ico from it. MSI is configured (`electron-builder.yml` -> `win.target`) and is built beside the NSIS installer.
 - **Path-with-spaces note**: if the checkout lives under a path containing spaces, `@electron/rebuild` warns while rebuilding `better-sqlite3`; the build still completes (prebuilt binaries are used). Build from a space-free path if a native rebuild ever actually fails.
 - Verified working 2026-11-16: engine staged (10 files, SHA-verified, chonkllama `eda0e233a`), RC launched from `win-unpacked`, spawned its own runtime, health green, sessions loaded from the shared store.
 - Cosmetic warnings to expect (not failures): default Electron icon (no icon set yet), no code-signing certificate, dynamic-import notice for `renderer/api.ts`.
@@ -87,16 +87,27 @@ Get-ChildItem dist\*.exe | ForEach-Object { (Get-FileHash $_.FullName -Algorithm
 ## 6. Tag + publish
 
 ```pwsh
-git tag -a v0.y.z -m "Event Horizon Code v0.y.z"
-git push origin v0.y.z
+git tag -a 0.0.4a -m "Event Horizon Code 0.0.4a"   # letters per re-release inside a version; package.json stays 0.0.4
+git push origin 0.0.4a
 ```
 
 - GitHub release notes template: highlights, known issues, SHA-256 table, **"requires no account, ships no model weights, no telemetry"**.
-- NOTICE.md must still attribute: llama.cpp (MIT, vendored chat templates), Tencent LoopForge (MIT, SOP engine), AfterImage Engram (subprocess import).
+- NOTICE.md must still attribute: llama.cpp (MIT, vendored chat templates), Tencent LoopForge (MIT, SOP engine), AfterImage Engram (subprocess import). whisper.cpp is an optional user download and is never bundled - say so in the notes.
 
 ## Known issues to state in every release (do not hide them)
 
 - Windows compositor: under heavy GPU load a window can present a stale frame; a single click recovers it. All in-app triggers found so far are fixed; the machine-level trigger is under investigation (see `docs/GPU.md`).
-- Sandbox (`sbx`/microVM) is opt-in and not shipped — the detonation lane refuses plainly without it.
-- Speech-to-text (ears) is not bundled; text-to-speech works on Windows voices.
-- Linux/macOS builds are on the roadmap: the runtime is portable (the engine is llama.cpp; Ollama has native Linux/macOS builds; the BYOK lane accepts any OpenAI-compatible endpoint including a self-hosted llama-server), but the packer currently stages Windows binaries only.
+- The detonation lane needs an OS sandbox backend (WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS) and refuses plainly without one. The microVM (`sbx`) is optional and not shipped.
+- Speech-to-text needs whisper.cpp and a language model. They are never bundled: the Sensory panel offers them as an optional, checksum-verified download on Windows; on Linux and macOS install the engine with a package manager or build it.
+- Linux AppImage/deb were last packaged and verified at 0.0.3d; macOS is not packaged yet and runs from source. State exactly which platforms a release's artifacts cover.
+
+## Verifying the real window (added 2026-11-25)
+
+The in-app browser is a different browser: it has its own permission prompts and says nothing about the app. To check the app itself - layout, microphone, clipboard, camera - launch it with a loopback DevTools port and drive the real renderer:
+
+```pwsh
+& "$env:LOCALAPPDATA\Programs\event-horizon-code\Event Horizon Code.exe" --remote-debugging-port=9333
+Invoke-RestMethod http://127.0.0.1:9333/json          # the page target + its webSocketDebuggerUrl
+```
+
+Node 22+ has a built-in `WebSocket`, so a short script can `Runtime.evaluate` in the page and `Page.captureScreenshot` it. Checks worth running there before a release: `navigator.permissions.query` for `clipboard-read`, `clipboard-write`, `microphone` (expect `granted`) and `camera` (expect not granted); `getUserMedia({video:true})` refused; the editor (`.ehc-editor-shell`) and terminal (`.xterm`) present on the first paint; no child of `aside.chat` extending past its right edge. Close the app and relaunch it normally afterwards.

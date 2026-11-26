@@ -13,8 +13,10 @@
   - Plaintext backups (taken before existing keys are sealed, also offered by the panel) live in `~/.eventhorizon/backups/<timestamp>/secrets.json` - outside every workspace, so agent file tools cannot reach them, and the shell credential rule refuses the filename. They are listed in the panel and deletable there once moved somewhere safe; they are plaintext by design and the panel says so.
   - The file is written owner-only (`0600`) where the OS supports it; on Windows it inherits the workspace folder's ACL. The status API never returns a key value, the audit log records provider names and storage state only, and the credential denylist still keeps agent tools from reading the file.
 - CSP in renderer. contextIsolation true, nodeIntegration false. No remote content in windows.
+- **Permissions (microphone, clipboard, …).** Electron *grants* permission requests by default. EHC keeps that for windows it opened itself, with two deliberate exceptions: the **camera is never granted** - only the microphone, for speech-to-text - and a webContents that is not one of ours gets nothing (`src/main/index.ts`, `session.setPermissionCheckHandler` / `setPermissionRequestHandler`; membership is decided by window identity, not by URL). The microphone is opened only by the recorder behind the composer's button and is released on every exit path. Do not replace these handlers with a deny-by-default list: that is exactly how 0.0.3e's last build lost clipboard copy and terminal paste.
+  - Verified in the running app: clipboard read/write and notifications `granted`, microphone `granted`, `getUserMedia({video})` refused with `NotAllowedError`, and with no handlers at all every one of them is granted (which is why the default is kept rather than re-invented).
 
-## Network egress inventory (zero-telemetry sweep, 2026-11-24)
+## Network egress inventory (zero-telemetry sweep, 2026-11-24; extended 2026-11-25 for optional downloads)
 
 Every outbound connection the codebase can make, classified. Re-verify with `node scripts/fixtures/telemetry-history-sweep.mjs` (history scan for analytics/updater symbols) plus a grep of `fetch(|http.request|net.connect` under `src/`.
 
@@ -24,8 +26,12 @@ Every outbound connection the codebase can make, classified. Re-verify with `nod
 | Ollama (`127.0.0.1:11434` default) | `router.ts` | Local model lane, operator-configured. |
 | BYOK OpenAI-compatible endpoint | `router.ts` | Operator-configured base URL + key; never a default host. |
 | - | `secrets.ts` | Makes no network call. A key leaves the machine only toward the BYOK base URL above. |
-| `html.duckduckgo.com` | `tools.ts` (`websearch`) | The only third-party contact in the tree. User-invoked tool, permission `ask`, no key, no identifier sent beyond the query. |
+| `html.duckduckgo.com` | `tools.ts` (`websearch`) | User-invoked tool, permission `ask`, no key, no identifier sent beyond the query. |
 | Pinned public hosts | `tools.ts` (`webfetch`) | User-invoked tool, permission `ask`; SSRF guard + DNS-pinned connections. |
+| `github.com`, `huggingface.co` (+ `*.githubusercontent.com`, `*.hf.co` on redirect) | `sensoryfetch.ts` | **User-clicked only**: a download button in the Sensory panel. Fixed catalog (`sensory-catalog.ts`), address checked against the allowlist before the request and on every hop, exact-size cap, SHA-256 verified against the value the source publishes, one job at a time, cancellable. A plain GET with the User-Agent `event-horizon-code`; nothing else is sent. |
+| Official project sites | `main/index.ts` (`shell:openExternal`) | **User-clicked only**: an install link in the Toolchain Doctor or a project link in the Sensory panel. The URL must be https and on the allowlist in `shared/externals.ts`, and the IPC sender must be a trusted renderer. It opens in the user's own browser. |
+
+The allowlist (`src/shared/externals.ts`) is the single source for both rows above and is covered by `npm run sensoryfetch:test`, including "a non-listed host is refused before any connection is made".
 
 Sweep results (2026-11-24): no analytics/beacon/updater symbol in the source or in the full git history; no auto-update channel (`electron-builder.yml` `publish: null`); renderer CSP is `default-src 'self'` with `connect-src` limited to loopback; 7 runtime dependencies, all local libraries; CI uses first-party actions only; `integrations/omarchy` polls `127.0.0.1` only. Core, harness, and inference stay MIT and telemetry-free by policy; premium conveniences are built alongside and never add reporting to the core.
 
@@ -45,3 +51,4 @@ Sweep results (2026-11-24): no analytics/beacon/updater symbol in the source or 
 
 - Only load Agent Skills from trusted local folders (skills/, .harness/skills/, project .ehc/skills).
 - Engram packs are checksummed (SHA256). User-pinned files only. No runtime web fetching into context.
+- Optional downloads follow the same rule by construction: nothing is fetched unless it is a row of the pinned catalog, the user clicked it, and the bytes match the SHA-256 the source publishes. Archive extraction is flat and name-checked (path traversal entries are refused, never sanitised - `src/server/unzip.ts`), and only `whisper-cli(.exe)`, `whisper.dll` and `ggml*.dll` are kept from the engine archive. Model weights keep the licence of their source (whisper.cpp's ggml conversions, MIT) and are never bundled with the app.
