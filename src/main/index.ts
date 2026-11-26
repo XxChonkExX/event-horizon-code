@@ -2,7 +2,7 @@
 // Owns: windows, menus, single-instance lock, localhost server bootstrap
 // Non-negotiable: no domain logic here. Sessions/tools/engrams live in server.
 
-import { app, BrowserWindow, Menu, ipcMain, dialog, screen, shell } from "electron";
+import { app, BrowserWindow, Menu, ipcMain, dialog, screen, shell, session } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -103,6 +103,11 @@ app.commandLine.appendSwitch("disable-gpu-compositing");
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 app.commandLine.appendSwitch("disable-background-timer-throttling");
+
+// Media capture: Electron denies permission requests by default (no browser
+// dialog), and the composer mic button reported NotAllowedError ("Permission
+// denied") without a handler. The handler lives on the session and is set
+// inside whenReady below.
 
 // Shared hardening for every window we open. The compositor has died on this
 // machine while a training workload was grabbing the GPU; when it does, the
@@ -222,6 +227,15 @@ app.whenReady().then(async () => {
     app.exit(1);
     return;
   }
+  // Media capture: Electron denies permission requests by default (no browser
+  // dialog), and the composer mic button reported NotAllowedError ("Permission
+  // denied") without a handler. Approve media capture here; everything else
+  // stays denied - the workbench has no flow that needs it. (Camera is not
+  // used by any flow today, and the same approval applies if it ever is.)
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === "media" || permission === "mediaKeySystem");
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === "media" || permission === "mediaKeySystem");
   runtime = await resolveRuntime();
   ipcMain.handle("runtime:info", (e) => {
     if (!isTrustedRenderer(e)) throw new Error("Untrusted IPC sender");

@@ -266,6 +266,23 @@ export default function ChatColumn(props: {
   // inserts the transcript into the composer input - press Enter to send.
   const [sttBusy, setSttBusy] = createSignal(false);
   const [sttNote, setStdNote] = createSignal("");
+  // Mic selector: some users have several input devices; let them pick one.
+  // "default" = the browser's default device.
+  const [micDevices, setMicDevices] = createSignal<{ id: string; label: string }[]>([]);
+  const [micSel, setMicSel] = createSignal("default");
+  async function refreshMicDevices() {
+    try {
+      const ds = await navigator.mediaDevices.enumerateDevices();
+      const inputs = ds
+        .filter((d) => d.kind === "audioinput")
+        .map((d, i) => ({ id: d.deviceId || `input-${i}`, label: d.label || `Microphone ${i + 1}` }));
+      setMicDevices(inputs);
+      // Keep the selection valid; fall back to the browser default.
+      setMicSel((cur) => (cur !== "default" && inputs.some((m) => m.id === cur) ? cur : "default"));
+    } catch { /* enumerate failing is fine - the mic button reports it on press */ }
+  }
+  // First-time fill; re-listed when the mic is pressed (devices can change).
+  onMount(() => { void refreshMicDevices(); });
   let sttNoteTimer: ReturnType<typeof setTimeout> | undefined;
   const sttFlash = (msg: string) => {
     setStdNote(msg);
@@ -319,10 +336,13 @@ export default function ChatColumn(props: {
 
   const sttRecord = async (): Promise<void> => {
     if (sttBusy()) return;
-    sttFlash("listening… - tab again when you are done");
+    sttFlash("listening… - tap again when you are done");
     setSttBusy(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      await refreshMicDevices();
+      const gUM: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+      if (micSel() !== "default") gUM.deviceId = micSel();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: gUM });
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : undefined;
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       const chunks: Blob[] = [];
@@ -343,8 +363,9 @@ export default function ChatColumn(props: {
       } else {
         sttFlash(d.error ? `transcription failed: ${String(d.error).slice(0, 120)}` : "no transcript from the audio");
       }
-    } catch {
-      sttFlash("microphone unavailable - check your OS/browser permissions");
+    } catch (e) {
+      const err = e as { name?: string; message?: string };
+      sttFlash(`microphone unavailable (${err?.name ?? "error"}): ${err?.message ? String(err.message).slice(0, 140) : "check OS/browser permissions"}`);
     } finally {
       setSttBusy(false);
       clearTimeout(sttNoteTimer);
@@ -576,6 +597,10 @@ export default function ChatColumn(props: {
           placeholder="Describe the task...  (/think:high to raise reasoning)"
           class="composer-input"
         />
+        <select class="stt-dev" value={micSel()} onChange={(e) => setMicSel(e.target.value)} title="Microphone: pick the input device when you have several" aria-label="Microphone input device">
+          <option value="default">default</option>
+          <For each={micDevices()}>{(m) => <option value={m.id} selected={m.id === micSel()}>{m.label}</option>}</For>
+        </select>
         <button
           class="stt-btn"
           disabled={sttBusy()}
