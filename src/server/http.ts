@@ -261,11 +261,15 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     // byte-count guard covers all per-site "data" listeners; on breach we send
     // 413 and destroy the socket, so no handler ever buffers an oversized body.
     // Slow-loris style requests are cut by the 60s socket timeout.
+    // Exception (operator decision 2026-11-26): the transcribe route gets its
+    // own budget - a base64 WAV costs 4/3, and 8 minutes of 16 kHz mono is
+    // ~20.5 MB, so its documented 8-minute promise needs 24 MiB.
+    const bodyLimit = url.pathname === "/api/sensory/transcribe" ? 24 * 1024 * 1024 : 4 * 1024 * 1024;
     let bodyBytes = 0;
     req.on("data", (c: Buffer) => {
       bodyBytes += c.length;
-      if (bodyBytes > 4 * 1024 * 1024) {
-        try { sendJson(res, 413, { error: "payload too large (4 MiB limit)" }); } catch { /* socket gone */ }
+      if (bodyBytes > bodyLimit) {
+        try { sendJson(res, 413, { error: `payload too large (${Math.round(bodyLimit / (1024 * 1024))} MiB limit)` }); } catch { /* socket gone */ }
         req.destroy();
       }
     });

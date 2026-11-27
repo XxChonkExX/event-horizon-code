@@ -16,8 +16,8 @@ function guestPipeline(opts) {
     `unshare --mount --pid --fork --mount-proc --net /bin/sh -c '`,
     ...(opts.hideHostFs ? [
       "  mount --make-rprivate / 2>/dev/null || true",
-      "  umount -l /mnt/c 2>/dev/null || true",
-      "  echo mntc_files=$(ls /mnt/c 2>/dev/null | wc -l)",
+      "  for m in /mnt/*; do umount -l \"$m\" 2>/dev/null || true; done",
+      "  echo mntc_files=$(grep -c ' /mnt/' /proc/mounts 2>/dev/null || echo 0)",
     ] : [
       "  echo mntc_files=n/a",
     ]),

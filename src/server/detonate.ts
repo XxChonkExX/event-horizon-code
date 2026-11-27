@@ -395,8 +395,14 @@ function guestPipeline(opts: { runId: string; artifactLinuxPath: string; guestUi
     `unshare --mount --pid --fork --mount-proc --net /bin/sh -c '`,
     ...(opts.hideHostFs ? [
       "  mount --make-rprivate / 2>/dev/null || true",
-      "  umount -l /mnt/c 2>/dev/null || true",
-      "  echo mntc_files=$(ls /mnt/c 2>/dev/null | wc -l)",
+      // WSL automounts EVERY fixed drive under /mnt (c, d, f, ...), not only the
+      // system drive: detach them all, then prove from /proc/mounts that NO
+      // filesystem remains mounted under /mnt (the leftover empty mountpoint
+      // directories do not matter - they hold no files).
+      "  for m in /mnt/*; do umount -l \"$m\" 2>/dev/null || true; done",
+      // (No single quotes in this embedded script: the whole block sits inside
+      // an outer sh -c '...' quoting - measured, a stray ' exits the guest with 2.)
+      "  echo mntc_files=$(grep -c \"/mnt/\" /proc/mounts 2>/dev/null || echo 0)",
     ] : [
       "  echo mntc_files=n/a",
     ]),
@@ -443,7 +449,7 @@ async function sweepAndConfirm(mode: "wsl" | "native", distro: string | undefine
 // mechanic verification, or a refusal naming the exact install step. No
 // silent fallbacks, no pretending.
 
-export type DetonateBackend = "ns-wsl" | "ns-native" | "bwrap" | "seatbelt" | "none";
+export type DetonateBackend = "ns-wsl" | "ns-native" | "bwrap" | "seatbelt" | "sbx" | "none";
 export type BackendDetection = { backend: DetonateBackend; reason: string; install?: string[] };
 
 function hasBinaryOnPath(bin: string): boolean {
@@ -743,6 +749,9 @@ export async function runNamespacedDetonate(plan: DetonatePolicy & { args: strin
   }
   // Sweep + CONFIRM the guest process tree is gone (audit: verify, don't assume).
   result.treeTerminated = await sweepAndConfirm(opts.mode, opts.distro, runId);
+  // hostFsHidden is proven against EVERY /mnt/* entry, not only the system
+  // drive: WSL automounts all fixed drives, and only an empty /mnt means the
+  // guest cannot see any of them.
   const mntc = guestLog.match(/mntc_files=(\d+)/);
   const netns = guestLog.match(/netns_ifaces=(\d+)/);
   result.hostFsHidden = opts.mode === "wsl" ? Boolean(mntc && mntc[1] === "0") : false;

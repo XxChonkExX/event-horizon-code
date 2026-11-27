@@ -2,7 +2,7 @@
 // Exposes minimal window.eventhorizon API. No Node in renderer.
 // Runtime credentials pass over IPC only — never in URL/DOM.
 
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { APP_VERSION } from "../shared/version";
 
 contextBridge.exposeInMainWorld("eventhorizon", {
@@ -18,6 +18,15 @@ contextBridge.exposeInMainWorld("eventhorizon", {
   fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => ipcRenderer.invoke("fs:op", op, root) as Promise<{ ok: boolean; error?: string }>,
   revealInFolder: (path: string, root?: string) => ipcRenderer.invoke("shell:reveal", path, root) as Promise<{ ok: boolean; error?: string }>,
   openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url) as Promise<{ ok: boolean; error?: string }>,
+  // Local side files opened from outside the workspace ("Open With", a drop,
+  // a double-click): read/written by main with credential refusals; the path
+  // for a dropped File comes from webUtils in this preload only.
+  fileExternal: (op: { kind: "read" | "write"; path: string; content?: string }) => ipcRenderer.invoke("file:external", op) as Promise<{ ok: boolean; error?: string; path?: string; content?: string }>,
+  takePendingFile: () => ipcRenderer.invoke("file:takePending") as Promise<string | null>,
+  pathForFile: (file: File) => webUtils.getPathForFile(file),
+  onFileOpen: (cb: (p: { path: string }) => void) => {
+    ipcRenderer.on("file:openExternal", (_e, p: { path: string }) => cb(p));
+  },
   onContextMenu: (cb: (p: { x: number; y: number }) => void) => {
     ipcRenderer.on("context:menu", (_e, p: { x: number; y: number }) => cb(p));
   },

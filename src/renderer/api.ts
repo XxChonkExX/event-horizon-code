@@ -21,6 +21,11 @@ declare global {
       fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => Promise<{ ok: boolean; error?: string }>;
     revealInFolder: (path: string, root?: string) => Promise<{ ok: boolean; error?: string }>;
     openExternal: (url: string) => Promise<{ ok: boolean; error?: string }>;
+    // Local side files opened from outside the workspace ("Open With", a drop).
+    fileExternal: (op: { kind: "read" | "write"; path: string; content?: string }) => Promise<{ ok: boolean; error?: string; path?: string; content?: string }>;
+    takePendingFile: () => Promise<string | null>;
+    pathForFile: (file: File) => string;
+    onFileOpen: (cb: (p: { path: string }) => void) => void;
     onContextMenu: (cb: (p: { x: number; y: number }) => void) => void;
     };
   }
@@ -103,6 +108,30 @@ export const canReveal = (): boolean => typeof window !== "undefined" && Boolean
 export async function openExternal(url: string): Promise<{ ok: boolean; error?: string }> {
   if (typeof window !== "undefined" && window.eventhorizon?.openExternal) return window.eventhorizon.openExternal(url);
   return { ok: false, error: "not available outside the desktop app" };
+}
+
+// Local side files (outside the session worktree): read and written by MAIN
+// with credential refusals - the agent's tool jail stays workspace-scoped.
+export async function readExternalFile(p: string): Promise<{ ok: boolean; content?: string; error?: string }> {
+  if (typeof window !== "undefined" && window.eventhorizon?.fileExternal) return window.eventhorizon.fileExternal({ kind: "read", path: p });
+  return { ok: false, error: "not available outside the desktop app" };
+}
+export async function writeExternalFile(p: string, content: string): Promise<{ ok: boolean; error?: string }> {
+  if (typeof window !== "undefined" && window.eventhorizon?.fileExternal) {
+    const r = await window.eventhorizon.fileExternal({ kind: "write", path: p, content });
+    return { ok: r.ok, error: r.error };
+  }
+  return { ok: false, error: "not available outside the desktop app" };
+}
+/** The absolute path of a dropped File (webUtils lives in the preload only). */
+export function droppedFilePath(file: File): string | null {
+  return window.eventhorizon?.pathForFile?.(file) ?? null;
+}
+
+/** A file that arrived via "Open With" before any window existed. */
+export async function takePendingFile(): Promise<string | null> {
+  if (typeof window !== "undefined" && window.eventhorizon?.takePendingFile) return window.eventhorizon.takePendingFile();
+  return null;
 }
 
 export async function pickFolder(): Promise<string | null> {

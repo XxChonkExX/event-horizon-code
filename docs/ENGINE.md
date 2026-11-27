@@ -19,7 +19,7 @@ The router's `chatOpenAI()` speaks OpenAI `/v1/chat/completions` natively — ll
 
 - `GET /api/engine/status` — config + running + healthy + endpoint
 - `GET /api/engine/models` — scan `engine.ggufDirs` for local GGUFs (filesystem-only)
-- `POST /api/engine/start {ggufPath}` — spawn sidecar on 127.0.0.1:8901
+- `POST /api/engine/start {ggufPath}` — spawn sidecar on 127.0.0.1:8905 (moved off 8901 — operator decision 2026-11-26, that port stays with the training box's other models)
 - `POST /api/engine/stop` — kill sidecar
 
 Env applied at spawn: `GGML_VK_VVM_POOL`, `GGML_VVM_HEAP_FRACTION`, `VVM_DEVICE_INDEX` — the GPU policy from `docs/GPU.md` becomes engine flags.
@@ -30,7 +30,7 @@ Env applied at spawn: `GGML_VK_VVM_POOL`, `GGML_VVM_HEAP_FRACTION`, `VVM_DEVICE_
 "engine": {
   "kind": "bundled | external | none",
   "binaryPath": "resources/engine/llama-server.exe",
-  "port": 8901,
+  "port": 8905,
   "ggufDirs": ["F:/llmtrainingpipeline", "G:/New folder"],
   "gpu": { "deviceIndex": 0, "heapFraction": 0.6, "pool": true }
 }

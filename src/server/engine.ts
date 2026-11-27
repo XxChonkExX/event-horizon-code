@@ -71,7 +71,7 @@ export function readEngineConfig(): EngineConfig {
   return {
     kind: raw.engine?.kind ?? "bundled",
     binaryPath: raw.engine?.binaryPath ?? "",
-    port: raw.engine?.port ?? 8901,
+    port: raw.engine?.port ?? 8905,
     ggufDirs: dirs,
     gpu: raw.engine?.gpu ?? { deviceIndex: 0, heapFraction: 0.6, pool: true },
     ctx: raw.engine?.ctx ?? 8192,

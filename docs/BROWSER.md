@@ -71,7 +71,7 @@ Each item is a test before it is a line of code.
 
 - Rate-limited, one page at a time, and visible: the window shows "agent is driving" and a Stop button for the user.
 - Everything the browser returns is **untrusted data** to the model: wrapped and labelled as such, never as instructions. This is the same rule as `webfetch` today, extended to something the agent can steer.
-- Typing into a field is `ask` every time; forms that look like logins or payments are refused with a stated reason in v1.
+- Typing into a field is `ask` every time — including credential fields, which the operator decision of 2026-11-26 allows with that explicit per-field approval (a phished page can only get credentials one approved field at a time). Payment forms stay refused in v1 with a stated reason.
 - The agent gets no direct network access through the browser - only what `browser_read` returns.
 
 **State**
@@ -86,7 +86,8 @@ Each item is a test before it is a line of code.
 | A hostile page reaches the local runtime or LAN services | loopback and private-range requests cancelled; runtime password |
 | A hostile page turns on the camera or reads the clipboard | every permission denied for the session, no prompt |
 | A page-injected instruction hijacks the agent | browser output labelled untrusted; each action is `ask`; visible driving banner and Stop |
-| The agent types credentials or payments | refused in v1 with a stated reason |
+| The agent types credentials | every field is `ask` (allowed by operator decision 2026-11-26) |
+| The agent types into a payment form | refused in v1 with a stated reason |
 | Drive-by downloads and pop-ups | downloads cancelled by default; no new windows |
 | Silent tracking across runs | ephemeral session by default; optional local block list |
 
@@ -101,7 +102,7 @@ Permission denial matrix for the browser session; scheme policy; `window.open` d
 | Mode | Behaviour | Who gets it |
 |---|---|---|
 | **Ask every step** (default) | every `navigate` / `click` / `type` waits for the user | core |
-| **Auto-confirm** | one click arms a bounded loop: at most **4 steps** or a fixed time limit, whichever comes first; the driving banner counts down and Stop ends it at once. `type` still asks if the field looks like a login or payment | core |
+| **Auto-confirm** | one click arms a bounded loop: at most **4 steps** or a fixed time limit, whichever comes first; the driving banner counts down and Stop ends it at once. `type` still asks when the field looks like a payment form | core |
 | Longer and unattended loops | beyond the 4-step / timed loop | the premium line, not the core |
 
 This keeps the base philosophy - the agent never runs ahead of the user's consent - while leaving room for automation as a paid convenience.

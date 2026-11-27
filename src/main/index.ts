@@ -222,6 +222,51 @@ function hardenWindow(win: BrowserWindow, label: string): void {
 
 if (!app.requestSingleInstanceLock()) app.quit();
 
+// --- Local side files (operator, 2026-11-26): "Open With", drag-drop, argv ---
+// The installer registers text/code file associations, and every launch path
+// that carries a file lands here. Only an OPERATOR action can put a file on
+// argv or into a drop - the model has no channel to either - and the guards
+// below mirror the agent tool jail's credential refusals.
+const EXTERNAL_BLOCK_EXT = /\.(exe|dll|so|dylib|zip|7z|rar|gz|tgz|tar|msi|msix|appx|bin|iso|img|pdb|jar|class|node|wasm|ttf|otf|woff2?|cab|deb|rpm|dmg|pkg|apk|sqlite|db)$/i;
+const EXTERNAL_CREDENTIAL = /(^|[\\/])(\.harness[\\/]secrets\.json|\.eventhorizon[\\/]runtime\.json(\.[^\\/]+)?|\.env(\..+)?|credentials?\.(json|ya?ml)|id_rsa|id_ed25519|id_ecdsa|\.netrc|\.npmrc|\.aws[\\/]credentials|\.docker[\\/]config\.json|\.ssh[\\/][^\\/]+)|\.(pem|key|p12|pfx)$/i;
+const EXTERNAL_CAP = 2 * 1024 * 1024; // the editor's own read cap
+
+function guardExternalFile(p: unknown): { ok: true; abs: string } | { ok: false; error: string } {
+  if (typeof p !== "string" || p.length === 0 || p.length > 512 || !path.isAbsolute(p)) return { ok: false, error: "an absolute file path is required" };
+  const abs = path.resolve(p);
+  if (EXTERNAL_CREDENTIAL.test(abs)) return { ok: false, error: "refused: credential files are never opened in the editor" };
+  if (EXTERNAL_BLOCK_EXT.test(abs)) return { ok: false, error: "refused: that file type is not opened in a text editor" };
+  let st: fs.Stats;
+  try { st = fs.statSync(abs); } catch { return { ok: false, error: "file not found" }; }
+  if (!st.isFile()) return { ok: false, error: "not a regular file" };
+  if (st.size > EXTERNAL_CAP) return { ok: false, error: `file too large for the editor (${(st.size / 1048576).toFixed(1)} MB; cap 2 MB)` };
+  return { ok: true, abs };
+}
+
+function fileFromArgv(argv: string[]): string | null {
+  for (const a of argv.slice(1)) {
+    if (!a || a.startsWith("-") || a === ".") continue;
+    const g = guardExternalFile(path.resolve(a));
+    if (g.ok) return g.abs;
+  }
+  return null;
+}
+
+let pendingExternal: string | null = null;
+function deliverExternalFile(p: string): void {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  if (win) win.webContents.send("file:openExternal", { path: p });
+  else pendingExternal = p; // no window yet: the renderer collects it on boot
+}
+
+app.on("second-instance", (_e, argv) => {
+  const f = fileFromArgv(argv);
+  if (f) { deliverExternalFile(f); return; }
+  const w = BrowserWindow.getAllWindows()[0];
+  if (w) { if (w.isMinimized()) w.restore(); w.focus(); }
+});
+app.on("open-file", (e, p) => { e.preventDefault(); deliverExternalFile(p); });
+
 app.whenReady().then(async () => {
   // Linux: Electron 42 boots happily with no display - the runtime runs, tools
   // work over curl, and no window can ever exist, with zero warnings (found on
@@ -270,6 +315,37 @@ app.whenReady().then(async () => {
     const r = await dialog.showOpenDialog(win as BrowserWindow, { properties: ["openDirectory", "createDirectory"] });
     return r.canceled ? null : r.filePaths[0];
   });
+  // Local side files opened from outside the workspace ("Open With", a drop, a
+  // double-click in Explorer): read and written by MAIN with the credential
+  // refusals above - the agent's tool jail stays workspace-scoped, and these
+  // handlers answer only a trusted renderer's explicit operator action.
+  ipcMain.handle("file:external", (e, op: { kind?: unknown; path?: unknown; content?: unknown }) => {
+    if (!isTrustedRenderer(e)) return { ok: false, error: "untrusted sender" };
+    const g = guardExternalFile(op?.path);
+    if (!g.ok) return { ok: false, error: g.error };
+    if (op.kind === "read") {
+      try { return { ok: true, path: g.abs, content: fs.readFileSync(g.abs, "utf8") }; }
+      catch (err) { return { ok: false, error: String((err as Error).message ?? err).slice(0, 160) }; }
+    }
+    if (op.kind === "write") {
+      if (typeof op.content !== "string") return { ok: false, error: "content must be a string" };
+      const tmp = `${g.abs}.ehc-tmp-${process.pid}`;
+      try { fs.writeFileSync(tmp, op.content); fs.renameSync(tmp, g.abs); return { ok: true, path: g.abs }; }
+      catch (err) { try { fs.rmSync(tmp, { force: true }); } catch { /* nothing to clean */ } return { ok: false, error: String((err as Error).message ?? err).slice(0, 160) }; }
+    }
+    return { ok: false, error: "kind must be read or write" };
+  });
+  // A file that arrived before any window existed (launched via "Open With").
+  ipcMain.handle("file:takePending", (e) => {
+    if (!isTrustedRenderer(e)) return null;
+    const p = pendingExternal;
+    pendingExternal = null;
+    return p;
+  });
+  if (process.platform !== "darwin") {
+    const bootFile = fileFromArgv(process.argv);
+    if (bootFile) pendingExternal = bootFile;
+  }
   // Pop-out windows: terminal / chat in their own OS window, same session.
   // Sweep-3: kind is allowlisted, and only trusted renderers may spawn windows.
   const POPOUT_KINDS = new Set(["terminal", "chat", "camera"]);

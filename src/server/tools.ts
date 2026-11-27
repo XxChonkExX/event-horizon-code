@@ -757,6 +757,10 @@ export async function runTool(
       //    injected like AGENTS.md.
       const text = String(args.text ?? "").trim();
       if (!text) return { ok: false, error: "text required", out: "" };
+      // One memory line replays into every future system prompt: it stays
+      // short (operator decision 2026-11-26 - remember is `ask` for the same
+      // reason), and long reference material belongs in an engram.
+      if (text.length > 2000) return { ok: false, error: `keep a memory line under 2000 characters (this one is ${text.length}) - put long reference material in an engram instead`, out: "" };
       const scope = String(args.scope ?? "session");
       if (scope === "project") {
         // Memory writes obey the same containment policy as every other write,
@@ -764,7 +768,7 @@ export async function runTool(
         const memGuard = safePath(worktree, path.join(".harness", "memory.md"));
         if (!memGuard.ok) return { ok: false, error: memGuard.error, out: "" };
         const p = memGuard.abs ?? path.join(worktree, ".harness", "memory.md");
-        const entry = text.slice(0, 2000);
+        const entry = text;
         fs.mkdirSync(path.dirname(p), { recursive: true });
         if (!fs.existsSync(p)) fs.writeFileSync(p, "# Project memory (written by the agent)\n\n");
         const existing = fs.readFileSync(p, "utf8").split("\n").map((l) => l.trim());
@@ -894,6 +898,14 @@ export async function runTool(
             r = { code: br.code, out: br.out, killed: br.killed, missing: br.missing,
               delivered: br.delivered, networkVerified: br.networkVerified, hostFsHidden: br.hostFsHidden,
               treeTerminated: br.treeTerminated, backend: br.backend };
+          } else if (backend === "sbx") {
+            // The legacy microVM runner, still selectable via config. It has no
+            // in-guest verification hooks, so its mechanics stay unverified:
+            // the result says so instead of passing silently.
+            enforcement = "sbx microVM (legacy runner; no in-guest verification)";
+            const sbx = await runDetonate(plan);
+            r = { code: sbx.code, out: sbx.out, killed: sbx.killed, missing: sbx.missing,
+              delivered: false, networkVerified: false, hostFsHidden: false, treeTerminated: false, backend: "sbx" };
           } else {
             enforcement = "seatbelt: network denied, writes confined to temp; host FILE READS remain visible (stated exposure - Apple deprecates sandbox-exec)";
             const sb = await runSeatbeltDetonate(plan);
@@ -926,7 +938,10 @@ export async function runTool(
         // hostfs READ-visibility (seatbelt/ns-native) is a stated exposure, not
         // a verification failure - it is flagged in the result header instead.
         const verifiedOk = delivery !== false && netv === true && tree === true;
-        const ok = !r.killed && r.code === 0 && q.ok && fsq.ok && (backend === "seatbelt" ? verifiedOk : verifiedOk && fsHidden === true);
+        // Operator decision (2026-11-26): a run whose mechanics are verified counts
+        // as ok when its host-filesystem visibility is a STATED exposure (ns-native,
+        // seatbelt) - the header carries the flag either way.
+        const ok = !r.killed && r.code === 0 && q.ok && fsq.ok && (backend === "seatbelt" || backend === "ns-native" ? verifiedOk : verifiedOk && fsHidden === true);
         audit({ tool, note: `detonate verify: ${verify}` });
         return {
           ok,

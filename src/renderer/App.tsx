@@ -26,6 +26,7 @@ import ChatColumn, { type ChatMsg } from "./ChatColumn";
 import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo, eventStreamTicket } from "./api";
 import { activeGrants, noteApproval, pendingApprovals, resolveApproval, refreshApprovals, type ApprovalRequest } from "./approvals";
 import ApprovalsMenu from "./ApprovalsMenu";
+import { droppedFilePath, takePendingFile } from "./api";
 import Toasts, { type Toast } from "./Toasts";
 import ContextMenu, { openContextMenu } from "./ContextMenu";
 
@@ -328,6 +329,21 @@ export default function App() {
     open().terminal ? "6px" : "0px", open().terminal ? `${termH()}px` : "0px",
     "auto",
   ].join(" ");
+
+  // Local side files: opened by "Open With", a double-click in Explorer, or a
+  // drop anywhere on the workbench. Absolute paths are read and written by
+  // main (credential refusals included) - the agent's tool jail is untouched.
+  onMount(() => {
+    void takePendingFile().then((p) => { if (p) openFile(p); });
+    if (window.eventhorizon?.onFileOpen) window.eventhorizon.onFileOpen(({ path }) => openFile(path));
+  });
+  const onDropFiles = (e: DragEvent): void => {
+    e.preventDefault();
+    for (const f of Array.from(e.dataTransfer?.files ?? [])) {
+      const p = droppedFilePath(f);
+      if (p) openFile(p);
+    }
+  };
 
   const openFile = (f: string) => {
     setActiveFile(f);

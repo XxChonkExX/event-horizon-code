@@ -37,7 +37,7 @@ Never claim something is done, fixed, or verified without command output, a test
 - **Agentic loop is bounded**: 4 steps, budget escalation on thinking exhaustion, context-overflow recovery, tool-call arg capping, all audited in `~/.eventhorizon/audit.jsonl`.
 - **Persistence is SQLite** (`~/.eventhorizon/data.db`) — sessions, messages, instructions, todos, checkpoints, profiles, usage. Tools that mutate in-memory state must not bypass the DB (`saveMessages`/`loadMessages` are the only conversation path).
 - **Detonation lane** for anything unclean: `run_js tier:"execute"` needs `sbx`; without it the tool refuses. Never weaken that gate.
-- **Do not touch** training workloads (`CodeRed-418`, port 8901 other models, `D:`, `F:`, training PIDs). GPU memory is partitioned; keep EHC light.
+- **Do not touch** training workloads (`CodeRed-418`, port 8901 other models, `D:`, `F:`, training PIDs). EHC's own engine no longer defaults to 8901 — it uses **8905** (operator decision 2026-11-26), so the two can coexist. GPU memory is partitioned; keep EHC light.
 - **Heavy builds compete with the training run** (train_codered2.py holds ~34 GB RAM): before `npm run pack*`, full `npm test`, or any multi-minute build, check RAM headroom (`FreePhysicalMemory` ≥ ~8 GB free) and confirm the training python is still alive (`Get-Process` on its PID; CPU time must be advancing). If headroom is low, defer the heavy step or ask the operator. All process kills stay scoped to EHC's own names/PIDs — never python, never broad name matches.
 
 ## Project at a glance

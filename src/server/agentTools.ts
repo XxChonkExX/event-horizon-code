@@ -74,7 +74,7 @@ export const TOOL_SPECS: ToolDef[] = [
     type: "function",
     function: {
       name: "remember",
-      description: "Remember a durable instruction. scope=session (default): replays in the system prompt and SURVIVES compaction. scope=project: appended to .harness/memory.md so it applies to every future session in this workspace.",
+      description: "Remember a durable instruction. scope=session (default): replays in the system prompt and SURVIVES compaction. scope=project: appended to .harness/memory.md so it applies to every future session in this workspace. Keep it to one short line - long reference material belongs in engram_register.",
       parameters: { type: "object", properties: { text: str("The instruction to remember."), key: str("Optional short key for session-scope updates."), scope: str("session (default) or project.") }, required: ["text"] },
     },
   },

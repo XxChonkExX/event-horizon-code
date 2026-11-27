@@ -46,7 +46,7 @@
     "glob": "allow",
     "engram_search": "allow",
     "engram_register": "allow",
-    "remember": "allow",
+    "remember": "ask",
     "calc_verify": "allow",
     "run_machine": "allow",
     "todo": "allow",
@@ -114,7 +114,7 @@
   "engine": {
     "kind": "bundled",
     "binaryPath": "C:/Users/mikeh/Documents/New OpenCode Project/chonkllama.cpp/build-vk/bin/Release/llama-server.exe",
-    "port": 8901,
+    "port": 8905,
     "ggufDirs": [
       "F:/llmtrainingpipeline",
       "G:/New folder",

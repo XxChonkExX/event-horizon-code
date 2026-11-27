@@ -271,10 +271,21 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   // Durable session instructions replay in the system prompt and are
   // re-injected after any compaction - they never fall out of context.
   const instr = listInstructions(p.sessionId);
-  const instructionBlock = instr.length
-    ? "\n\nSession instructions (durable - remembered via the remember tool, they persist across compaction):\n" +
-      instr.map((i) => `- [${i.key}] ${i.text}`).join("\n")
-    : "";
+  let instructionBlock = "";
+  if (instr.length) {
+    // The block rebuilds into every system prompt (also after compaction): it
+    // is capped with a stated truncation, so one large instruction cannot
+    // overflow every later call.
+    const lines: string[] = [];
+    let budget = 8000;
+    for (const i of instr) {
+      const line = `- [${i.key}] ${i.text}`;
+      if (line.length > budget) { lines.push("(older session instructions truncated - the block is capped at 8000 characters)"); break; }
+      lines.push(line);
+      budget -= line.length + 1;
+    }
+    instructionBlock = "\n\nSession instructions (durable - remembered via the remember tool, they persist across compaction):\n" + lines.join("\n");
+  }
   const memoryBlock = readWorkspaceMemory(p.workdir);
   // Agent persona: "coder" borrows DeepSeek-coder discipline (read-first,
   // minimal diff, verify); anything else uses the standard agent prompt.
@@ -486,13 +497,31 @@ let totalToolCalls = 0;
           if (res.image) {
             // Vision handoff: tool-result images are not portable across both
             // model lanes, so the pixels ride as a labelled user turn. A screen
-            // capture is the user's whole display: it leaves this machine only
-            // on a local lane, or with the operator's explicit consent.
-            if (laneIsRemote() && p.allowRemoteImages !== true) {
-              audit({ tool: `agent.${tc.name}`, note: "image withheld: remote lane without consent" });
-              convo.push({ role: "user", content: "(a screenshot was captured but is NOT attached: this turn runs on a remote provider and a screen capture leaves this machine only with the operator's explicit consent. Say what you needed from it and ask the user.)" });
-            } else {
+            // capture is the user's whole display: on a REMOTE lane it leaves
+            // this machine only with an explicit yes - the same approval card
+            // as any other ask (operator decision 2026-11-26).
+            let sendImage = !laneIsRemote() || p.allowRemoteImages === true;
+            let why = "";
+            if (!sendImage && p.approvals === "interactive") {
+              let host = "";
+              try { host = new URL(readSecret(byokProvider ?? "")?.baseUrl ?? "").host; } catch { /* sealed or unreadable here: the card stays generic */ }
+              const kb = Math.round((res.image.length * 3) / 4 / 1024);
+              tr("awaiting_approval", "the screen capture awaits the operator");
+              const d = await requestApproval({
+                sessionId: p.sessionId, runId: run.id, worktree: p.workdir, tool: tc.name, args: { image: true },
+                summary: { kind: "camera", title: `Send the screen capture to ${host || "the configured remote endpoint"}?`, detail: `A screenshot of the entire display (~${kb} KB PNG) would be attached to this turn and sent to ${host || "the remote endpoint"}. It leaves this computer. Local lanes never ask.` },
+              }, { isCancelled: () => Boolean(p.isCancelled?.()) || isAgentPaused() });
+              tr("running", d.approved ? "capture approved" : d.reason);
+              ev(d.approved ? "approval.granted" : "approval.denied", `screen capture: ${d.reason}`);
+              sendImage = d.approved;
+              why = d.reason;
+            }
+            if (sendImage) {
+              audit({ tool: `agent.${tc.name}`, note: laneIsRemote() ? "image sent on a remote lane with consent" : "image attached (local lane)" });
               convo.push({ role: "user", content: "(image attached from the tool result above - analyze it for the task)", images: [res.image] });
+            } else {
+              audit({ tool: `agent.${tc.name}`, note: "image withheld: remote lane without consent" });
+              convo.push({ role: "user", content: `(a screenshot was captured but is NOT attached${why ? ` (${why})` : ""}: this turn runs on a remote provider, and a screen capture leaves this machine only with the operator's explicit consent. Say what you needed from it and ask the user.)` });
             }
           }
         }

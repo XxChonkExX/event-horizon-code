@@ -52,9 +52,9 @@ Measured on the reference machine (Logitech HD Pro Webcam C920 plus a VR headset
 
 - With a dead OS default the first start is long (measured 20.7 s: default, then the same dead sensor under its own name, then the webcam). It is not silent - the window says which camera it is trying and the button is a **Cancel** that closes anything the old attempt delivers late - and the working camera is remembered, so every later start is instant.
 - The user's Look through the **Ollama lane** ran live: camera frame -> `gemma4:e4b` -> description in 15.8 s (model load included), all local.
-- The agent's look, checked in the real app without a vision model: the window reports in as live only while the camera is on, a frame nobody asked for is dropped (`409`), and with no model the tool says so without touching the camera. **The live agent path - agent asks, frame requested, model answers - has not run yet**: it needs a vision model in the engine or Ollama, and is the user's first run to make.
+- The live agent path **has run** (operator, 2026-11-26): the agent asked, the user approved the `camera_look` card, the frame was requested from the open window and the answer came back in the chat - all with a model on this machine. Earlier checks in the real app without a vision model still hold: the window reports in as live only while the camera is on, a frame nobody asked for is dropped (`409`), and with no model the tool says so without touching the camera.
 
-Not yet: watches, agent looks through BYOK Vision (would need a consent held by the server rather than the window - deliberately not built), a generated or inference-driven virtual agent for the Presence tab, and a live check of the engine's vision lane.
+Not yet: watches, agent looks through BYOK Vision (would need a consent held by the server rather than the window - deliberately not built), and a generated or inference-driven virtual agent for the Presence tab.
 
 Design notes still valid for later phases: keep vision answers short (generation is over 85 % of a vision model's latency); measure time from "look" to answer before promising anything.
 
@@ -137,10 +137,11 @@ Consequences for the design: the camera is a tool the agent asks to use, answers
 1. **Camera first**, with a Logitech HD Pro Webcam C920 (shipped - S3a above).
 2. **Presence starts simple** (a 2D image or animated image), but must stay open to a fully virtual video/voice agent the user supplies later - generated (for example through ComfyUI) or driven by EHC's own inference.
 3. **BYOK Vision must be loud.** Anything that steps into a privacy lane is authorised by the user and announced. This is the harness's focus: security and deterministic agent controls.
+4. **Vision on this machine:** the bundled engine's multimodal lane is the default for looks (frames stay local) and BYOK stays opt-in only; the live agent path (`camera_look` approved by the user, answer in the chat) has run.
+5. **Plumbing before hardware:** the sensor bus, watches, and the `ehc_bridge` skeleton - with a simulated `LaserScan` publisher so the Radar panel is testable with zero hardware - come before any lidar/SDR decision.
 
 **Still open:**
-4. Which hardware is next - a lidar or an SDR decides whether S3c or S3d comes before the other.
-5. Vision on this machine: confirm the bundled engine's multimodal lane is the default (frames stay local) and BYOK stays opt-in only.
+6. Which hardware is next - a lidar or an SDR decides whether S3c or S3d comes before the other (deferred by decision 5 until the plumbing exists).
 
 ## Sources
 

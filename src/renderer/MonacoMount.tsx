@@ -12,7 +12,7 @@ import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
 import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import { apiFetch, runtimeInfo, eventStreamTicket } from "./api";
+import { apiFetch, runtimeInfo, eventStreamTicket, readExternalFile, writeExternalFile } from "./api";
 
 (self as unknown as { MonacoEnvironment: { getWorker: (workerId: string, label: string) => Worker } }).MonacoEnvironment = {
   getWorker(_workerId: string, label: string) {
@@ -57,6 +57,7 @@ export default function MonacoMount(props: { file: string; worktree?: string }) 
   let currentModel: monaco.editor.ITextModel | null = null;
   let version = 0;
   let openedFile = "";
+  let openedContent: string | null = null; // what the disk held at load time (staleness check for Save)
   let changeTimer: ReturnType<typeof setTimeout> | null = null;
   let diagSource: EventSource | null = null;
 
@@ -135,42 +136,80 @@ export default function MonacoMount(props: { file: string; worktree?: string }) 
     try { await apiFetch("/api/lsp/close", { method: "POST", body: JSON.stringify({ worktree: worktree(), path: rel }) }); } catch { /* ignore */ }
   }
 
+  // An absolute path is a LOCAL SIDE FILE opened from outside the session
+  // worktree ("Open With", a drop, a double-click): read and written by MAIN
+  // with credential refusals - the agent's tool jail stays workspace-scoped,
+  // and the language server (worktree-relative) does not attach to these.
+  const isExternal = (file: string): boolean => /^[A-Za-z]:[\\/]/.test(file) || file.startsWith("/");
+
   async function loadFile(file: string) {
     if (!editor) return;
     try {
-      const res = await apiFetch("/api/tools/call", {
-        method: "POST",
-        body: JSON.stringify({ tool: "read", args: { path: file }, worktree: worktree() }),
-      });
-      const data = (await res.json()) as { ok: boolean; out?: string; error?: string };
-      const text = data.ok ? (data.out ?? "") : `// ${data.error ?? "read failed"}`;
+      let text: string;
+      let readError = "";
+      if (isExternal(file)) {
+        const r = await readExternalFile(file);
+        if (!r.ok) { text = `// ${r.error ?? "read failed"}`; readError = r.error ?? "read failed"; }
+        else text = r.content ?? "";
+      } else {
+        const res = await apiFetch("/api/tools/call", {
+          method: "POST",
+          body: JSON.stringify({ tool: "read", args: { path: file }, worktree: worktree() }),
+        });
+        const data = (await res.json()) as { ok: boolean; out?: string; error?: string };
+        text = data.ok ? (data.out ?? "") : `// ${data.error ?? "read failed"}`;
+        readError = data.ok ? "" : (data.error ?? "read failed");
+      }
       if (openedFile && openedFile !== file) void lspClose(openedFile);
       currentModel?.dispose();
-      currentModel = monaco.editor.createModel(text, langFor(file), monaco.Uri.file(file));
+      // A failed read stays READ-ONLY: the old buffer was editable, so a Save
+      // would have overwritten the real file with the error comment.
+      currentModel = monaco.editor.createModel(text, readError ? "plaintext" : langFor(file), monaco.Uri.file(file));
       editor.setModel(currentModel);
+      // readOnly is an EDITOR option (models have none): a failed read renders
+      // as read-only text so Save cannot overwrite the real file with the
+      // error comment.
+      editor.updateOptions({ readOnly: readError !== "" });
+      if (readError && ref) ref.dataset.status = `read failed: ${readError} (editor is read-only)`;
       monaco.editor.setModelMarkers(currentModel, "lsp", []);
       openedFile = file;
+      openedContent = readError ? null : text;
       version = 1;
-      void lspOpen(file, text);
+      if (!readError && !isExternal(file)) void lspOpen(file, text);
     } catch {
       currentModel?.dispose();
       currentModel = monaco.editor.createModel(`// server unreachable for ${file}`, "plaintext");
       editor.setModel(currentModel);
+      editor.updateOptions({ readOnly: true });
     }
   }
 
   async function saveFile() {
     if (!editor || !currentModel) return;
+    if (editor.getOption(monaco.editor.EditorOption.readOnly)) { if (ref) ref.dataset.status = "read-only (the last read failed) - nothing saved"; return; }
     const text = editor.getValue();
-    const res = await apiFetch("/api/tools/call", {
-      method: "POST",
-      body: JSON.stringify({ tool: "edit", args: { path: props.file, newText: text, approved: true }, worktree: worktree() }),
-    });
-    const data = (await res.json()) as { ok: boolean; out?: string; error?: string };
+    let data: { ok: boolean; out?: string; error?: string };
+    if (isExternal(props.file)) {
+      // E7-style staleness check: re-read and refuse when the disk changed
+      // under us, so Save cannot clobber an edit made elsewhere.
+      const disk = await readExternalFile(props.file);
+      if (disk.ok && disk.content !== undefined && disk.content !== openedContent) {
+        if (ref) ref.dataset.status = "save refused: the file changed on disk since it was loaded - reload the tab";
+        return;
+      }
+      data = await writeExternalFile(props.file, text);
+    } else {
+      const res = await apiFetch("/api/tools/call", {
+        method: "POST",
+        body: JSON.stringify({ tool: "edit", args: { path: props.file, newText: text, approved: true }, worktree: worktree() }),
+      });
+      data = (await res.json()) as { ok: boolean; out?: string; error?: string };
+    }
     // Operator pressed Save = approval. Result shows in status line.
     if (ref) ref.dataset.status = data.ok ? `saved: ${data.out ?? ""}` : `save failed: ${data.error ?? ""}`;
     // The server now holds the saved content - re-sync the language server.
-    void lspChange();
+    if (data.ok && !isExternal(props.file)) void lspChange();
+    if (data.ok) openedContent = text;
   }
 
   onMount(() => {
