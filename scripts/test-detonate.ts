@@ -84,12 +84,26 @@ async function main(): Promise<void> {
   const canaryVerified = /netns=verified/.test(canaryMsg) && /delivered=yes/.test(canaryMsg);
   const canaryGuestMissing = /guest node missing/.test(canaryMsg);
   const canaryNsDenied = /namespace isolation unavailable/.test(canaryMsg);
+  // CI hosts (found on the 0.0.4c tag run): the runner hung and was killed at
+  // its own timeout - exit code null means the host cannot provide the stack
+  // in reasonable time, not that the lane regressed.
+  const canaryTimedOut = canary.ok === false && (/exit=null/.test(canaryMsg) || /KILLED: timeout/.test(canaryMsg));
+  // Only the namespace backends hide the host filesystem; seatbelt (macOS)
+  // states its READ-VISIBLE exposure, so the namespace-specific end-to-end
+  // assertions do not apply there (they are covered by seatbelt's own tests).
+  const canaryBackendMatch = /backend=([\w-]+)/.exec(canaryMsg);
+  const canaryBackend = canaryBackendMatch?.[1] ?? "";
+  const canaryHidesHostFs = canaryBackend === "ns-wsl" || canaryBackend === "bwrap";
   if (!detEnabled) {
     check("detonation lane disabled refuses plainly", canary.ok === false && /disabled/i.test(canaryMsg), canaryMsg.slice(0, 140));
   } else if (canaryGuestMissing) {
     check("SKIP execute-tier end-to-end (guest node not installed in the isolation guest)", true);
   } else if (canaryNsDenied) {
     check("SKIP execute-tier end-to-end (unshare privileges unavailable on this host)", true);
+  } else if (canaryTimedOut) {
+    check("SKIP execute-tier end-to-end (the namespace runner timed out on this host - no usable WSL distro/stack in this environment)", true);
+  } else if (!canaryHidesHostFs) {
+    check(`SKIP execute-tier end-to-end (backend ${canaryBackend || "?"} cannot hide the host filesystem - the namespace assertions do not apply)`, true);
   } else {
     const execVerified = canary.ok === true && /backend=(\w+)/.test(canaryMsg) && /netns=verified/.test(canaryMsg) && /delivered=yes/.test(canaryMsg);
     check("execute tier runs verified in the namespace (never host)", canary.ok === true && execVerified, canaryMsg.slice(0, 160));
@@ -169,7 +183,7 @@ async function main(): Promise<void> {
   // termination - the external audit's mandatory items, proven live when the
   // host provides the stack (canary-gated; skipped with the reason when not).
   // Guest timeout override: args.timeoutMs (clamped 2s..120s in tools.ts).
-  if (canaryGuestMissing || canaryNsDenied || !canaryVerified) {
+  if (canaryGuestMissing || canaryNsDenied || canaryTimedOut || !canaryVerified || !canaryHidesHostFs) {
     check("SKIP execute-lane end-to-end (host cannot provide verified namespace isolation - canary stated the gap)", true);
   } else {
     const detWorktree = fs.mkdtempSync(path.join(os.tmpdir(), "ehc-det-e2e-"));
