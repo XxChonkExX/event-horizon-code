@@ -28,7 +28,7 @@ Until one of those clicks or approvals happens, the app makes **no connection to
 
 ## Optional downloads, precisely
 
-- The only things the app can download are the rows of a fixed catalog (`src/server/sensory-catalog.ts`, generated from the sources' own published metadata): the whisper.cpp engine for Windows and eight speech models. There is no way to make it download anything else - the address is checked against an allowlist before the request and on every redirect.
+- The only things the app can download are the rows of a fixed catalog (`src/server/sensory-catalog.ts`, generated from the sources' own published metadata): the whisper.cpp engine for Windows (x64, ARM64) and Linux x64, plus eight speech models. There is no way to make it download anything else - the address is checked against an allowlist before the request and on every redirect.
 - Every file is checked against the SHA-256 its source publishes. A mismatch deletes the file and installs nothing.
 - One at a time, with progress, cancellable, and a stall timeout.
 - Each install is recorded in the local audit log (`sensory.fetch`). That log never leaves the machine.
