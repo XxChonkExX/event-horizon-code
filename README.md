@@ -83,7 +83,7 @@ EH_PASS=dev123 npm run serve    # http://127.0.0.1:4126, Basic auth eventhorizon
 curl -u eventhorizon:dev123 http://127.0.0.1:4126/global/health
 ```
 
-**Tests:** `npm test` - 20 stages, all offline: typecheck, containment, secrets, DNS pin, LSP, detonation gate, tool-search, SOPs, sessions, runs, memory, sensory, optional downloads, TTS, engram, then an end-to-end smoke.
+**Tests:** `npm test` - 23 stages, all offline: typecheck, containment, secrets, DNS pin, LSP, detonation gate, tool-search, SOPs, sessions, runs, approvals, guards, memory, sensory, optional downloads, camera sensors, TTS, engram, then an end-to-end smoke.
 
 ## Engine setup
 
@@ -124,7 +124,7 @@ It needs two pieces, and **neither is bundled**: the `whisper-cli` engine and a 
 - **No telemetry, no analytics, no cloud proxy, no update check.** Traffic leaves this machine only for endpoints you configure (Ollama on localhost, BYOK, or none), for an optional download you click (github.com / huggingface.co, checksum-verified), for an install link you click (opened in your own browser), or for the `websearch` tool you approve.
 - **Microphone only while you record, camera never.** Audio is transcribed on this machine by whisper.cpp and is never stored or uploaded. The app's own windows keep Electron's default permissions (so clipboard copy and terminal paste work); the camera is refused to every page.
 - Local server binds `127.0.0.1` with Basic auth; the Electron shell attaches to an existing runtime (or spawns exactly one) and logs the port. The **renderer never receives the API password** — JSON calls go through a main-process proxy, streams use single-use tickets. User keys live in `.harness/secrets.json` (gitignored), sealed with the OS keychain when saved from the app.
-- **Permission gate** on every tool: `allow` / `ask` / `deny` in `.harness/config.json` (`permissions`). `edit` / `write` / `bash` default to `ask`; the composer's **auto-approve tools** toggle flips them.
+- **Permission gate** on every tool: `allow` / `ask` / `deny` in `.harness/config.json` (`permissions`). `edit` / `write` / `bash` default to `ask` - and `ask` reaches you: an approval card shows exactly what will run (the diff for an edit, the command for a shell call), you approve once or for the session (a revocable, in-memory grant), or deny. Tools that sense (`camera_look`) ask on every use by policy - the server refuses to let a grant cover them. The composer's **auto-approve tools** toggle remains the unattended option, shown as a warning flag while on.
 - **Workspace path jail** — tools cannot write outside the workspace; credential files (`.harness/secrets.json`, `.env`) are never agent-readable or agent-writable.
 - **Detonation lane** - untrusted code executes inside per-platform OS-level sandboxes: WSL2 namespaces (Windows), bubblewrap (Linux), Seatbelt (macOS, best-effort). Artifact delivery, host-drive detachment, network isolation, and pgrep-confirmed tree termination are implemented and verified - with per-mechanic verification flags in every result and honest failure when any cannot be verified (`docs/DETONATION.md`).
 - Every tool call, model call, escalation and context recovery is appended to `~/.eventhorizon/audit.jsonl`.

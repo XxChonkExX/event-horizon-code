@@ -47,6 +47,8 @@ import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } fr
 import { APP_VERSION } from "../shared/version";
 import { secretsStatus, writeSecret, deleteSecret, encryptAllSecrets, validProviderId, readSecret, createBackup, listBackups, deleteBackup, usableByokProviders, byokModelId, byokProviderFromModel } from "./secrets";
 import { listSops, getSop, startRun, getRun, listRuns, approveRun, cancelRun } from "./sop";
+import { cancelPending, decideApproval, getApprovalPolicy, listApprovals, listGrants, revokeGrant } from "./approvals";
+import type { GrantSpec } from "./approvals";
 
 
 export type ServerOpts = { port: number; password: string; host?: string; fatalOnPortConflict?: boolean };
@@ -55,11 +57,20 @@ export type ServerOpts = { port: number; password: string; host?: string; fatalO
 //  - sessionWorktrees: the directory a session operates in (for terminal/create
 //    and fs/write_text_file when the client omits cwd).
 //  - sessionModes: "default" (ask on write/bash) or "auto" (unattended runs).
-//  - cancelledSessions: cooperative cancel - the prompt loop checks between
+//  - cancelEpochs: cooperative cancel - the prompt loop checks between
 //    steps; a model call already in flight finishes, then the loop stops.
+//    Each cancel bumps the session's epoch and a turn only observes bumps
+//    that postdate its own start, so a cancelled session is not cancelled
+//    forever (the old flag was never cleared).
 const sessionWorktrees = new Map<string, string>();
 const sessionModes = new Map<string, string>();
-const cancelledSessions = new Set<string>();
+const cancelEpochs = new Map<string, number>();
+const requestCancel = (sessionId: string): void => { cancelEpochs.set(sessionId, (cancelEpochs.get(sessionId) ?? 0) + 1); };
+/** A predicate for ONE turn: true once a cancel arrives that postdates this call. */
+const cancelWatcher = (sessionId: string): (() => boolean) => {
+  const atStart = cancelEpochs.get(sessionId) ?? 0;
+  return () => (cancelEpochs.get(sessionId) ?? 0) !== atStart;
+};
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
@@ -222,7 +233,22 @@ export function startHttpServer(opts: ServerOpts): http.Server {
   const host = opts.host ?? "127.0.0.1";
   const packs = loadLanguagePacks();
 
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer((req, res) => {
+    // One boundary around the whole API. A handler that throws - a malformed
+    // percent-escape in a path, a storage error - answers 500 and is logged;
+    // it never becomes an unhandled rejection, which is fatal to the runtime.
+    void handleApi(req, res).catch((e: unknown) => {
+      const msg = String((e as Error)?.message ?? e).slice(0, 300);
+      const where = reqPath(req);
+      audit({ tool: "http.error", note: `${req.method} ${where} ${msg}` });
+      console.error(`[ehc] request handler error (${req.method} ${where}): ${msg}`);
+      if (!res.headersSent) { try { sendJson(res, 500, { ok: false, error: "internal error" }); } catch { /* socket gone */ } }
+      try { res.destroy(); } catch { /* already gone */ }
+    });
+  });
+  // The path only - never the query, which can carry a ticket.
+  const reqPath = (req: http.IncomingMessage): string => { try { return new URL(req.url ?? "/", "http://x").pathname.slice(0, 120); } catch { return "?"; } };
+  const handleApi = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? "/", "http://x");
     setCors(req, res);
     if (req.method === "OPTIONS") {
@@ -288,8 +314,10 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       return;
     }
 
-    // Approvals queue: what is waiting on a human right now (SOP gates and
-    // script-node pauses). Tool approvals remain the Review pane's domain.
+    // Approvals queue: what is waiting on a human right now - tool calls the
+    // agent wants to make (permission `ask`, not covered by a grant), SOP gates
+    // and script-node pauses. A tool request is bound to its exact arguments
+    // when it is created; a decision carries only the request's id.
     if (req.method === "GET" && url.pathname === "/api/approvals") {
       const approvals = listRuns()
         .filter((r) => r.status === "waiting")
@@ -301,7 +329,27 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           node: r.currentNode,
           command: r.pendingCommand,
         }));
-      return sendJson(res, 200, { approvals });
+      return sendJson(res, 200, { approvals, tools: listApprovals() });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/approvals/") && url.pathname.endsWith("/decide")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/approvals/".length, -"/decide".length));
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        let b: { approved?: unknown; grant?: GrantSpec };
+        try { b = JSON.parse(raw || "{}") as typeof b; } catch { return sendJson(res, 400, { ok: false, error: "bad request" }); }
+        if (typeof b.approved !== "boolean") return sendJson(res, 400, { ok: false, error: "approved (boolean) is required" });
+        const r = decideApproval(id, { approved: b.approved, grant: b.grant });
+        return sendJson(res, r.ok ? 200 : 409, r.ok ? { ok: true, request: r.request } : { ok: false, error: r.error });
+      });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/approvals/grants") {
+      return sendJson(res, 200, { grants: listGrants(), policy: getApprovalPolicy() });
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/approvals/grants/")) {
+      const ok = revokeGrant(decodeURIComponent(url.pathname.slice("/api/approvals/grants/".length)));
+      return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { ok: false, error: "unknown grant" });
     }
 
     // Capability discovery: values derived from REAL health probes, not config
@@ -673,8 +721,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     if (req.method === "POST" && url.pathname.startsWith("/api/runs/") && url.pathname.endsWith("/cancel")) {
       const id = decodeURIComponent(url.pathname.slice("/api/runs/".length, -"/cancel".length));
       const r = cancelAgentRun(id, "operator");
-      // Cooperative cancellation: the prompt loop checks between steps.
-      if (r.ok && r.run) cancelledSessions.add(r.run.sessionId);
+      // Cooperative cancellation: the prompt loop checks between steps. A
+      // turn that is waiting on an approval is released at once as well.
+      if (r.ok && r.run) { requestCancel(r.run.sessionId); cancelPending({ sessionId: r.run.sessionId }); }
       audit({ tool: "agentrun.cancel", note: `${id} ok=${r.ok}${r.error ? ` ${r.error}` : ""}` });
       return sendJson(res, r.ok ? 200 : 400, r);
     }
@@ -684,7 +733,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       req.on("data", (c) => { raw += c; });
       req.on("end", async () => {
         try {
-          const body = JSON.parse(raw || "{}") as { autoApprove?: boolean };
+          const body = JSON.parse(raw || "{}") as { autoApprove?: boolean; approvals?: string };
           const id = decodeURIComponent(url.pathname.slice("/api/runs/".length, -"/resume".length));
           const r = resumeRun(id);
           if (!r.ok || !r.run || !r.resumeText) {
@@ -692,14 +741,18 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             return sendJson(res, 400, { ok: false, error: r.error ?? "cannot resume" });
           }
           audit({ tool: "agentrun.resume", note: `${id} resumed` });
+          if (body.approvals === "interactive") req.setTimeout(getApprovalPolicy().requestTimeoutMs + 300_000);
           // Long-running like session/prompt: the loop re-executes the
-          // objective with the timeline digest as context.
+          // objective with the timeline digest as context. A resumed turn can
+          // be cancelled like any other and can put an `ask` to the user.
           const turn = await runAgentTurn({
             sessionId: r.run.sessionId,
             text: r.resumeText,
             workdir: r.run.workdir,
             runId: r.run.id,
             autoApprove: body.autoApprove === true,
+            isCancelled: cancelWatcher(r.run.sessionId),
+            approvals: body.approvals === "interactive" ? "interactive" : undefined,
           });
           broadcast(r.run.workdir, "session/update", turn);
           return sendJson(res, 200, turn);
@@ -816,7 +869,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.new", note: s.id });
             sendJson(res, 200, { sessionId: s.id });
           } else if (method === "session/prompt") {
-            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string; agent?: string; runId?: string };
+            const params = (body.params ?? {}) as { sessionId?: string; text?: string; think?: string; model?: string; provider?: string; numPredict?: number; timeoutMs?: number; worktree?: string; images?: string[]; autoApprove?: boolean; profileId?: string; agent?: string; runId?: string; approvals?: string };
             audit({ tool: "acp.session.prompt", note: `${params.sessionId ?? ""}:${params.think ?? "default"}:${params.provider ?? "ollama"}:${params.images?.length ?? 0}img${params.autoApprove ? ":auto" : ""}` });
             // Sweep-3 finding 9: autoApprove here is the OPERATOR channel - it
             // originates from the renderer's "auto-approve tools" checkbox and
@@ -843,6 +896,12 @@ export function startHttpServer(opts: ServerOpts): http.Server {
                   return resolveWorktree(persisted || undefined);
                 })();
             sessionWorktrees.set(sessionId, workdir);
+            if (params.approvals === "interactive") {
+              // This request is answered only when the turn is, and a turn may
+              // sit in an approval wait for the policy's whole timeout: the
+              // socket's 310 s idle limit must not cut it off mid-wait.
+              req.setTimeout(getApprovalPolicy().requestTimeoutMs + 300_000);
+            }
             const turn = await runAgentTurn({
               sessionId,
               text: params.text ?? "",
@@ -854,10 +913,17 @@ export function startHttpServer(opts: ServerOpts): http.Server {
               provider: params.provider,
               images: params.images,
               autoApprove: params.autoApprove === true || sessionModes.get(sessionId) === "auto",
+              // The workbench can put an `ask` to the user and wait. Other
+              // callers (ACP clients, scripts) do not send this and keep the
+              // immediate, stated non-execution.
+              approvals: params.approvals === "interactive" ? "interactive" : undefined,
               agent: params.agent,
               runId: params.runId,
               profileId: params.profileId ?? process.env.EH_PROFILE,
-              isCancelled: () => cancelledSessions.has(sessionId),
+              isCancelled: cancelWatcher(sessionId),
+              // Live tool progress for the window: which tool is running, and
+              // whether it is waiting on the user.
+              onStep: (s) => broadcast(workdir, "tool-step", { sessionId, name: s.name, ok: s.ok, needsApproval: s.needsApproval, step: s.step }),
               // Live tokens over SSE: the renderer paints them as they arrive,
               // then replaces the draft with the structured final message.
               onDelta: (delta, kind) => broadcast(workdir, "token", { sessionId, delta, kind: kind ?? "content" }),
@@ -923,9 +989,11 @@ export function startHttpServer(opts: ServerOpts): http.Server {
             audit({ tool: "acp.session.mode", note: `${params.sessionId ?? ""}:${mode}` });
             sendJson(res, 200, { sessionId: params.sessionId ?? "default", mode });
           } else if (method === "session/cancel") {
-            // Cooperative cancellation: the prompt loop checks between steps.
+            // Cooperative cancellation: the prompt loop checks between steps;
+            // a turn waiting on an approval is released at once.
             const params = (body.params ?? {}) as { sessionId?: string };
-            cancelledSessions.add(params.sessionId ?? "default");
+            requestCancel(params.sessionId ?? "default");
+            cancelPending({ sessionId: params.sessionId ?? "default" });
             audit({ tool: "acp.session.cancel", note: params.sessionId ?? "" });
             sendJson(res, 200, { ok: true, note: "cancel requested - applies between agent steps" });
           } else if (method === "fs/write_text_file") {
@@ -1315,9 +1383,9 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       req.on("data", (c) => { raw += c; });
       req.on("end", () => {
         try {
-          const b = JSON.parse(raw || "{}") as { worktree?: string; sessionId?: string; mode?: string; task?: string };
+          const b = JSON.parse(raw || "{}") as { worktree?: string; sessionId?: string; mode?: string; task?: string; approvals?: string };
           const worktree = resolveWorktree(b.worktree);
-          const r = startRun(name, { worktree, sessionId: b.sessionId, mode: b.mode, task: b.task });
+          const r = startRun(name, { worktree, sessionId: b.sessionId, mode: b.mode, task: b.task, approvals: b.approvals === "interactive" ? "interactive" : undefined });
           if (!r.ok) return sendJson(res, 400, r);
           sendJson(res, 200, { runId: r.run!.id, mode: r.run!.mode, status: r.run!.status });
         } catch (e) {
@@ -1642,7 +1710,17 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     }
 
     return sendJson(res, 404, { error: "not found" });
-  });
+  };
+
+  // Backstop for a rejection nobody awaited (a callback that throws after its
+  // request ended): recorded, never fatal to a runtime the user works in.
+  if (process.listenerCount("unhandledRejection") === 0) {
+    process.on("unhandledRejection", (reason) => {
+      const msg = String((reason as Error)?.message ?? reason).slice(0, 300);
+      audit({ tool: "unhandledRejection", note: msg });
+      console.error(`[ehc] unhandled rejection (kept alive): ${msg}`);
+    });
+  }
 
   server.listen(opts.port, host, () => {
     if (process.env.EH_DEBUG === "1") console.log(`[ehc] http listening on http://${host}:${opts.port}`);

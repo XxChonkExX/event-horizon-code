@@ -21,7 +21,8 @@ import type { ToolDef } from "./agentTools";
 import { splitToolset, searchTools } from "./toolSearch";
 import { ensureMcpServers, mcpTools, hasMcpServers } from "./mcp";
 import { runTool } from "./tools";
-import type { ToolName } from "./tools";
+import type { AskHandler, ToolName } from "./tools";
+import { callDigest, isDeniedInRun, requestApproval } from "./approvals";
 import { contained } from "./wsguard";
 import { engineEndpoint } from "./engine";
 import { beginRun, transition, completeRun, failRun, cancelRun, appendRunEvent, getAgentRun } from "./agentrun";
@@ -49,6 +50,15 @@ export type AgentTurnParams = {
   extraSystem?: string;
   // Cooperative cancellation (ACP session/cancel): polled between steps.
   isCancelled?: () => boolean;
+  // Interactive approvals: when "interactive", an `ask` tool call nobody has
+  // approved raises a request the user answers in the window and this turn
+  // waits for it. Callers that cannot ask a human leave it unset and get an
+  // immediate, stated non-execution.
+  approvals?: "interactive";
+  // The operator's explicit consent for tool-result images (a screen capture
+  // is the whole display) to travel to a REMOTE lane. Without it the capture
+  // is described to the model, never sent.
+  allowRemoteImages?: boolean;
   // Progress callback for live UI (SSE already broadcast by the ACP layer).
   onStep?: (step: { name: string; ok: boolean; needsApproval: boolean; step: number }) => void;
   // Token stream: called with each delta as the model generates (both lanes).
@@ -209,6 +219,26 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
     tr("running", "agent turn started");
   }
 
+  // The operator's answer to an `ask`. Supplied only when the caller can put
+  // the question to a human (the workbench). The run truly waits: its state is
+  // `awaiting_approval` until the decision, the timeout or a cancellation.
+  const ask: AskHandler | undefined = p.approvals === "interactive"
+    ? async ({ tool, args, summary }) => {
+        if (p.isCancelled?.() || isAgentPaused()) return "cancelled"; // nothing waits while the operator has stopped the agents
+        const digest = callDigest(tool, args);
+        if (isDeniedInRun(run.id, tool, digest)) return "denied"; // declined a moment ago: no second prompt
+        ev("approval.requested", `${tool}: ${summary.title.slice(0, 200)}`);
+        tr("awaiting_approval", `${tool} waits for the operator`);
+        // A pause or a cancel ends the wait; an approval given before either
+        // is not a licence to run afterwards.
+        const d = await requestApproval({ sessionId: p.sessionId, runId: run.id, worktree: p.workdir, tool, args, summary }, { isCancelled: () => Boolean(p.isCancelled?.()) || isAgentPaused() });
+        const refused = d.reason !== "approved" || p.isCancelled?.() || isAgentPaused();
+        tr("running", refused ? (d.approved ? "cancelled" : d.reason) : "approved");
+        ev(d.approved && !refused ? "approval.granted" : "approval.denied", `${tool}: ${refused ? (d.approved ? "cancelled after approval" : d.reason) : "approved"}`);
+        return refused ? (d.approved ? "cancelled" : d.reason) : "approved";
+      }
+    : undefined;
+
   // Conversation accumulates across agent steps AND across turns:
   // history from previous prompts in this session is seeded first, so
   // follow-ups ("sure", "make it blue") have context. Compaction keeps
@@ -267,6 +297,14 @@ async function runAgentTurnUnlocked(p: AgentTurnParams): Promise<AgentTurnResult
   const byokFromPicker = byokProviderFromModel(usedModel);
   const byokProvider: string | null = byokFromPicker ?? (validProviderId(p.provider) ? p.provider : null);
   let lane: "engine" | "openai" | "router" | "none" = "none";
+  // A lane is "remote" when bytes leave this machine: a BYOK provider, or an
+  // Ollama endpoint that is not on loopback (EH_OLLAMA_URL can point elsewhere).
+  let ollamaRemote = true;
+  try {
+    const h = new URL(process.env.EH_OLLAMA_URL ?? "http://127.0.0.1:11434").hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    ollamaRemote = !["localhost", "127.0.0.1", "::1", "0.0.0.0", "::"].includes(h);
+  } catch { /* unparsable: treat as remote */ }
+  const laneIsRemote = (): boolean => byokProvider !== null || (lane === "router" && ollamaRemote);
   const callModel = async (budget: number, nudge: boolean): Promise<ChatResult> => {
     const msgs = nudge
       ? [...convo, { role: "system" as const, content: "Stop deliberating. Use your final answer or a tool call now." }]
@@ -390,6 +428,10 @@ let totalToolCalls = 0;
           if (totalToolCalls >= MAX_TOOL_CALLS_PER_TURN) {
             steps.push("X tool-call budget exhausted (24 tool calls in one turn)");
             ev("budget.tool", "tool-call budget exhausted");
+            // The calls not reached still get a tool result: a provider that
+            // validates the protocol rejects a conversation whose assistant
+            // tool_calls are left unanswered.
+            for (const rest of r.toolCalls.slice(r.toolCalls.indexOf(tc))) convo.push({ role: "tool", content: "(not executed: the turn's tool-call budget was exhausted)", name: rest.name, tool_call_id: rest.id });
             result = { ok: false, content: "", model: r.model, error: "tool-call budget exhausted (24 tool calls in one turn) - narrow the task or continue in a new turn" };
             break;
           }
@@ -420,30 +462,38 @@ let totalToolCalls = 0;
           // the run stops (no silent loss of a completed mutation).
           if (p.isCancelled?.() || isAgentPaused()) {
             cancelled = true;
-            convo.push({ role: "tool", content: "(run cancelled by request before this tool executed)", name: tc.name, tool_call_id: tc.id });
+            // Every remaining call in this response gets a tool result too,
+            // so the persisted conversation stays a valid exchange.
+            for (const rest of r.toolCalls.slice(r.toolCalls.indexOf(tc))) convo.push({ role: "tool", content: "(run cancelled by request before this tool executed)", name: rest.name, tool_call_id: rest.id });
             steps.push("X  cancelled between tool calls");
             break;
           }
-          const res = await runTool(tc.name as ToolName, tc.args ?? {}, p.workdir, { userApproved: autoApprove, sessionId: p.sessionId });
-          const out = (res.ok ? res.out : (res.error ?? "failed")).slice(0, 1500);
+          const res = await runTool(tc.name as ToolName, tc.args ?? {}, p.workdir, { userApproved: autoApprove, sessionId: p.sessionId, onAsk: autoApprove ? undefined : ask, origin: "agent" });
+          // The model gets the tool's own explanation when it has one ("edit was
+          // not executed: the user declined this action ..."), else the error.
+          const out = (res.ok ? res.out : (res.out || res.error || "failed")).slice(0, 1500);
           const shortArgs = JSON.stringify(tc.args).slice(0, 100);
           steps.push(`${res.ok ? "OK" : "X "} ${tc.name}(${shortArgs})${res.needsApproval ? " - needs approval" : ""}\n${out.slice(0, 400)}`);
           audit({ tool: `agent.${tc.name}`, note: `ok=${res.ok}${res.needsApproval ? " needsApproval" : ""}` });
           p.onStep?.({ name: tc.name, ok: res.ok, needsApproval: Boolean(res.needsApproval), step });
           ev("tool.call", `${tc.name} ${shortArgs}`);
-          if (res.needsApproval && !autoApprove) {
-            tr("awaiting_approval", `${tc.name} needs approval`);
-          }
+          // (A call that needed approval has already been through the `ask`
+          // handler above, which owns the awaiting_approval <-> running
+          // transitions. Nothing to flip here.)
           if (res.ok) ev("tool.ok", `${tc.name}: ${out.slice(0, 200)}`);
           else ev("tool.fail", `${tc.name}: ${(res.error ?? "failed").slice(0, 200)}`);
-          if (res.needsApproval && !autoApprove) {
-            tr("running", "approval resolved");
-          }
           convo.push({ role: "tool", content: out, name: tc.name, tool_call_id: tc.id });
           if (res.image) {
             // Vision handoff: tool-result images are not portable across both
-            // model lanes, so the pixels ride as a labelled user turn.
-            convo.push({ role: "user", content: "(image attached from the tool result above - analyze it for the task)", images: [res.image] });
+            // model lanes, so the pixels ride as a labelled user turn. A screen
+            // capture is the user's whole display: it leaves this machine only
+            // on a local lane, or with the operator's explicit consent.
+            if (laneIsRemote() && p.allowRemoteImages !== true) {
+              audit({ tool: `agent.${tc.name}`, note: "image withheld: remote lane without consent" });
+              convo.push({ role: "user", content: "(a screenshot was captured but is NOT attached: this turn runs on a remote provider and a screen capture leaves this machine only with the operator's explicit consent. Say what you needed from it and ask the user.)" });
+            } else {
+              convo.push({ role: "user", content: "(image attached from the tool result above - analyze it for the task)", images: [res.image] });
+            }
           }
         }
         // Budget exhaustion must exit the WHOLE turn, not just this response's
@@ -503,7 +553,7 @@ let totalToolCalls = 0;
     replyText = `- tool steps (${steps.length}) -\n${steps.join("\n\n")}\n\n- answer -\n${replyText}`;
   }
   if (!autoApprove && steps.some((s) => s.includes("needs approval"))) {
-    replyText += `\n\n(tool calls needing approval were not executed - enable auto-approve in the composer, or approve via the paletted permission flow.)`;
+    replyText += `\n\n(Some tool calls were not executed: they needed the user's approval.)`;
   }
   audit({ tool: "model.chat", note: `${res.model} lane=${lane} tokens=${res.tokens ?? "?"} ok=${res.ok} attempts=${attempts} budget=${budget} tools=${steps.length}` });
   try { updateAgentRun(run.id, { lane, model: res.model }); } catch { /* best-effort */ }

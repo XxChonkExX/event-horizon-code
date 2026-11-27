@@ -357,11 +357,17 @@ app.whenReady().then(async () => {
   // the renderer sends (method, path, body) and receives {status, body}.
   // EventSource cannot go through here (it needs a URL), so streams use
   // single-use tickets (events:ticket) - the password never leaves main.
-  ipcMain.handle("api:proxy", async (e, req: { method?: string; path?: string; body?: unknown }) => {
+  ipcMain.handle("api:proxy", async (e, req: { method?: string; path?: string; body?: unknown; timeoutMs?: number }) => {
     if (!isTrustedRenderer(e)) throw new Error("Untrusted IPC sender");
     if (typeof req?.path !== "string" || !req.path.startsWith("/")) throw new Error("bad path");
     const method = (req.method ?? "GET").toUpperCase();
     if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) throw new Error("bad method");
+    // The server lets a request run for 310 s before it answers 408 itself; the
+    // proxy must not give up first (it used to abort at 90 s, so every slow
+    // local turn came back as a 502). A turn that may wait on the operator's
+    // approval asks for longer; the cap is sixteen minutes.
+    const asked = Number(req.timeoutMs);
+    const timeoutMs = Number.isFinite(asked) && asked > 0 ? Math.min(Math.floor(asked), 16 * 60_000) : 330_000;
     const rt = runtime;
     if (!rt) return { status: 503, body: { error: "runtime unavailable" } };
     try {
@@ -372,7 +378,7 @@ app.whenReady().then(async () => {
           ...(req.body !== undefined ? { "content-type": "application/json" } : {}),
         },
         body: req.body !== undefined ? JSON.stringify(req.body) : undefined,
-        signal: AbortSignal.timeout(90_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const text = await res.text();
       let body: unknown = text;

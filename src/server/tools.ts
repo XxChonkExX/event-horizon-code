@@ -124,23 +124,56 @@ export async function resolveValidatedUrl(raw: string): Promise<{ url: URL; ips:
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "camera_look" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
 import { lookFromCamera } from "./sensors";
+import { callDigest, consumeGrant, summarizeCall } from "./approvals";
+import type { ApprovalSummary, AskOutcome } from "./approvals";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean; image?: string };
 
-function readConfig(): { permissions?: Record<string, string> } {
+// Permissions come from <cwd>/.harness/config.json. The file is parsed only
+// when it changes (it used to be re-read on every tool call).
+const DEFAULT_PERMISSIONS: Record<string, string> = { read: "allow", ls: "allow", grep: "allow", glob: "allow" };
+const READ_ONLY_TOOLS = new Set(["read", "ls", "grep", "glob"]);
+let permCache: { mtimeMs: number; size: number; perms: Record<string, unknown> | null } | null = null;
+
+/** `perms` is the file's permission table; `broken` is true when the file exists but is not readable JSON. */
+function readPermissions(): { perms: Record<string, unknown>; broken: boolean } {
+  const file = path.join(process.cwd(), ".harness", "config.json");
+  let st: fs.Stats;
+  try { st = fs.statSync(file); } catch { permCache = null; return { perms: {}, broken: false }; } // absent: the defaults below
+  if (permCache && permCache.mtimeMs === st.mtimeMs && permCache.size === st.size) return { perms: permCache.perms ?? {}, broken: permCache.perms === null };
   try {
-    return JSON.parse(fs.readFileSync(path.join(process.cwd(), ".harness", "config.json"), "utf8")) as { permissions?: Record<string, string> };
-  } catch { return { permissions: { read: "allow", edit: "ask", write: "ask", bash: "ask", grep: "allow", glob: "allow" } }; }
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { permissions?: unknown } | null;
+    const perms = parsed && typeof parsed.permissions === "object" && parsed.permissions !== null ? (parsed.permissions as Record<string, unknown>) : {};
+    permCache = { mtimeMs: st.mtimeMs, size: st.size, perms };
+    return { perms, broken: false };
+  } catch {
+    if (permCache?.perms !== null) audit({ tool: "permissions", note: ".harness/config.json is not readable JSON - write and exec tools fail closed (ask)" });
+    permCache = { mtimeMs: st.mtimeMs, size: st.size, perms: null };
+    return { perms: {}, broken: true };
+  }
 }
 
 function permissionFor(tool: ToolName): string {
-  const perms = readConfig().permissions ?? {};
-  if (perms[tool]) return perms[tool];
+  const { perms, broken } = readPermissions();
+  // A config that exists but cannot be parsed must not hand out the permissive
+  // defaults: reading stays available; everything that changes or runs waits.
+  if (broken) return READ_ONLY_TOOLS.has(tool) ? "allow" : "ask";
+  const word = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const t = v.trim().toLowerCase();
+    return t === "allow" || t === "ask" || t === "deny" ? t : null;
+  };
+  const own = perms[tool] ?? DEFAULT_PERMISSIONS[tool];
+  if (own !== undefined) return word(own) ?? "ask"; // an unrecognised word never fails open
   // Sweep-back: prefix patterns let one rule govern a family (e.g.
   // "mcp_github_*" denies every tool of that server without listing each).
-  for (const [pattern, value] of Object.entries(perms)) {
-    if (pattern.endsWith("*") && tool.startsWith(pattern.slice(0, -1))) return value;
+  // The longest matching prefix wins, so one server's rule beats the family's.
+  let best: { len: number; value: string } | null = null;
+  for (const [pattern, raw] of Object.entries(perms)) {
+    if (!pattern.endsWith("*")) continue;
+    const prefix = pattern.slice(0, -1);
+    if (tool.startsWith(prefix) && (!best || prefix.length > best.len)) best = { len: prefix.length, value: word(raw) ?? "ask" };
   }
-  return "ask";
+  return best?.value ?? "ask";
 }
 
 export function readDetonateConfig(): {
@@ -222,8 +255,32 @@ function walkFiles(root: string, maxFiles = 2000): string[] {
 // paths and traversal are refused with a clear error (the model is told the
 // constraint in its tool descriptions and can ask the user to relocate files).
 // Credential files are refused outright: an agent (especially in automated
-// mode) must never read or write BYOK keys or env files.
-const CREDENTIAL_FILES = /(^|[\\/])(\.harness[\\/]secrets\.json|\.env(\..+)?|credentials?\.(json|ya?ml)|id_rsa|id_ed25519|id_ecdsa|\.netrc|\.npmrc|\.aws[\\/]credentials|\.docker[\\/]config\.json|\.ssh[\\/][^\\/]+)|\.(pem|key|p12|pfx)$/i;
+// mode) must never read or write BYOK keys or env files. The runtime
+// descriptor (~/.eventhorizon/runtime.json) is included: it carries the API
+// password, and a shell holding that could call any route - including
+// approving its own tool calls.
+const CREDENTIAL_FILES = /(^|[\\/])(\.harness[\\/]secrets\.json|\.eventhorizon[\\/]runtime\.json(\.[^\\/]+)?|\.env(\..+)?|credentials?\.(json|ya?ml)|id_rsa|id_ed25519|id_ecdsa|\.netrc|\.npmrc|\.aws[\\/]credentials|\.docker[\\/]config\.json|\.ssh[\\/][^\\/]+)|\.(pem|key|p12|pfx)$/i;
+
+// The environment handed to commands the agent runs. EH_PASS is the headless
+// runtime's API password (scripts/serve.ts): a shell that can print it could
+// approve its own tool calls, so it never reaches a child process.
+export function agentEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.EH_PASS;
+  return env;
+}
+
+// Write-then-rename: a crash or a concurrent reader never sees half a file.
+function writeFileAtomic(file: string, text: string): void {
+  const tmp = `${file}.ehc-tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, text);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing to clean */ }
+    throw e;
+  }
+}
 
 function isCredentialPath(rel: string): boolean {
   const norm = rel.replace(/\\/g, "/").toLowerCase();
@@ -250,26 +307,39 @@ function isCredentialPath(rel: string): boolean {
 function samePath(a: string, b: string): boolean {
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
+
+// Windows short (8.3) names are aliases, not different files. The JS realpath
+// leaves `HARNES~1/SECRET~1.JSO` exactly as asked (measured, Node 26), so a
+// name check built on it misses the alias and `read` would return the keys.
+// The native realpath answers with the long name; for a target that does not
+// exist yet (a write), the deepest existing ancestor is canonicalised.
+function longPath(p: string): string {
+  try { return fs.realpathSync.native(p); } catch { /* not created yet */ }
+  const parent = path.dirname(p);
+  if (parent === p) return p;
+  return path.join(longPath(parent), path.basename(p));
+}
+
 function secretsFileTargets(): string[] {
   const configured = path.resolve(secretsPath());
-  const out: string[] = [];
-  try { out.push(fs.realpathSync(configured)); } catch {
-    // Not created yet (a write target): canonicalise its directory so the
-    // comparison still holds against a canonical candidate.
-    try { out.push(path.join(fs.realpathSync(path.dirname(configured)), path.basename(configured))); } catch { /* directory missing too */ }
-  }
-  out.push(configured);
+  const out: string[] = [configured, longPath(configured)];
+  try { out.push(fs.realpathSync(configured)); } catch { /* not created yet */ }
   return out;
 }
 function isConfiguredSecretsFile(abs: string): boolean {
-  let real = abs;
-  try { real = fs.realpathSync(abs); } catch { /* a write target may not exist yet */ }
-  return secretsFileTargets().some((t) => [abs, real].some((c) => samePath(t, c) || samePath(t, c.slice(0, t.length)) && c.slice(t.length).startsWith(".tmp-")));
+  const candidates = [abs, longPath(abs)];
+  try { candidates.push(fs.realpathSync(abs)); } catch { /* a write target may not exist yet */ }
+  return secretsFileTargets().some((t) => candidates.some((c) => samePath(t, c) || samePath(t, c.slice(0, t.length)) && c.slice(t.length).startsWith(".tmp-")));
 }
+
+// Files that define the agent's own authority or what replays into every
+// prompt. Reading them is fine; the agent never writes them - one approved
+// (or auto-approved) write could turn every `deny` into `allow`.
+const AGENT_WRITE_REFUSED = /(^|\/)\.harness\/(config\.json|memory\.md)$/i;
 
 // Exported for sweep-3 remediation: the ACP HTTP layer must enforce the SAME
 // credential policy as the agent tools (one security rule, one implementation).
-export function safePath(worktree: string, p: string): { ok: boolean; abs?: string; error?: string } {
+export function safePath(worktree: string, p: string, opts?: { agentWrite?: boolean }): { ok: boolean; abs?: string; error?: string } {
   if (isCredentialPath(p)) {
     return { ok: false, error: "refused: credential files (.harness/secrets.json, .env) are never agent-readable or agent-writable. Ask the user to edit them by hand." };
   }
@@ -281,15 +351,33 @@ export function safePath(worktree: string, p: string): { ok: boolean; abs?: stri
   }
   // Sweep-3 #23: the canonical path can resolve INTO a credential file through
   // a symlink alias ("harmless-config.json" -> ".env") - re-check the resolved
-  // path against the same policy.
+  // path against the same policy. The check runs on LONG names, so an 8.3
+  // alias is seen for the file it is.
   try {
-    const rootReal = fs.realpathSync(path.resolve(worktree));
-    const canonicalRel = path.relative(rootReal, result.abs);
+    const rootLong = longPath(path.resolve(worktree));
+    const absLong = longPath(result.abs);
+    const canonicalRel = path.relative(rootLong, absLong).split(path.sep).join("/");
     if (isCredentialPath(canonicalRel)) {
       return { ok: false, error: "resolved path targets a protected credential file" };
     }
+    if (opts?.agentWrite && AGENT_WRITE_REFUSED.test(canonicalRel)) {
+      return { ok: false, error: "refused: the agent cannot write .harness/config.json or .harness/memory.md - they define its own permissions and what replays into every prompt. Ask the user to change them." };
+    }
+    if (isConfiguredSecretsFile(absLong)) {
+      return { ok: false, error: "refused: the secrets file is never agent-readable or agent-writable. Ask the user to edit it by hand." };
+    }
   } catch { /* fall through to the containment result */ }
   return result;
+}
+
+/**
+ * True for a file the agent may never read - through `read`, or through a
+ * search (`grep` is `allow`). Decided on LONG names, so an 8.3 alias is seen
+ * for the file it is.
+ */
+export function isProtectedFile(worktree: string, file: string): boolean {
+  const rootLong = longPath(path.resolve(worktree));
+  return isCredentialPath(path.relative(rootLong, longPath(file)).split(path.sep).join("/")) || isConfiguredSecretsFile(file);
 }
 
 async function agentWatchGate(tool: ToolName, worktree: string) {
@@ -326,40 +414,73 @@ function detectVerify(worktree: string): { cmd: string; label: string } | null {
 
 function runVerify(cmd: string, worktree: string, timeoutMs = 180_000): Promise<ToolResult> {
   return new Promise((resolve) => {
-    exec(cmd, { cwd: worktree, timeout: timeoutMs, maxBuffer: 800_000, windowsHide: true, env: { ...process.env, CI: "1" } }, (err, stdout, stderr) => {
+    exec(cmd, { cwd: worktree, timeout: timeoutMs, maxBuffer: 800_000, windowsHide: true, env: { ...agentEnv(), CI: "1" } }, (err, stdout, stderr) => {
       const out = (String(stdout ?? "") + String(stderr ?? "")).slice(0, 60_000);
       resolve({ ok: !err, out, error: err ? String(err.message ?? err).slice(0, 200) : undefined });
     });
   });
 }
 
+/** Answers an `ask` on the operator's behalf. Only the application supplies one; the model never sees it. */
+export type AskHandler = (info: { tool: ToolName; args: Record<string, unknown>; summary: ApprovalSummary }) => Promise<AskOutcome>;
+
 export async function runTool(
   tool: ToolName,
   args: Record<string, unknown>,
   worktree = process.cwd(),
-  opts?: { userApproved?: boolean; sessionId?: string }
+  // origin "agent": the call was issued by the model. It never changes what
+  // the model may do - only the operator channels above can - but marks the
+  // writes that would let the agent rewrite its own permissions.
+  opts?: { userApproved?: boolean; sessionId?: string; onAsk?: AskHandler; origin?: "agent" }
 ): Promise<ToolResult> {
   const perm = permissionFor(tool);
   if (perm === "deny") {
     audit({ tool, note: "deny" });
     return { ok: false, error: `permission deny for ${tool}`, out: "" };
   }
-  if (perm === "ask") {
-    // Authorization NEVER comes from tool arguments: the model could emit
-    // approved:true itself. Only the user channel (renderer HTTP call, editor
-    // Save) or the session-level auto-approve opt-in may set it, via opts.
-    const approved = opts?.userApproved === true;
-    if (!approved) {
-      audit({ tool, note: "ask-no-approval" });
-      return { ok: false, needsApproval: true, out: `approval required for ${tool}. Approve from the Review pane and retry.`, error: "needs approval" };
-    }
-  }
-  // The model cannot authorize its own tool calls - strip the flag entirely.
+  // The model cannot authorize its own tool calls - the flag is stripped
+  // BEFORE anything reads the arguments, so it never reaches a digest, a
+  // grant or a summary.
   delete (args as { approved?: boolean }).approved;
   // Sweep-3 #25: session identity is established by the application, not the
   // model - cross-session memory writes would be instruction injection.
   const sessionFor = opts?.sessionId ?? String(args.sessionId ?? "default");
   delete (args as { sessionId?: boolean }).sessionId;
+  if (perm === "ask") {
+    // Authorization NEVER comes from tool arguments: the model could emit
+    // approved:true itself. Three operator-owned sources, in order: an
+    // explicit approval for THIS call (a renderer call, the editor's Save,
+    // the session's auto-approve opt-in); a grant the operator created from
+    // an earlier approval; and, when the caller can ask a human, a live
+    // request that waits for the answer.
+    let approved = opts?.userApproved === true;
+    let outcome: AskOutcome | null = null;
+    if (!approved && opts?.sessionId && consumeGrant(opts.sessionId, tool, callDigest(tool, args))) approved = true;
+    if (!approved && opts?.onAsk) {
+      const summary = summarizeCall(tool, args, (rel) => {
+        // The model chose this path: bounded like `read` (regular files, 2 MB),
+        // never read whole just to build a diff.
+        const sp = safePath(worktree, rel);
+        if (!sp.ok || !sp.abs) return null;
+        try {
+          const st = fs.statSync(sp.abs);
+          if (!st.isFile()) return null;
+          if (st.size > 2_000_000) return { text: "", truncated: true, bytes: st.size };
+          return { text: fs.readFileSync(sp.abs, "utf8") };
+        } catch { return null; }
+      });
+      outcome = await opts.onAsk({ tool, args, summary });
+      approved = outcome === "approved";
+    }
+    if (!approved) {
+      audit({ tool, note: outcome ? `ask-${outcome}` : "ask-no-approval" });
+      const why = outcome === "denied" ? "the user declined this action"
+        : outcome === "expired" ? "no decision came in time"
+        : outcome === "cancelled" ? "the run was cancelled while waiting"
+        : "it needs the user's approval";
+      return { ok: false, needsApproval: true, out: `${tool} was not executed: ${why}. Say what you intended to do and wait for the user; do not repeat the same call.`, error: outcome ? `approval ${outcome}` : "needs approval" };
+    }
+  }
 
   const gate = await agentWatchGate(tool, worktree);
   if (!gate.allow) {
@@ -391,8 +512,11 @@ export async function runTool(
       return { ok: true, out: text.slice(0, 100000) };
     }
     if (tool === "edit") {
-      const sp = safePath(worktree, String(args.path ?? ""));
+      const sp = safePath(worktree, String(args.path ?? ""), { agentWrite: opts?.origin === "agent" });
       if (!sp.ok) return { ok: false, error: sp.error, out: "" };
+      // Whatever the model sent must be text: an object would land on disk as
+      // "[object Object]" and a missing newText as "" - both over the file.
+      if (typeof args.newText !== "string") return { ok: false, error: "edit needs newText as a string (the complete new content) - nothing was written", out: "" };
       // Bounded edit (external audit): regular files only, capped size before
       // the full-content read that string replacement requires.
       let st: fs.Stats;
@@ -401,16 +525,17 @@ export async function runTool(
       const EDIT_CAP = 2_000_000;
       if (st.size > EDIT_CAP) return { ok: false, error: `file too large to edit: ${st.size} bytes (cap ${EDIT_CAP}). Edit in targeted chunks via bash-approved tooling instead.`, out: "" };
       const oldText = fs.readFileSync(sp.abs!, "utf8");
-      const newText = String(args.newText ?? "");
+      const newText = args.newText;
       audit({ tool, note: String(args.path ?? "") });
-      fs.writeFileSync(sp.abs!, newText);
+      writeFileAtomic(sp.abs!, newText);
       return { ok: true, out: `Edited ${String(args.path ?? "")} (${oldText.length} -> ${newText.length} bytes)` };
     }
     if (tool === "write") {
-      const sp = safePath(worktree, String(args.path ?? ""));
+      const sp = safePath(worktree, String(args.path ?? ""), { agentWrite: opts?.origin === "agent" });
       if (!sp.ok) return { ok: false, error: sp.error, out: "" };
+      if (typeof args.content !== "string") return { ok: false, error: "write needs content as a string - nothing was written", out: "" };
       fs.mkdirSync(path.dirname(sp.abs!), { recursive: true });
-      fs.writeFileSync(sp.abs!, String(args.content ?? ""));
+      writeFileAtomic(sp.abs!, args.content);
       audit({ tool, note: String(args.path ?? "") });
       return { ok: true, out: `Wrote ${String(args.path ?? "")}` };
     }
@@ -422,9 +547,17 @@ export async function runTool(
       // EH_SECRETS_FILE may have moved the secrets file under another name.
       const secretsBase = path.basename(secretsPath()).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const namesSecretsFile = secretsBase !== "" && new RegExp(`(^|[^\\w.-])${secretsBase}($|[^\\w.-])`, "i").test(cmd);
-      if (/\bsecrets\.json\b/i.test(cmd) || namesSecretsFile || /(^|[^\w.])\.env(\.[^.]+)?\b/i.test(cmd.replace(/\.env\.example/g, "")) || /\bid_rsa\b|\.netrc\b|credentials?\.(json|ya?ml)\b/i.test(cmd)) {
+      // The runtime descriptor carries the API password: a shell holding it
+      // could call any route, including approving its own tool calls.
+      const namesDescriptor = /\.eventhorizon[\\/]runtime\.json/i.test(cmd);
+      if (/\bsecrets\.json\b/i.test(cmd) || namesSecretsFile || namesDescriptor || /(^|[^\w.])\.env(\.[^.]+)?\b/i.test(cmd.replace(/\.env\.example/g, "")) || /\bid_rsa\b|\.netrc\b|credentials?\.(json|ya?ml)\b/i.test(cmd)) {
         audit({ tool, note: "refused: credential file access" });
-        return { ok: false, error: "refused: commands that read or write credential files (.harness/secrets.json, .env, keys) are not allowed. Ask the user instead.", out: "" };
+        return { ok: false, error: "refused: commands that read or write credential files (.harness/secrets.json, .env, keys, the runtime descriptor) are not allowed. Ask the user instead.", out: "" };
+      }
+      // The agent never touches the files that define its own permissions.
+      if (opts?.origin === "agent" && /\.harness[\\/](config\.json|memory\.md)/i.test(cmd)) {
+        audit({ tool, note: "refused: command touches the agent's own configuration" });
+        return { ok: false, error: "refused: the agent cannot run commands that touch .harness/config.json or .harness/memory.md - they define its own permissions and what replays into every prompt. Ask the user to change them.", out: "" };
       }
       const parsed = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map((t) => t.replace(/^["']|["']$/g, "")) ?? [];
       if (parsed.length === 0) return { ok: false, error: "empty command", out: "" };
@@ -450,7 +583,7 @@ export async function runTool(
         }
       }
       return new Promise<ToolResult>((resolve) => {
-        execFile(parsed[0], parsed.slice(1), { cwd: worktree, timeout: 15000, maxBuffer: 200000, windowsHide: true }, (err, stdout, stderr) => {
+        execFile(parsed[0], parsed.slice(1), { cwd: worktree, timeout: 15000, maxBuffer: 200000, windowsHide: true, env: agentEnv() }, (err, stdout, stderr) => {
           // Audit notes are privacy-sensitive: keep a short shape fingerprint,
           // never raw command text (commands can carry tokens/credentials).
           audit({ tool, note: `bash ${cmd.length}ch argv=${parsed.length - 1}` });
@@ -466,10 +599,26 @@ export async function runTool(
       const whereGuard = safePath(worktree, where);
       if (!whereGuard.ok) return { ok: false, error: whereGuard.error, out: "" };
       const whereAbs = whereGuard.abs ?? path.resolve(worktree, where);
+      // A search must not become a way to read what `read` refuses (`grep` is
+      // `allow`): a hit from a credential file is dropped, whichever finder
+      // produced it.
+      const isSecretFile = (file: string): boolean => isProtectedFile(worktree, file);
       if (rg) {
+        const targetIsFile = fs.existsSync(whereAbs) && fs.statSync(whereAbs).isFile();
+        // Search from the root itself, so every hit names a path relative to it.
+        const cwd = targetIsFile ? path.dirname(whereAbs) : whereAbs;
         return new Promise<ToolResult>((resolve) => {
-          execFile(rg, ["-n", pattern, whereAbs], { cwd: worktree, timeout: 8000, windowsHide: true }, (err, stdout) => {
-            resolve({ ok: !err, out: String(stdout).slice(0, 50000) });
+          execFile(rg, ["-n", pattern, targetIsFile ? path.basename(whereAbs) : "."], { cwd, timeout: 8000, windowsHide: true }, (err, stdout) => {
+            const kept: string[] = [];
+            let dropped = 0;
+            for (const line of String(stdout).split("\n")) {
+              if (!line) continue;
+              const m = /^\.?[\\/]?(.+?):(\d+):(.*)$/.exec(line);
+              if (m && isSecretFile(path.resolve(cwd, m[1]!))) { dropped++; continue; }
+              kept.push(line);
+            }
+            if (dropped) audit({ tool, note: `grep dropped ${dropped} hit(s) from credential files` });
+            resolve({ ok: !err, out: kept.join("\n").slice(0, 50000) || (dropped ? "(the only matches were in files the agent may not read)" : "") });
           });
         });
       }
@@ -480,6 +629,7 @@ export async function runTool(
         const files = fs.existsSync(target) && fs.statSync(target).isFile() ? [target] : walkFiles(fs.existsSync(target) ? target : worktree);
         const hits: string[] = [];
         for (const f of files) {
+          if (isSecretFile(f)) continue;
           let text = "";
           try { text = fs.readFileSync(f, "utf8"); } catch { continue; }
           text.split("\n").forEach((line, i) => {

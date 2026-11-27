@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld("eventhorizon", {
   growWindow: (targetWidth: number) => ipcRenderer.invoke("window:grow", targetWidth) as Promise<boolean>,
   nudgeWindow: () => ipcRenderer.invoke("window:nudge") as Promise<boolean>,
   editAction: (action: string) => ipcRenderer.invoke("edit:action", action) as Promise<boolean>,
-  apiProxy: (req: { method?: string; path?: string; body?: unknown }) => ipcRenderer.invoke("api:proxy", req) as Promise<{ status: number; body: unknown }>,
+  apiProxy: (req: { method?: string; path?: string; body?: unknown; timeoutMs?: number }) => ipcRenderer.invoke("api:proxy", req) as Promise<{ status: number; body: unknown }>,
   eventTicket: () => ipcRenderer.invoke("events:ticket") as Promise<string>,
   fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => ipcRenderer.invoke("fs:op", op, root) as Promise<{ ok: boolean; error?: string }>,
   revealInFolder: (path: string, root?: string) => ipcRenderer.invoke("shell:reveal", path, root) as Promise<{ ok: boolean; error?: string }>,

@@ -122,7 +122,13 @@ function TermBody(props: { serverId: string; active: () => string }) {
         const w = window as unknown as { __ehcPendingCd?: string };
         const isMine = (): boolean => props.active() === id;
         const sendCd = (dir: string): void => {
-          void apiFetch(`/api/terminal/${id}/input`, { method: "POST", body: JSON.stringify({ data: `cd "${dir.replace(/"/g, "")}"\r` }) });
+          // The name is typed into a real shell, and both PowerShell and POSIX
+          // shells expand `$` and a backtick inside double quotes: a folder
+          // called "$(calc)" would run a command, outside every tool gate.
+          // Such a name is not typed at all. (The proper fix is a `cd` action
+          // on the terminal route, where the server knows the shell.)
+          if (/["`$\r\n]/.test(dir)) return;
+          void apiFetch(`/api/terminal/${id}/input`, { method: "POST", body: JSON.stringify({ data: `cd "${dir}"\r` }) });
         };
         const onCd = (ev: Event): void => {
           const d = (ev as CustomEvent<{ path?: string }>).detail;

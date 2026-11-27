@@ -59,6 +59,10 @@ export type SopRun = {
   id: string;
   sop: string;
   mode: "gated" | "automated";
+  // Set when the starter can put an `ask` to the user (the workbench): gated
+  // agent nodes then wait for a decision instead of not executing. Not
+  // persisted - a run hydrated after a restart keeps the plain gate behaviour.
+  approvals?: "interactive";
   worktree: string;
   sessionId: string;
   // The task/requirement this run delivers (LoopForge links every run to a
@@ -200,6 +204,7 @@ async function runAgentNode(run: SopRun, sop: Sop, node: SopNode): Promise<{ ok:
     think: node.think ?? "medium",
     model: node.model,
     autoApprove: run.mode === "automated",
+    approvals: run.mode === "gated" && run.approvals === "interactive" ? "interactive" : undefined,
     agent: node.role === "coder" ? "coder" : "default",
     extraSystem: `\n\nYou are executing one node of a structured workflow (SOP "${sop.name}", node "${node.label ?? node.id}"). Do this step's work only; later nodes handle the rest.`,
     isCancelled: () => cancelledRuns.has(run.id),
@@ -292,7 +297,7 @@ async function advance(runId: string, sop: Sop, run: SopRun): Promise<void> {
   }
 }
 
-export function startRun(sopName: string, opts: { worktree: string; sessionId?: string; mode?: string; task?: string }): { ok: boolean; run?: SopRun; error?: string } {
+export function startRun(sopName: string, opts: { worktree: string; sessionId?: string; mode?: string; task?: string; approvals?: "interactive" }): { ok: boolean; run?: SopRun; error?: string } {
   const sop = getSop(sopName);
   if (!sop) return { ok: false, error: `no SOP named "${sopName}" - see GET /api/sops` };
   if (!sop.nodes.length) return { ok: false, error: `SOP "${sopName}" has no nodes` };
@@ -305,6 +310,7 @@ export function startRun(sopName: string, opts: { worktree: string; sessionId?: 
     id: `soprun_${Date.now().toString(36)}`,
     sop: sop.name,
     mode,
+    approvals: mode === "gated" && opts.approvals === "interactive" ? "interactive" : undefined,
     worktree: opts.worktree,
     sessionId: opts.sessionId ?? `sop_${Date.now().toString(36)}`,
     task: (opts.task ?? "").trim() || undefined,

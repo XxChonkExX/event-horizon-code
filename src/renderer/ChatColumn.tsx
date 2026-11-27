@@ -8,6 +8,8 @@
 
 import { createSignal, For, Show, onMount, onCleanup, createMemo, createEffect } from "solid-js";
 import { apiJson, apiFetch } from "./api";
+import ApprovalCard from "./ApprovalCard";
+import { pendingFor, refreshApprovals } from "./approvals";
 import { openContextMenu } from "./ContextMenu";
 import { whenVoicesReady, refreshSystemVoices, pickDefaultVoice, speakSystem, speakViaServer, stopSpeaking, stopAudio, speechSupported, type SpeechVoice } from "./speech";
 
@@ -18,14 +20,17 @@ type Parsed = { label: string; steps: string[]; answer: string; thinking: string
 function parseAssistant(raw: string): Parsed {
   const p: Parsed = { label: "", steps: [], answer: raw, thinking: "" };
   let rest = raw;
-  const labelMatch = rest.match(/^— ([^\n]+) —\n/);
+  // The label line is drawn by this file (em dashes); the server draws its
+  // section markers with ASCII hyphens. Accept either: the ledger never
+  // parsed while only one form was expected.
+  const labelMatch = rest.match(/^[—-] ([^\n]+) [—-]\n/);
   if (labelMatch) { p.label = labelMatch[1]; rest = rest.slice(labelMatch[0].length); }
-  const stepsMatch = rest.match(/^— tool steps \((\d+)\) —\n([\s\S]*?)\n\n— answer —\n/);
+  const stepsMatch = rest.match(/^[—-] tool steps \((\d+)\) [—-]\n([\s\S]*?)\n\n[—-] answer [—-]\n/);
   if (stepsMatch) {
     p.steps = stepsMatch[2].split("\n\n").filter(Boolean);
     rest = rest.slice(stepsMatch[0].length);
   } else {
-    const ansMatch = rest.match(/^— answer —\n/);
+    const ansMatch = rest.match(/^[—-] answer [—-]\n/);
     if (ansMatch) rest = rest.slice(ansMatch[0].length);
   }
   const thinkMatch = rest.match(/\n\n\[thinking\]\n([\s\S]*)$/);
@@ -157,6 +162,7 @@ export default function ChatColumn(props: {
   liveThink?: () => string;
   liveTool?: () => string;
   compact?: boolean; // pop-out variant: hide detonation footer
+  session: string; // whose approval cards this column shows
 }) {
   let listRef: HTMLDivElement | undefined;
   let taRef: HTMLTextAreaElement | undefined;
@@ -191,6 +197,15 @@ export default function ChatColumn(props: {
     const observer = new MutationObserver(() => { listRef?.scrollTo({ top: listRef.scrollHeight, behavior: "smooth" }); });
     if (listRef) observer.observe(listRef, { childList: true, subtree: true, characterData: true });
     onCleanup(() => observer.disconnect());
+  });
+
+  // Approval cards. The main window also hears each request the moment it is
+  // raised (SSE `approval`); this poll is the catch-up for every window,
+  // including a pop-out that has no stream.
+  onMount(() => {
+    void refreshApprovals();
+    const poll = setInterval(() => void refreshApprovals(), 4000);
+    onCleanup(() => clearInterval(poll));
   });
 
   const grow = (): void => {
@@ -706,7 +721,7 @@ export default function ChatColumn(props: {
             fallback={
               <div class="msg msg-working">
                 <span class="working-dot" />
-                <span>{props.liveTool?.() ? `running ${props.liveTool?.()}...` : <>working<span class="working-ellipsis" /></>}</span>
+                <span>{pendingFor(props.session).length > 0 ? "waiting for your approval" : props.liveTool?.() ? `running ${props.liveTool?.()}...` : <>working<span class="working-ellipsis" /></>}</span>
               </div>
             }
           >
@@ -719,6 +734,9 @@ export default function ChatColumn(props: {
             </div>
           </Show>
         </Show>
+        <For each={pendingFor(props.session)}>
+          {(req) => <ApprovalCard request={req} />}
+        </For>
       </div>
 
       <Show when={slashMatches().length > 0}>

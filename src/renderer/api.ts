@@ -16,7 +16,7 @@ declare global {
       growWindow: (targetWidth: number) => Promise<boolean>;
       nudgeWindow: () => Promise<boolean>;
       editAction: (action: string) => Promise<boolean>;
-      apiProxy: (req: { method?: string; path?: string; body?: unknown }) => Promise<{ status: number; body: unknown }>;
+      apiProxy: (req: { method?: string; path?: string; body?: unknown; timeoutMs?: number }) => Promise<{ status: number; body: unknown }>;
       eventTicket: () => Promise<string>;
       fsOp: (op: { kind: string; path: string; to?: string; type?: string }, root?: string) => Promise<{ ok: boolean; error?: string }>;
     revealInFolder: (path: string, root?: string) => Promise<{ ok: boolean; error?: string }>;
@@ -36,13 +36,16 @@ export async function runtimeInfo(): Promise<RuntimeInfo> {
   return cached;
 }
 
+/** `timeoutMs` is how long the main-process proxy waits before it gives up on this one call. */
+export type ApiInit = RequestInit & { timeoutMs?: number };
+
 // Proxied fetch: the main process attaches the credential. The Response-like
 // shape is preserved so callers keep working.
-export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+export async function apiFetch(path: string, init?: ApiInit): Promise<Response> {
   if (typeof window !== "undefined" && window.eventhorizon?.apiProxy) {
     const method = (init?.method ?? "GET").toUpperCase();
     const body = init?.body !== undefined ? JSON.parse(String(init.body)) as unknown : undefined;
-    const r = await window.eventhorizon.apiProxy({ method, path, body });
+    const r = await window.eventhorizon.apiProxy({ method, path, body, timeoutMs: init?.timeoutMs });
     return new Response(typeof r.body === "string" ? r.body : JSON.stringify(r.body ?? null), {
       status: r.status,
       headers: { "content-type": "application/json" },

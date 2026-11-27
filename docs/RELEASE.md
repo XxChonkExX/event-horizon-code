@@ -12,7 +12,7 @@ The whole pipeline is hand-driven and verifiable. Nothing auto-publishes; no tel
 
 ```pwsh
 npm run typecheck        # tsc --noEmit
-npm test                 # 21 stages - must be ALL PASS
+npm test                 # 23 stages - must be ALL PASS
 npm run test:integration # end-to-end smoke against a fresh headless server — must be ALL PASS
 ```
 

@@ -188,7 +188,9 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
         {(e) => {
           const full = p.dir === "." ? e.name : `${p.dir}/${e.name}`;
           const isDir = e.type === "dir";
-          const renaming = pendingRename()?.path === full;
+          // A memo, not a plain const: the row callback runs untracked, so a
+          // const never updated when Rename was chosen and nothing appeared.
+          const renaming = createMemo(() => pendingRename()?.path === full);
           return (
             <li>
               <button
@@ -199,7 +201,7 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
                 title="Click to open / expand - right-click for file options"
               >
                 <span class="ft-icon">{isDir ? (openDirs().has(full) ? "-" : "+") : "*"}</span>
-                {renaming ? (
+                {renaming() ? (
                   <input
                     class="rename-input"
                     value={pendingRename()?.name ?? ""}
@@ -212,7 +214,7 @@ export default function FileTree(props: { onSelect: (file: string) => void; root
                   <span class="ft-name" classList={{ "ft-dir-name": isDir, ...gitClass(full, isDir) }}>{e.name}</span>
                 )}
               </button>
-              {renaming ? (
+              {renaming() ? (
                 <span class="ft-op-row" style={{ "padding-left": `${24 + p.depth * 14}px` }}>
                   <button onClick={() => void commitRename()}>Save</button>
                   <button onClick={() => setPendingRename(null)}>Cancel</button>

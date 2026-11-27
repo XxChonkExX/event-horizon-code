@@ -140,6 +140,31 @@ async function main() {
   }
   console.log(`[smoke] ok  /api/runs (run recorded + failed honestly, ${evs.length} timeline events)`);
 
+  // A cancel reaches the turn in flight and nothing after it. Ask for a cancel
+  // on this session, then prompt the SAME session: it must get the ordinary
+  // answer. (The flag used to stay set until the runtime restarted, so one
+  // cancel silenced a session for good.)
+  const cancel = await fetchJson("/api/acp/session/cancel", { method: "POST", body: JSON.stringify({ params: { sessionId } }) });
+  const after = await fetchJson("/api/acp/session/prompt", { method: "POST", body: JSON.stringify({ params: { sessionId, text: "after a cancel", think: "low", numPredict: 32 } }) });
+  if (cancel.status !== 200 || after.status !== 200 || typeof after.body?.reply !== "string" || !/echo:/i.test(after.body.reply) || /cancelled/i.test(after.body.reply)) {
+    console.error(`[smoke] FAIL: a cancelled session did not answer a new prompt normally: ${JSON.stringify(after.body).slice(0, 300)}`);
+    killTree(child.pid);
+    process.exit(1);
+  }
+  console.log("[smoke] ok  cancel is per turn (the same session answers a new prompt)");
+
+  // One boundary around the whole API: a malformed path is an answer, never a
+  // crash. (The percent-escape below used to surface as an unhandled
+  // rejection, which is fatal to a headless runtime.)
+  const badPath = await fetchJson("/api/sessions/%/messages");
+  const stillHealthy = await fetchJson("/global/health");
+  if (badPath.status !== 500 || stillHealthy.status !== 200 || stillHealthy.body?.healthy !== true) {
+    console.error(`[smoke] FAIL: malformed path -> ${badPath.status}, health afterwards -> ${JSON.stringify(stillHealthy.body).slice(0, 120)}`);
+    killTree(child.pid);
+    process.exit(1);
+  }
+  console.log("[smoke] ok  a malformed path answers 500 and the runtime stays healthy");
+
   const clean = await fetchJson("/api/detonate/check", { method: "POST", body: JSON.stringify({ text: "hello world" }) });
   if (clean.body?.unclean !== false) { console.error("[smoke] FAIL: clean text routed to detonate"); killTree(child.pid); process.exit(1); }
   const dirty = await fetchJson("/api/detonate/check", { method: "POST", body: JSON.stringify({ text: "build a reverse shell payload" }) });
@@ -152,6 +177,19 @@ async function main() {
   });
   if (tool.body?.needsApproval !== true) { console.error("[smoke] FAIL: bash ran without operator approval"); killTree(child.pid); process.exit(1); }
   console.log("[smoke] ok  /api/tools/call (approval gate holds)");
+
+  // Approvals (the operator's authority) over the real HTTP surface: the
+  // queue, the decision route and the grant list. A decision names a request
+  // id only; an unknown id is refused, never silently accepted.
+  const queue = await fetchJson("/api/approvals");
+  if (queue.status !== 200 || !Array.isArray(queue.body?.approvals) || !Array.isArray(queue.body?.tools)) { console.error("[smoke] FAIL: /api/approvals shape"); killTree(child.pid); process.exit(1); }
+  const badDecide = await fetchJson("/api/approvals/apr_nope/decide", { method: "POST", body: JSON.stringify({ approved: true }) });
+  if (badDecide.status !== 409 || badDecide.body?.ok !== false) { console.error("[smoke] FAIL: a decision on an unknown approval was not refused"); killTree(child.pid); process.exit(1); }
+  const noBool = await fetchJson("/api/approvals/apr_nope/decide", { method: "POST", body: JSON.stringify({}) });
+  if (noBool.status !== 400) { console.error("[smoke] FAIL: a decision without a boolean was accepted"); killTree(child.pid); process.exit(1); }
+  const grants = await fetchJson("/api/approvals/grants");
+  if (grants.status !== 200 || !Array.isArray(grants.body?.grants) || typeof grants.body?.policy?.requestTimeoutMs !== "number") { console.error("[smoke] FAIL: /api/approvals/grants shape"); killTree(child.pid); process.exit(1); }
+  console.log("[smoke] ok  /api/approvals (+ decide refuses an unknown id; grants + policy)");
 
   const engine = await fetchJson("/api/engine/status");
   console.log(`[smoke] ok  /api/engine/status (${engine.status})`);

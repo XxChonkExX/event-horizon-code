@@ -467,6 +467,60 @@ aside.chat h3 { margin: 10px 12px 4px; color: var(--accent2); }
 /* composer: the input owns its line; the controls sit on a row of their own
    under it, so the mic, its picker and Send never squeeze the text. */
 .composer { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 8px; }
+
+/* Approval card: the agent is waiting on you. Reads as a question, not a
+   message, and stays compact enough to be read AND answered without
+   scrolling in a short chat column. */
+.msg-approval {
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  background: rgba(251, 191, 36, 0.07);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: none;
+}
+.approval-head { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.approval-mark {
+  display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--warn); color: #131318; font-size: 10px; font-weight: 700;
+  line-height: 14px; text-align: center; flex: none; align-self: center;
+}
+.approval-title { font-size: 12.5px; font-weight: 600; word-break: break-word; }
+.approval-detail {
+  margin: 0; max-height: 110px; overflow: auto; padding: 6px 8px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35); border: 1px solid var(--border);
+  font: 11.5px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word;
+  user-select: text;
+}
+.approval-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.approval-btn {
+  padding: 3px 9px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); cursor: pointer; font-size: 12px;
+}
+.approval-btn:hover:not(:disabled) { border-color: var(--accent); }
+.approval-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.approval-btn:disabled { opacity: 0.5; cursor: default; }
+.approval-yes { border-color: rgba(52, 211, 153, 0.6); color: var(--ok); }
+.approval-no { border-color: rgba(248, 113, 113, 0.6); color: var(--bad); }
+.approval-meta { font-size: 10.5px; color: var(--dim); }
+.approval-note { font-size: 12px; color: var(--bad); }
+.status-approvals { border-color: var(--border); }
+.status-approvals-waiting { border-color: rgba(251, 191, 36, 0.6); color: var(--warn); font-weight: 600; }
+
+/* Approvals menu (status bar): what waits on you in any session, and the grants you gave. */
+.approvals-menu {
+  position: fixed; right: 10px; bottom: 40px; z-index: 60;
+  width: min(460px, calc(100vw - 20px)); max-height: min(70vh, 560px); overflow: auto;
+  display: flex; flex-direction: column; gap: 8px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+.approvals-menu-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; font-size: 13px; }
+.approvals-menu-sub { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 4px; }
+.grant-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.grant-label { font-size: 12px; word-break: break-word; }
 .composer-input {
   width: 100%; min-width: 0; min-height: 88px; resize: none;
   background: var(--panel2); color: var(--text);

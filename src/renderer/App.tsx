@@ -24,6 +24,8 @@ import ShaderBackground from "./ShaderBackground";
 import Splitter from "./Splitter";
 import ChatColumn, { type ChatMsg } from "./ChatColumn";
 import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo, eventStreamTicket } from "./api";
+import { activeGrants, noteApproval, pendingApprovals, resolveApproval, refreshApprovals, type ApprovalRequest } from "./approvals";
+import ApprovalsMenu from "./ApprovalsMenu";
 import Toasts, { type Toast } from "./Toasts";
 import ContextMenu, { openContextMenu } from "./ContextMenu";
 
@@ -118,11 +120,16 @@ export default function App() {
   // Auto-approve: let the agent run edit/write/bash without a per-call prompt.
   const [autoApprove, setAutoApprove] = createSignal(localStorage.getItem("ehc.autoApprove") === "1");
   // While a turn is in flight the composer shows a working indicator.
-  const [sending, setSending] = createSignal(false);
+  // In-flight turns are per session: one session waiting (possibly on an
+  // approval for minutes) must neither block another nor paste its reply into it.
+  const [sendingIds, setSendingIds] = createSignal<ReadonlySet<string>>(new Set());
+  const setSendingFor = (sid: string, on: boolean): void => { setSendingIds((s) => { const n = new Set(s); if (on) n.add(sid); else n.delete(sid); return n; }); };
+  const sending = (): boolean => sendingIds().has(sessionSig());
+  const [approvalsMenu, setApprovalsMenu] = createSignal(false);
   // Panels row: the eight tools render one at a time (tab bar), not eight
   // half-clipped columns.
   const PANELS: Array<{ id: string; label: string; el: () => JSX.Element }> = [
-    { id: "sessions", label: "Sessions", el: () => <SessionsPanel onChanged={() => { void refreshSessionTabs(); }} /> },
+    { id: "sessions", label: "Sessions", el: () => <SessionsPanel onChanged={() => { void refreshSessionTabs(); }} current={sessionSig} /> },
     { id: "runs", label: "Runs", el: () => <RunsPanel /> },
     { id: "memory", label: "Memory", el: () => <MemoryPanel /> },
     { id: "models", label: "Models", el: () => <ModelManager /> },
@@ -195,6 +202,7 @@ export default function App() {
     setMessages([]);
     setLiveText("");
     setLiveThink("");
+    setLiveTool("");
     try {
       const h = await apiJson<{ messages: Array<{ role: string; content: string }> }>(`/api/sessions/${encodeURIComponent(id)}/messages`);
       const msgs = h.messages
@@ -247,11 +255,27 @@ export default function App() {
       });
       es.addEventListener("tool-step", (ev) => {
         try {
-          const d = JSON.parse((ev as MessageEvent).data) as { name?: string };
-          if (d.name) setLiveTool(d.name);
+          const d = JSON.parse((ev as MessageEvent).data) as { name?: string; sessionId?: string; needsApproval?: boolean };
+          if (d.sessionId && d.sessionId !== session) return; // another session's turn
+          if (d.name) setLiveTool(d.needsApproval ? `${d.name} - waiting for you` : d.name);
         } catch { /* ignore */ }
       });
-      es.onopen = () => { esRetries = 0; };
+      // An `ask` tool the agent wants to run: its card appears at once. The
+      // server owns the request; the chat column's poll is the catch-up for
+      // anything a disconnected stream missed.
+      es.addEventListener("approval", (ev) => {
+        try {
+          const d = JSON.parse((ev as MessageEvent).data) as { request?: ApprovalRequest };
+          if (d.request) noteApproval(d.request);
+        } catch { /* ignore */ }
+      });
+      es.addEventListener("approval-resolved", (ev) => {
+        try {
+          const d = JSON.parse((ev as MessageEvent).data) as { id?: string };
+          if (d.id) resolveApproval(d.id);
+        } catch { /* ignore */ }
+      });
+      es.onopen = () => { esRetries = 0; void refreshApprovals(); };
       es.onerror = () => {
         es?.close();
         if (esRetries++ < 5) setTimeout(() => void openEventStream(), 2500);
@@ -341,6 +365,10 @@ export default function App() {
   const send = async () => {
     const text = input().trim();
     if (!text || sending()) return;
+    // This turn belongs to the session it was typed in. The answer is appended
+    // only if that is still the session on screen; otherwise it is already in
+    // that session's history, which loads when the user returns to it.
+    const sid = session;
     const thinkMatch = text.match(/\/think:(low|medium|high|max)/i);
     const lvl = thinkMatch ? thinkMatch[1].toLowerCase() : think();
     setMessages((m) => [...m, { role: "user", text }]);
@@ -348,21 +376,33 @@ export default function App() {
     setLiveText("");
     setLiveThink("");
     setLiveTool("");
-    setSending(true);
+    setSendingFor(sid, true);
+    // A stream that gave up earlier must not stay dead: this turn's tokens
+    // and approval cards arrive on it.
+    if (!es || es.readyState === EventSource.CLOSED) void openEventStream();
     try {
+      // A turn may wait on the user's approval for minutes: the proxy is asked
+      // to wait that long for this one call.
       const res = await apiFetch("/api/acp/session/prompt", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ params: { sessionId: session, text, think: lvl, model: model() || undefined, numPredict: tokens(), autoApprove: autoApprove(), worktree: wt() } })
+        body: JSON.stringify({ params: { sessionId: sid, text, think: lvl, model: model() || undefined, numPredict: tokens(), autoApprove: autoApprove(), worktree: wt(), approvals: "interactive" } }),
+        timeoutMs: 16 * 60_000,
       });
-      const data = (await res.json()) as { reply?: string; thinking?: string; model?: string; tokens?: number; attempts?: number; budget?: number };
+      const data = (await res.json().catch(() => ({}))) as { reply?: string; hint?: string; error?: string; thinking?: string; model?: string; tokens?: number; attempts?: number; budget?: number };
+      if (session !== sid) return;
+      // A failed call used to render as an empty "echo" bubble.
+      if (!res.ok || typeof data.reply !== "string") {
+        setMessages((m) => [...m, { role: "assistant", text: `— error —\n${data.error ?? `the runtime answered ${res.status}`}` }]);
+        return;
+      }
       const esc = data.attempts && data.attempts > 1 ? ` · escalated x${data.attempts} to ${data.budget} tok` : "";
       const label = data.model ? `${data.model}${data.tokens ? ` · ${data.tokens} tok` : ""}${esc}` : "echo";
-      setMessages((m) => [...m, { role: "assistant", text: `— ${label} —\n${data.reply ?? ""}${data.thinking ? `\n\n[thinking]\n${data.thinking}` : ""}` }]);
+      setMessages((m) => [...m, { role: "assistant", text: `— ${label} —\n${data.reply}${data.hint ? `\n\n${data.hint}` : ""}${data.thinking ? `\n\n[thinking]\n${data.thinking}` : ""}` }]);
     } catch {
-      setMessages((m) => [...m, { role: "assistant", text: `— error —\nserver unreachable - is the runtime running?` }]);
+      if (session === sid) setMessages((m) => [...m, { role: "assistant", text: `— error —\nserver unreachable - is the runtime running?` }]);
     } finally {
-      setSending(false);
+      setSendingFor(sid, false);
       setLiveText("");
       setLiveThink("");
       setLiveTool("");
@@ -431,8 +471,11 @@ export default function App() {
   const forkSession = async (id: string): Promise<void> => {
     try {
       const r = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-      const d = (await r.json()) as { id?: string; error?: string };
-      if (d.id) { toast(`forked ${id.slice(0, 10)} -> ${d.id.slice(0, 10)}`, "ok"); void refreshSessionTabs(); }
+      const d = (await r.json()) as { sessionId?: string; error?: string };
+      // The server names the new session `sessionId` (the panel reads it right;
+      // this menu read `id` and reported every fork as failed).
+      const forked = d.sessionId;
+      if (forked) { toast(`forked ${id.slice(0, 10)} -> ${forked.slice(0, 10)}`, "ok"); void refreshSessionTabs(); }
       else toast(`fork failed: ${d.error ?? "?"}`, "error");
     } catch { toast("fork failed - server unreachable", "error"); }
   };
@@ -513,6 +556,7 @@ export default function App() {
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
           tokens={tokens} setTokens={(n) => { setTokens(clamp(n, 64, 8192)); }}
           autoApprove={autoApprove} setAutoApprove={(v) => { setAutoApprove(v); persistLayout(); }}
+          session={sessionSig()}
           compact
         />
       </div>
@@ -522,6 +566,7 @@ export default function App() {
   return (
     <div class="workbench" style={{ "grid-template-columns": cols(), "grid-template-rows": rows() }}>
       <ShaderBackground intensity={shaderIntensity} />
+      <Show when={approvalsMenu()}><ApprovalsMenu onClose={() => setApprovalsMenu(false)} /></Show>
       <header class="ehc-chat-tabs">
         <span class="ehc-brand" title="Event Horizon Code">Event Horizon</span>
         <div class="chat-tabstrip">
@@ -607,6 +652,7 @@ export default function App() {
           models={models} model={model} setModel={setModel} think={think} setThink={setThink}
           tokens={tokens} setTokens={(n) => { setTokens(clamp(n, 64, 8192)); }}
           autoApprove={autoApprove} setAutoApprove={(v) => { setAutoApprove(v); persistLayout(); }}
+          session={sessionSig()}
           sending={sending} liveText={liveText} liveThink={liveThink} liveTool={liveTool}
         />
       </Show>
@@ -626,7 +672,7 @@ export default function App() {
         </footer>
       </Show>
 
-      <StatusBar session={sessionSig()} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} paused={agentsPaused} onPause={toggleAgentsPaused} />
+      <StatusBar session={sessionSig()} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} paused={agentsPaused} onPause={toggleAgentsPaused} approvals={() => pendingApprovals().length} grants={() => activeGrants().length} onApprovals={() => setApprovalsMenu((v) => !v)} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
       <ContextMenu />
       <Show when={devPreview}>
