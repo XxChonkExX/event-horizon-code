@@ -168,6 +168,17 @@ export function summarizeCall(tool: string, args: Record<string, unknown>, readT
       const q = String(args.question ?? "").trim();
       return { kind: "camera", title: "Look through the camera", detail: q ? `Question: ${clip(q, 500)}` : "Describe the current frame." };
     }
+    case "run_js": {
+      // The most dangerous tool gets the most visible summary (audit
+      // EH-SEC-3): model-written code or the whole op batch, at the full cap.
+      const code = String(args.code ?? "");
+      if (code) {
+        const tier = String(args.tier ?? "execute");
+        const lane = tier === "execute" ? "the OS sandbox lane" : tier === "redteam" ? "the red-team lane" : "static review only";
+        return { kind: "generic", title: `Run model-written code in ${lane} (${code.length.toLocaleString("en-US")} chars)`, detail: clip(code) };
+      }
+      return { kind: "generic", title: `Batch of ${Array.isArray(args.ops) ? args.ops.length : "?"} read-only operations`, detail: clip(JSON.stringify(args.ops ?? {}, null, 1)) };
+    }
     default: {
       const compact = Object.entries(args ?? {}).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(", ");
       return { kind: "generic", title: tool, detail: compact ? clip(compact, 600) : "(no arguments)" };

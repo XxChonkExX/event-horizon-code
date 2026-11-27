@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fetch as ufetch } from "undici";
-import { pinnedAgent, resolveHostAddrs } from "./dnspin";
+import { cachedPinnedAgent, resolveHostAddrs } from "./dnspin";
 import { audit } from "./audit";
 
 export type ModelInfo = { id: string; openaiId?: string; capabilities?: string[] };
@@ -201,7 +201,7 @@ export async function chatOpenAI(
           ...(opts.tools?.length ? { tools: opts.tools } : {}),
         }),
         signal: AbortSignal.timeout(opts.timeoutMs ?? 300_000),
-        dispatcher: pinnedAgent(ips),
+        dispatcher: cachedPinnedAgent(ips),
       });
     } catch (e) {
       if ((e as Error)?.name === "TimeoutError") {
