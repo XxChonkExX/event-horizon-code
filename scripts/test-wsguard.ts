@@ -81,9 +81,15 @@ try {
   fs.mkdirSync(inWs("sub"), { recursive: true });
   fs.writeFileSync(inWs("file.txt"), "x");
 
-  // Valid relative path passes and resolves inside.
+  // Valid relative path passes and resolves inside. The comparison uses the
+  // real root: on macOS os.tmpdir() sits under /var, a symlink to /private/var,
+  // so contained() answers with the canonical (real) path - the non-canonical
+  // join would compare /var/... against /private/var/... and fail (found by
+  // the macOS CI run, 2026-11-27).
   const ok1 = contained(root, "file.txt");
-  check("valid relative path passes", ok1.ok && ok1.abs?.toLowerCase() === inWs("file.txt").toLowerCase());
+  const realRoot = fs.realpathSync(root);
+  const inWsReal = (rel: string): string => path.join(realRoot, rel);
+  check("valid relative path passes", ok1.ok && ok1.abs?.toLowerCase() === inWsReal("file.txt").toLowerCase());
 
   // Sibling-prefix: <root>-escape must NOT pass for any ../ escape attempt.
   check("../ traversal rejected", !contained(root, "../outside.txt").ok);
