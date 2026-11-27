@@ -174,4 +174,4 @@ Roadmap and UI/UX audits: [`docs/ROADMAP.md`](docs/ROADMAP.md) and
 
 ---
 
-Status: **v0.0.4b (alpha)**. Windows (NSIS/MSI, Vulkan engine) and Linux (AppImage/deb/rpm, engine-less) are packaged; macOS runs from source. Rough edges and deferrals are documented in `docs/`; please file issues.
+Status: **v0.0.4c (alpha)**. Windows (NSIS/MSI, Vulkan engine), Linux (AppImage/deb/rpm, engine-less) and **macOS (unsigned arm64 dmg/zip via CI, engine-less)** are packaged. Rough edges and deferrals are documented in `docs/`; please file issues.
