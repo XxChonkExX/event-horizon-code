@@ -79,50 +79,50 @@ publish: null
 # no admin required). The main process guards what it opens - credential
 # files and binaries are refused there.
 fileAssociations:
-  - { ext: yaml, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: yml, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: json, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: jsonc, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: md, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: markdown, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: txt, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: log, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: toml, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: ini, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: cfg, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: conf, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: xml, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: html, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: htm, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: css, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: scss, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: js, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: mjs, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: cjs, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: ts, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: tsx, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: jsx, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: py, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: rb, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: rs, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: go, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: java, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: kt, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: swift, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: c, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: h, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: cpp, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: hpp, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: cc, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: cs, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: php, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: sql, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: sh, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: bash, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: ps1, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: psm1, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: bat, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: graphql, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
-  - { ext: proto, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor, isPerUser: true }
+  - { ext: yaml, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: yml, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: json, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: jsonc, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: md, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: markdown, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: txt, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: log, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: toml, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: ini, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: cfg, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: conf, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: xml, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: html, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: htm, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: css, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: scss, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: js, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: mjs, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: cjs, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: ts, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: tsx, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: jsx, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: py, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: rb, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: rs, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: go, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: java, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: kt, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: swift, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: c, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: h, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: cpp, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: hpp, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: cc, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: cs, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: php, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: sql, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: sh, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: bash, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: ps1, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: psm1, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: bat, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: graphql, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
+  - { ext: proto, name: "Event Horizon Code", description: "Open in Event Horizon Code", role: Editor }
   # Deliberately NOT associated: .env / secrets / key files - main refuses
   # credential files, and an association that ends in a refusal is a lie.
