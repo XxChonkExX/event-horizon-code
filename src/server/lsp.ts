@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, ChildProcess } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { audit } from "./audit";
 
 // Local JS language servers (e.g. typescript-language-server) are devDependencies:
 // resolve the package's JS entry and run it with node — under Electron the main
@@ -373,6 +374,10 @@ export class LspManager {
       windowsHide: true,
       env: resolved.env,
     });
+    // A write landing after the child died emits an ASYNC EPIPE on stdin -
+    // without a listener that is an uncaughtException fatal to the runtime
+    // (the surrounding try/catch only catches synchronous throws).
+    proc.stdin?.on("error", (err) => { try { audit({ tool: "lsp", note: `stdin error: ${String((err as Error).message ?? err).slice(0, 120)}` }); } catch { /* audit never blocks */ } });
     const entry: ServerEntry = {
       proc, conn: undefined as never, lang: pack.id, worktree, lastUsed: Date.now(),
       timer: undefined as never, rootUri, initPromise: null, initialized: false,

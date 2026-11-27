@@ -20,7 +20,7 @@ import { getAuditPath, auditHealth } from "./audit";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
 import { listModels, modelCapabilities, chatOpenAI } from "./router";
 import { fetch as ufetch } from "undici";
-import { pinnedAgent, resolveHostAddrs } from "./dnspin";
+import { cachedPinnedAgent, resolveHostAddrs } from "./dnspin";
 import { searchEngram, verifyArithmetic } from "./engram";
 import {
   createSession, listTodos, addTodo, loadMessages,
@@ -30,7 +30,7 @@ import {
   forkSession, addCheckpoint, listCheckpoints, messageCount, newSessionId, listSessions,
 } from "./store";
 import os from "node:os";
-import { runTool, safePath, resolveBin, readDetonateConfig } from "./tools";
+import { runTool, safePath, resolveBin, readDetonateConfig, writeFileAtomic } from "./tools";
 import type { ToolName } from "./tools";
 import { hasMcpServers } from "./mcp";
 import { setAgentPaused, isAgentPaused } from "./agentLoop";
@@ -156,7 +156,9 @@ function writeActiveProfile(id: string): void {
   try { raw = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as Record<string, unknown>; } catch { /* fresh config */ }
   raw.profile = { ...(raw.profile as object | undefined), active: id };
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-  fs.writeFileSync(cfgPath, JSON.stringify(raw, null, 2));
+  // Atomic: this file is the permission gate's input - a crash mid-write must
+  // never leave a half-written permission table.
+  writeFileAtomic(cfgPath, JSON.stringify(raw, null, 2));
 }
 
 // EH-010: single-use event-stream tickets. Issued only to authenticated
@@ -1243,10 +1245,17 @@ export function startHttpServer(opts: ServerOpts): http.Server {
           if (!s) return sendJson(res, 404, { error: "no such terminal" });
           res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive", "Access-Control-Allow-Origin": req.headers.origin ?? "*" });
           const onData = (d: string) => { try { res.write(`data: ${JSON.stringify({ d })}\n\n`); } catch { /* client gone */ } };
+          const onExit = () => { try { res.write("event: exit\ndata: {}\n\n"); res.end(); } catch { /* closed */ } };
           s.pty.onData(onData);
-          s.pty.onExit(() => { try { res.write("event: exit\ndata: {}\n\n"); res.end(); } catch { /* closed */ } });
+          s.pty.onExit(onExit);
           const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { /* closed */ } }, 25000);
-          res.on("close", () => clearInterval(ping));
+          res.on("close", () => {
+            // Every listener added per client is removed per client (audit
+            // EH-SEC-7: reconnects accumulated onData listeners forever).
+            clearInterval(ping);
+            try { (s.pty as unknown as { removeListener?: (ev: string, fn: unknown) => void }).removeListener?.("data", onData); } catch { /* gone with the pty */ }
+            try { (s.pty as unknown as { removeListener?: (ev: string, fn: unknown) => void }).removeListener?.("exit", onExit); } catch { /* gone with the pty */ }
+          });
           return;
         }
         let raw = "";
@@ -1668,7 +1677,7 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       try {
         const listUrl = `${secret.baseUrl.replace(/\/+$/, "")}/models`;
         const ips = await resolveHostAddrs(new URL(listUrl).hostname);
-        const r = await ufetch(listUrl, { headers: { authorization: `Bearer ${secret.apiKey}` }, signal: AbortSignal.timeout(20_000), dispatcher: pinnedAgent(ips) });
+        const r = await ufetch(listUrl, { headers: { authorization: `Bearer ${secret.apiKey}` }, signal: AbortSignal.timeout(20_000), dispatcher: cachedPinnedAgent(ips) });
         const text = await r.text();
         let j: { data?: Array<{ id?: unknown }> } | null = null;
         try { j = JSON.parse(text); } catch { j = null; }

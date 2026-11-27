@@ -10,6 +10,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 export type AgentWatchConfig = {
   enabled: boolean;
@@ -36,10 +37,13 @@ export function readAgentWatchConfig(): AgentWatchConfig {
     return {
       enabled: raw.agentwatch?.enabled ?? false,
       lineManager: raw.agentwatch?.lineManager ?? false,
-      ledgerDir: raw.agentwatch?.ledgerDir ?? path.join(process.cwd(), ".eventhorizon", "aw-ledger"),
+      // Default OUTSIDE the workspace (audit EH-SEC-10): the acknowledgment
+      // store un-blocks edit/bash - an agent-writable file one sweep away from
+      // being forgeable. An explicit relative ledgerDir is still honoured.
+      ledgerDir: raw.agentwatch?.ledgerDir ?? path.join(os.homedir(), ".eventhorizon", "aw-ledger"),
     };
   } catch {
-    return { enabled: false, lineManager: false, ledgerDir: ".eventhorizon/aw-ledger" };
+    return { enabled: false, lineManager: false, ledgerDir: path.join(os.homedir(), ".eventhorizon", "aw-ledger") };
   }
 }
 

@@ -2,6 +2,8 @@
 // Import afterimage_* — do not reimplement. See docs/ENGRAM_INTEGRATION.md
 
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 export type EngramSearch = { query: string; topK: number };
 export type EngramResult = { ok: boolean; records: string[]; absent: boolean; coverage: string };
@@ -13,8 +15,26 @@ function python(): string | null {
   return resolveBin([process.env.EH_PYTHON ?? "", "python", "python3", "py"]);
 }
 
+/** Where AfterImage's src lives: explicit env, sibling checkout, in-workspace copy. The one resolver for every consumer (audit EH-SEC-8). */
+export function resolveEngramSrc(): string {
+  // Portable order (audit EH-SEC-8: a dev-machine absolute path shipped in
+  // source and pointed nowhere on any other machine): explicit env, sibling
+  // checkout, in-workspace copy. tools.ts's run_machine resolves the same way.
+  const candidates = [
+    process.env.EH_ENGRAM_SRC ?? "",
+    path.join(process.cwd(), "..", "AfterImage-Engram", "src"),
+    path.join(process.cwd(), "AfterImage-Engram", "src"),
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    const abs = path.resolve(c);
+    try { if (fs.existsSync(path.join(abs, "machines.py"))) return abs; } catch { /* next */ }
+  }
+  return process.env.EH_ENGRAM_SRC ?? "";
+}
+
 function engramSrc(): string {
-  return process.env.EH_ENGRAM_SRC ?? "C:/Users/mikeh/Documents/New OpenCode Project/AfterImage-Engram/src";
+  return resolveEngramSrc();
 }
 
 function engramDb(): string {

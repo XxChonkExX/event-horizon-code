@@ -545,7 +545,10 @@ export async function runBwrapDetonate(plan: DetonatePolicy & { args: string[]; 
       new Promise((res) => {
         const pg = nodeSpawn("pgrep", ["-f", guestWork], { stdio: ["ignore", "pipe", "ignore"] });
         pg.on("close", (pcode) => { result.treeTerminated = pcode === 1; res(); }); // 1 = no survivors
-        pg.on("error", () => { result.treeTerminated = true; res(); });
+        // pgrep absent/failing = the sweep could NOT be confirmed: unverified
+        // is not terminated (the seatbelt runner reports the same way; audit
+        // EH-SEC-16 - this backend contradicted the module's own rule).
+        pg.on("error", () => { result.treeTerminated = false; res(); });
       });
     return new Promise<NamespacedResult>((resolve) => {
       const child = nodeSpawn("bwrap", args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });

@@ -7,29 +7,20 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile, exec } from "node:child_process";
+import { execFile, exec, spawn, execFileSync } from "node:child_process";
 import { fetch as ufetch } from "undici";
 import { readAgentWatchConfig, gateDecisionV2, sweepWorkspace } from "./agentwatch";
 import { contained } from "./wsguard";
 import { secretsPath } from "./secrets";
-import { pinnedAgent, resolveHostAddrs } from "./dnspin";
+import { cachedPinnedAgent, resolveHostAddrs } from "./dnspin";
 
-// AfterImage machines/src resolution - portable order, no machine-specific
-// absolute paths: explicit env, sibling checkout, in-workspace copy.
+// AfterImage machines/src resolution: one shared resolver (engram.ts) for
+// every consumer - env, sibling checkout, in-workspace copy. This wrapper
+// keeps run_machine's null-on-absent contract.
+import { searchEngram, verifyArithmetic, registerEngram, resolveEngramSrc as resolveEngramSrcShared } from "./engram";
 function resolveEngramSrc(): string | null {
-  const candidates = [
-    process.env.EH_ENGRAM_SRC ?? "",
-    path.join(process.cwd(), "..", "AfterImage-Engram", "src"),
-    path.join(process.cwd(), "AfterImage-Engram", "src"),
-  ];
-  for (const c of candidates) {
-    if (!c) continue;
-    const abs = path.resolve(c);
-    if (fs.existsSync(path.join(abs, "machines.py"))) return abs;
-  }
-  return null;
+  return resolveEngramSrcShared() || null;
 }
-import { searchEngram, verifyArithmetic, registerEngram } from "./engram";
 import { listTodos, addTodo, toggleTodo, putInstruction } from "./store";
 import crypto from "node:crypto";
 import { audit } from "./audit";
@@ -124,7 +115,7 @@ export async function resolveValidatedUrl(raw: string): Promise<{ url: URL; ips:
 
 export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "camera_look" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
 import { lookFromCamera } from "./sensors";
-import { callDigest, consumeGrant, summarizeCall } from "./approvals";
+import { callDigest, consumeGrant, summarizeCall, alwaysAsks } from "./approvals";
 import type { ApprovalSummary, AskOutcome } from "./approvals";
 export type ToolResult = { ok: boolean; out: string; error?: string; needsApproval?: boolean; image?: string };
 
@@ -163,7 +154,16 @@ function permissionFor(tool: ToolName): string {
     return t === "allow" || t === "ask" || t === "deny" ? t : null;
   };
   const own = perms[tool] ?? DEFAULT_PERMISSIONS[tool];
-  if (own !== undefined) return word(own) ?? "ask"; // an unrecognised word never fails open
+  if (own !== undefined) {
+    const v = word(own) ?? "ask"; // an unrecognised word never fails open
+    // The always-ask floor holds at THIS layer too (audit EH-SEC-11): a config
+    // line "camera_look": "allow" must not bypass the sensing consent.
+    if (v === "allow" && alwaysAsks(tool)) {
+      audit({ tool, note: "always-ask floor: config allow ignored - the tool asks on every use" });
+      return "ask";
+    }
+    return v;
+  }
   // Sweep-back: prefix patterns let one rule govern a family (e.g.
   // "mcp_github_*" denies every tool of that server without listing each).
   // The longest matching prefix wins, so one server's rule beats the family's.
@@ -271,7 +271,9 @@ export function agentEnv(): NodeJS.ProcessEnv {
 }
 
 // Write-then-rename: a crash or a concurrent reader never sees half a file.
-function writeFileAtomic(file: string, text: string): void {
+// Exported for the config writers outside this module (profile writes in
+// http.ts touch the same file the permission gate reads).
+export function writeFileAtomic(file: string, text: string): void {
   const tmp = `${file}.ehc-tmp-${process.pid}`;
   try {
     fs.writeFileSync(tmp, text);
@@ -334,8 +336,10 @@ function isConfiguredSecretsFile(abs: string): boolean {
 
 // Files that define the agent's own authority or what replays into every
 // prompt. Reading them is fine; the agent never writes them - one approved
-// (or auto-approved) write could turn every `deny` into `allow`.
-const AGENT_WRITE_REFUSED = /(^|\/)\.harness\/(config\.json|memory\.md)$/i;
+// (or auto-approved) write could turn every `deny` into `allow`. The
+// AgentWatch acknowledgment store un-blocks edit/bash, so it is protected too
+// (audit EH-SEC-10).
+const AGENT_WRITE_REFUSED = /(^|\/)\.harness\/(config\.json|memory\.md)$|(^[\\/]|\/)\.eventhorizon\/aw-ledger\//i;
 
 // Exported for sweep-3 remediation: the ACP HTTP layer must enforce the SAME
 // credential policy as the agent tools (one security rule, one implementation).
@@ -582,13 +586,40 @@ export async function runTool(
           }
         }
       }
+      // A REAL shell (operator decision 2026-11-26): pipes, redirects and && work
+      // as the description promises, and npm/npx start through their .cmd shims on
+      // Windows. The whole process TREE is killed on timeout (detached + group
+      // kill on POSIX, taskkill /T on Windows) - the old execFile left
+      // grandchildren running (audit EH-SEC-5). The argv parse above still drives
+      // the allowlist: its first token is the program the command names.
+      const shellCmd = process.platform === "win32" ? `cmd.exe /d /s /c "${cmd.replace(/"/g, '""')}"` : cmd;
       return new Promise<ToolResult>((resolve) => {
-        execFile(parsed[0], parsed.slice(1), { cwd: worktree, timeout: 15000, maxBuffer: 200000, windowsHide: true, env: agentEnv() }, (err, stdout, stderr) => {
+        const child = spawn(process.platform === "win32" ? "cmd.exe" : "/bin/sh",
+          process.platform === "win32" ? ["/d", "/s", "/c", cmd] : ["-c", shellCmd],
+          { cwd: worktree, windowsHide: true, env: agentEnv(), detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        let settled = false;
+        const done = (ok: boolean, error?: string): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
           // Audit notes are privacy-sensitive: keep a short shape fingerprint,
           // never raw command text (commands can carry tokens/credentials).
-          audit({ tool, note: `bash ${cmd.length}ch argv=${parsed.length - 1}` });
-          resolve({ ok: !err, out: ((stdout as string) || "") + ((stderr as string) || ""), error: err ? String(err).slice(0, 200) : undefined });
-        });
+          audit({ tool, note: `bash ${cmd.length}ch shell argv=${parsed.length - 1}` });
+          resolve({ ok, out: out.slice(0, 200000), error });
+        };
+        const timer = setTimeout(() => {
+          if (settled) return;
+          try {
+            if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+            else try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+          } catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+          done(false, "bash timed out after 15 s - the process tree was killed");
+        }, 15000);
+        child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
+        child.stderr?.on("data", (d: Buffer) => { out += d.toString(); });
+        child.on("error", (err) => done(false, String(err).slice(0, 200)));
+        child.on("close", (code) => done(code === 0, code === 0 ? undefined : `exit code ${code}`));
       });
     }
     if (tool === "grep") {
@@ -630,8 +661,15 @@ export async function runTool(
         const hits: string[] = [];
         for (const f of files) {
           if (isSecretFile(f)) continue;
+          // The fallback scans synchronously in the server process: bound both
+          // sides, or a multi-GB file enters memory whole and an evil regex
+          // (`(a+)+$` on a long line) freezes every window and timer (audit
+          // EH-SEC-6). Files beyond the read cap are skipped like `read` does.
           let text = "";
-          try { text = fs.readFileSync(f, "utf8"); } catch { continue; }
+          try {
+            if (fs.statSync(f).size > 2_000_000) continue;
+            text = fs.readFileSync(f, "utf8");
+          } catch { continue; }
           text.split("\n").forEach((line, i) => {
             if (hits.length < 200 && re.test(line)) hits.push(`${path.relative(worktree, f)}:${i + 1}:${line.trim().slice(0, 200)}`);
           });
@@ -844,9 +882,11 @@ export async function runTool(
         plan.timeoutMs = det.timeoutMs ?? plan.timeoutMs;
         plan.maxOutputBytes = det.maxOutputBytes ?? plan.maxOutputBytes;
         plan.artifactPath = artifact;
-        // Guest timeout override (tests + per-call): clamped 2s..120s.
+        // Guest timeout override (tests + per-call): clamped 2s..120s, and the
+        // model can only SHORTEN the operator's configured value, never extend
+        // it - the one policy knob the model could reach (audit EH-SEC-4).
         const argTimeout = Number((args as { timeoutMs?: unknown }).timeoutMs);
-        if (Number.isFinite(argTimeout)) plan.timeoutMs = Math.max(2000, Math.min(120000, argTimeout));
+        if (Number.isFinite(argTimeout)) plan.timeoutMs = Math.max(2000, Math.min(plan.timeoutMs, argTimeout));
         audit({ tool, note: `detonate tier=${tier}` });
         // P0 (external audit): the quarantine baseline MUST precede execution.
         // The previous order captured it after runDetonate, so changes made
@@ -1027,11 +1067,12 @@ export async function runTool(
         return { ok: false, error: String((e as Error).message ?? e), out: "" };
       }
       let text = "";
+      let redirectedAway = false; // the loop ended still following 3xx (audit EH-SEC-13: used to return ok:true, empty)
       try {
         let current = first;
         for (let hop = 0; hop < 4; hop++) {
           // Pinned dispatcher per hop: validation and connection cannot diverge.
-          const res = await ufetch(current.url, { dispatcher: pinnedAgent(current.ips), redirect: "manual", headers: { "user-agent": "EventHorizonCode/0.1 (local coding agent)" }, signal: AbortSignal.timeout(15000) });
+          const res = await ufetch(current.url, { dispatcher: cachedPinnedAgent(current.ips), redirect: "manual", headers: { "user-agent": "EventHorizonCode/0.1 (local coding agent)" }, signal: AbortSignal.timeout(15000) });
           if (res.status >= 300 && res.status < 400) {
             const loc = res.headers.get("location");
             if (!loc) break;
@@ -1040,8 +1081,10 @@ export async function runTool(
               audit({ tool, note: `redirect refused -> ${next.hostname}` });
               return { ok: false, error: `refused: redirect target ${next.hostname} is not a public address`, out: "" };
             }
+            redirectedAway = true;
             continue;
           }
+          redirectedAway = false;
           // Bounded body read: stop at the cap instead of downloading whole.
           const cap = 2_000_000;
           const reader = res.body?.getReader();
@@ -1063,6 +1106,10 @@ export async function runTool(
           }
           text = new TextDecoder("utf-8", { fatal: false }).decode(joined) + (total > cap ? "\n[ehc] truncated: response exceeded the 2MB fetch cap" : "");
           break;
+        }
+        if (redirectedAway && !text) {
+          audit({ tool, note: "webfetch redirect budget exhausted" });
+          return { ok: false, error: "too many redirects (4-hop cap) - the chain never produced a body", out: "" };
         }
       } catch (e) {
         return { ok: false, error: `fetch failed: ${String((e as Error).message ?? e).slice(0, 160)}`, out: "" };

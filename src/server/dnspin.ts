@@ -55,3 +55,26 @@ export function pinnedAgent(ips: string[]): Agent {
     },
   });
 }
+
+// One Agent per validated address set, reused across calls: a fresh Agent per
+// hop/request left a pooled-socket set lingering per call (audit EH-SEC-14).
+// Keyed by the sorted address list; capped, and the eviction closes the Agent.
+const agentCache = new Map<string, Agent>();
+const AGENT_CACHE_CAP = 32;
+
+export function cachedPinnedAgent(ips: string[]): Agent {
+  const key = [...ips].sort().join("|");
+  const hit = agentCache.get(key);
+  if (hit) return hit;
+  const agent = pinnedAgent(ips);
+  if (agentCache.size >= AGENT_CACHE_CAP) {
+    const oldest = agentCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) {
+      const evicted = agentCache.get(oldest);
+      agentCache.delete(oldest);
+      try { evicted?.close().catch(() => { /* already gone */ }); } catch { /* nothing to close */ }
+    }
+  }
+  agentCache.set(key, agent);
+  return agent;
+}

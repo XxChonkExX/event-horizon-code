@@ -512,7 +512,10 @@ app.whenReady().then(async () => {
         fs.mkdirSync(p, { recursive: true });
       } else if (op.kind === "rename") {
         if (!fs.existsSync(p)) return { ok: false, error: "not found" };
-        const toGuard = contained(process.cwd(), op.to ?? "");
+        // The destination obeys the SAME session-worktree root as the source
+        // (audit EH-SEC-9: it was contained against the server cwd, so a
+        // rename could move a file out of a pinned session's worktree).
+        const toGuard = contained(effectiveRoot, op.to ?? "");
         if (!toGuard.ok || !toGuard.abs) return { ok: false, error: "bad destination" };
         if (fs.existsSync(toGuard.abs)) return { ok: false, error: "destination already exists" };
         fs.renameSync(p, toGuard.abs);

@@ -51,7 +51,7 @@ export const TOOL_SPECS: ToolDef[] = [
     function: {
       name: "todo",
       description: "Track plan/progress for the session. op=add {text}, op=list, op=done {id}. Persisted per session and visible to the user.",
-      parameters: { type: "object", properties: { op: str("add | list | done."), text: str("For op=add."), id: str("For op=done."), sessionId: str("Defaults to the current session id.") }, required: ["op"] },
+      parameters: { type: "object", properties: { op: str("add | list | done."), text: str("For op=add."), id: str("For op=done.") }, required: ["op"] },
     },
   },
   {
@@ -186,7 +186,7 @@ export const TOOL_SPECS: ToolDef[] = [
     type: "function",
     function: {
       name: "bash",
-      description: "Run a shell command in the workspace directory (15s timeout). Use for builds, tests, and git. Requires user approval unless auto-approve is on.",
+      description: "Run a shell command in the workspace directory (real shell: pipes, redirects and && work; 15s timeout, the whole process tree is killed on expiry). Use for builds, tests, and git. Requires user approval unless auto-approve is on.",
       parameters: { type: "object", properties: { cmd: str("Command line to execute.") }, required: ["cmd"] },
     },
   },

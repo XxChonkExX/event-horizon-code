@@ -52,6 +52,10 @@ class McpServer {
       windowsHide: true,
     });
     this.proc = proc;
+    // A write that lands between the child's death and the exit event emits an
+    // ASYNC EPIPE on stdin - with no listener that is an uncaughtException
+    // fatal to the whole runtime (audit EH-SEC-2).
+    proc.stdin?.on("error", (err) => { try { audit({ tool: "mcp", note: `stdin error: ${String((err as Error).message ?? err).slice(0, 120)}` }); } catch { /* audit never blocks */ } });
     proc.stdout?.on("data", (d: Buffer) => this.onData(d.toString()));
     proc.stderr?.on("data", () => { /* servers log freely; ignore */ });
     proc.on("exit", () => {
@@ -151,7 +155,8 @@ class McpServer {
   }
 
   private send(obj: unknown) {
-    this.proc?.stdin?.write(JSON.stringify(obj) + "\n");
+    if (!this.proc?.stdin?.writable) return; // the server is gone; its exit path settles pending calls
+    this.proc.stdin.write(JSON.stringify(obj) + "\n");
   }
 
   private request(method: string, params: Record<string, unknown>, timeoutMs = 20000): Promise<unknown> {
@@ -233,7 +238,27 @@ export async function ensureMcpServers(): Promise<void> {
 }
 
 export function mcpTools(): McpToolDef[] {
-  return Array.from(servers.values()).flatMap((s) => s.getTools());
+  // The flattened name `mcp_<server>_<tool>` is ambiguous: server "a" with
+  // tool "b_c" and server "a_b" with tool "c" collide. First server wins;
+  // the collision is audited once so the silent misroute is visible.
+  const seen = new Map<string, string>();
+  const logged = new Set<string>();
+  const out: McpToolDef[] = [];
+  for (const [sname, s] of servers) {
+    for (const t of s.getTools()) {
+      const owner = seen.get(t.function.name);
+      if (owner !== undefined) {
+        if (!logged.has(t.function.name)) {
+          logged.add(t.function.name);
+          audit({ tool: "mcp", note: `tool name collision: ${t.function.name} claimed by ${sname} and ${owner} - only ${owner} keeps it` });
+        }
+        continue;
+      }
+      seen.set(t.function.name, sname);
+      out.push(t);
+    }
+  }
+  return out;
 }
 
 export function isMcpTool(name: string): boolean { return name.startsWith("mcp_"); }

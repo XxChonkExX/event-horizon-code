@@ -31,7 +31,7 @@ Agent loop in `src/server/http.ts` (`session/prompt`):
 | `glob` | allow | fd file/dir discovery |
 | `edit` | ask | replace file contents (Save button in editor also approves) |
 | `write` | ask | create/overwrite a file |
-| `bash` | ask | one program with arguments - no shell (15s timeout, windowsHide; the runtime's password is scrubbed from its environment) |
+| `bash` | ask | real shell command (cmd on Windows, sh on POSIX) - pipes, redirects and && work; the whole process tree is killed on the 15s timeout; the runtime's password is scrubbed from its environment |
 | `websearch` | ask | keyless DuckDuckGo search → titles/snippets/urls |
 | `webfetch` | ask | fetch a URL as text (HTML stripped, 20KB cap) |
 | `engram_search` | allow | AfterImage lookup — typed absence, no guessing |

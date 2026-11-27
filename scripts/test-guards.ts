@@ -166,6 +166,12 @@ async function main(): Promise<void> {
   check("the headless runtime's password never reaches a command the agent runs", !String(r3.out ?? "").includes("hunter2-secret"), String(r3.out));
   delete process.env.EH_PASS;
 
+  // 7b. A real shell (operator decision 2026-11-26): pipes, redirects and && work.
+  await runTool("bash", { cmd: 'echo shell-alive > shell-out.txt && echo second-line' }, ws, agent);
+  check("redirects and && run through a real shell", fs.existsSync(path.join(ws, "shell-out.txt")) && fs.readFileSync(path.join(ws, "shell-out.txt"), "utf8").trim() === "shell-alive");
+  const piped = await runTool("bash", { cmd: process.platform === "win32" ? "echo pipe-test | findstr pipe" : "echo pipe-test | grep pipe" }, ws, agent);
+  check("pipes work", /pipe-test/.test(String(piped.out ?? "")), String(piped.out));
+
   // 8. Nothing leaked anywhere in this run.
   const auditText = fs.existsSync(process.env.EH_AUDIT_LOG ?? "") ? fs.readFileSync(process.env.EH_AUDIT_LOG!, "utf8") : "";
   check("the audit log never contains a credential", !auditText.includes(MARK));
