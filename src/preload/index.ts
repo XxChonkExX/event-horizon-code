@@ -9,7 +9,7 @@ contextBridge.exposeInMainWorld("eventhorizon", {
   version: APP_VERSION,
   getRuntime: () => ipcRenderer.invoke("runtime:info") as Promise<{ baseUrl: string; port: number } | null>,
   pickFolder: () => ipcRenderer.invoke("dialog:pickFolder") as Promise<string | null>,
-  popoutWindow: (kind: string, sessionId: string, worktree?: string) => ipcRenderer.invoke("window:popout", kind, sessionId, worktree) as Promise<number>,
+  popoutWindow: (kind: string, sessionId: string, worktree?: string, url?: string) => ipcRenderer.invoke("window:popout", kind, sessionId, worktree, url) as Promise<number>,
   growWindow: (targetWidth: number) => ipcRenderer.invoke("window:grow", targetWidth) as Promise<boolean>,
   nudgeWindow: () => ipcRenderer.invoke("window:nudge") as Promise<boolean>,
   editAction: (action: string) => ipcRenderer.invoke("edit:action", action) as Promise<boolean>,
@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld("eventhorizon", {
   onFileOpen: (cb: (p: { path: string }) => void) => {
     ipcRenderer.on("file:openExternal", (_e, p: { path: string }) => cb(p));
   },
+  // The browser window's chrome (only that window's page is answered in main):
+  // its own height, so main can place the view, navigation commands, and the
+  // page state main pushes back.
+  browserChrome: (msg: { kind: "bounds"; height: number }) => { ipcRenderer.send("browser:chrome", msg); },
+  browserCmd: (cmd: { op: "navigate" | "back" | "forward" | "reload" | "stop" | "state"; url?: string }) => ipcRenderer.invoke("browser:cmd", cmd) as Promise<{ ok: boolean; error?: string; state?: unknown }>,
+  onBrowserState: (cb: (s: unknown) => void) => { ipcRenderer.on("browser:state", (_e, s) => cb(s)); },
   onContextMenu: (cb: (p: { x: number; y: number }) => void) => {
     ipcRenderer.on("context:menu", (_e, p: { x: number; y: number }) => cb(p));
   },

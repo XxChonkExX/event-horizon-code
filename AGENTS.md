@@ -46,7 +46,7 @@ TypeScript/Node server (`src/server/`), SolidJS renderer (`src/renderer/`), Elec
 
 ## Before you claim done
 
-- Does `npm test` pass? (23 stages: typecheck, wsguard containment, ACP security, webfetch, secrets, DNS pin, MCP secrets, templates, LSP, detonation gate, tool-search, SOPs, sessions, runs, approvals, guards, memory, sensory, sensory downloads, camera sensors, TTS, engram - then the end-to-end smoke) or the narrowest subset you touched.
+- Does `npm test` pass? (24 stages: typecheck, wsguard containment, ACP security, webfetch, secrets, DNS pin, MCP secrets, templates, LSP, detonation gate, tool-search, SOPs, sessions, runs, approvals, guards, browser policy, memory, sensory, sensory downloads, camera sensors, TTS, engram - then the end-to-end smoke) or the narrowest subset you touched.
 - Did you leave stray processes? (engine, terminal PTYs, language servers) — they are killed with the app; don't leave orphans.
 - Did you update `docs/` for behavior changes? Especially `docs/TOOLUSE.md`, `docs/BACKEND.md`, `docs/SENSORY.md`, `NOTICE.md` (attribution).
 - If you touched the UI, screenshot it. If you touched the server, restart `serve` and prove with curl.

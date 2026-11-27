@@ -12,7 +12,7 @@ declare global {
       version: string;
       getRuntime: () => Promise<RuntimeInfo>;
       pickFolder: () => Promise<string | null>;
-      popoutWindow: (kind: string, sessionId: string, worktree?: string) => Promise<number>;
+      popoutWindow: (kind: string, sessionId: string, worktree?: string, url?: string) => Promise<number>;
       growWindow: (targetWidth: number) => Promise<boolean>;
       nudgeWindow: () => Promise<boolean>;
       editAction: (action: string) => Promise<boolean>;
@@ -26,6 +26,9 @@ declare global {
     takePendingFile: () => Promise<string | null>;
     pathForFile: (file: File) => string;
     onFileOpen: (cb: (p: { path: string }) => void) => void;
+  browserChrome: (msg: { kind: "bounds"; height: number }) => void;
+  browserCmd: (cmd: { op: "navigate" | "back" | "forward" | "reload" | "stop" | "state"; url?: string }) => Promise<{ ok: boolean; error?: string; state?: unknown }>;
+  onBrowserState: (cb: (s: unknown) => void) => void;
     onContextMenu: (cb: (p: { x: number; y: number }) => void) => void;
     };
   }
@@ -141,9 +144,9 @@ export async function pickFolder(): Promise<string | null> {
   return null;
 }
 
-export async function popoutWindow(kind: string, sessionId: string, worktree?: string): Promise<void> {
+export async function popoutWindow(kind: string, sessionId: string, worktree?: string, url?: string): Promise<void> {
   if (typeof window !== "undefined" && window.eventhorizon?.popoutWindow) {
-    await window.eventhorizon.popoutWindow(kind, sessionId, worktree);
+    await window.eventhorizon.popoutWindow(kind, sessionId, worktree, url);
   }
 }
 

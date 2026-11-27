@@ -12,6 +12,7 @@ import { startLocalServer } from "../server/index";
 import { contained } from "../server/wsguard";
 import { audit } from "../server/audit";
 import { allowedExternalUrl } from "../shared/externals";
+import { initBrowser, openBrowserWindow } from "./browser";
 
 type Runtime = { baseUrl: string; password: string; port: number };
 let runtime: Runtime | null = null;
@@ -348,11 +349,24 @@ app.whenReady().then(async () => {
   }
   // Pop-out windows: terminal / chat in their own OS window, same session.
   // Sweep-3: kind is allowlisted, and only trusted renderers may spawn windows.
-  const POPOUT_KINDS = new Set(["terminal", "chat", "camera"]);
-  ipcMain.handle("window:popout", (e, kind: string, sessionId: string, worktree?: string) => {
+  // Loads one of our pop-out renderer pages into a window and hardens it.
+  // (The browser window reuses this for its chrome page - see ./browser.ts.)
+  const loadPopoutPage = (win: BrowserWindow, kind: string, query: string): void => {
+    const devIcon = path.resolve(__dirname, "../../build/icon.png");
+    if (fs.existsSync(devIcon)) win.setIcon(devIcon);
+    const devUrl = process.env.ELECTRON_RENDERER_URL;
+    if (devUrl) void win.loadURL(`${devUrl}/?${query}`);
+    else void win.loadFile(path.join(__dirname, "../renderer/index.html"), { search: query });
+    hardenWindow(win, `popout-${kind}`);
+  };
+  // The browser window (S4): its own view + session, owned by main.
+  initBrowser({ isTrustedRenderer, preparePopout: (win, kind) => { loadPopoutPage(win, kind, `popout=${encodeURIComponent(kind)}`); win.once("ready-to-show", () => win.show()); } });
+  const POPOUT_KINDS = new Set(["terminal", "chat", "camera", "browser"]);
+  ipcMain.handle("window:popout", (e, kind: string, sessionId: string, worktree?: string, url?: string) => {
     if (!isTrustedRenderer(e)) return null;
     if (typeof kind !== "string" || !POPOUT_KINDS.has(kind)) return null;
     if (typeof sessionId !== "string" || sessionId.length > 128) return null;
+    if (kind === "browser") return openBrowserWindow(typeof url === "string" ? url.slice(0, 2048) : undefined);
     const win = new BrowserWindow({
       width: kind === "camera" ? 780 : 980, height: kind === "camera" ? 700 : 720,
       title: `Event Horizon - ${kind}`,
@@ -365,15 +379,8 @@ app.whenReady().then(async () => {
         preload: path.join(__dirname, "../preload/index.js"),
       }
     });
-    // Dev-mode window/taskbar icon (packaged builds get theirs from the
-    // electron-builder icon config baked into the exe).
-    const devIcon = path.resolve(__dirname, "../../build/icon.png");
-    if (fs.existsSync(devIcon)) win.setIcon(devIcon);
     const query = `popout=${encodeURIComponent(kind)}&session=${encodeURIComponent(sessionId ?? "default")}${worktree ? `&wt=${encodeURIComponent(worktree)}` : ""}`;
-    const devUrl = process.env.ELECTRON_RENDERER_URL;
-    if (devUrl) void win.loadURL(`${devUrl}/?${query}`);
-    else void win.loadFile(path.join(__dirname, "../renderer/index.html"), { search: query });
-    hardenWindow(win, `popout-${kind}`);
+    loadPopoutPage(win, kind, query);
     win.once("ready-to-show", () => win.show());
     return win.id;
   });

@@ -1,6 +1,6 @@
 # A minimal, hardened browser window (S4) - design
 
-**Status: PROPOSED - a design, nothing implemented.** Researched 2026-11-26; sources at the end.
+**Status: B1 SHIPPED (2026-11-27) - the hardened window: its own in-memory session, every permission denied, only public http(s), loopback/private unreachable by literal, name or resolved record, no bridge, downloads cancelled, verified from inside the page in the real window.** The agent tools (rowser_*), the driving banner and auto-confirm are designed and next. Researched 2026-11-26; sources at the end.
 
 Operator's direction: "really minimal and lightweight but something we can control, make private, and with air-tight security mindedness and local control baked in ... harden but still usable and featherweight."
 

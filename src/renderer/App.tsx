@@ -26,6 +26,7 @@ import ChatColumn, { type ChatMsg } from "./ChatColumn";
 import { apiFetch, apiJson, popoutWindow, growWindow, runtimeInfo, eventStreamTicket } from "./api";
 import { activeGrants, noteApproval, pendingApprovals, resolveApproval, refreshApprovals, type ApprovalRequest } from "./approvals";
 import ApprovalsMenu from "./ApprovalsMenu";
+import BrowserChrome from "./BrowserChrome";
 import { droppedFilePath, takePendingFile } from "./api";
 import Toasts, { type Toast } from "./Toasts";
 import ContextMenu, { openContextMenu } from "./ContextMenu";
@@ -564,6 +565,9 @@ export default function App() {
       </div>
     );
   }
+  // The browser window (S4): this page is only the chrome; the web content is
+  // a view owned by main in its own hardened session.
+  if (popoutKind === "browser") return <BrowserChrome />;
   if (popoutKind === "chat") {
     return (
       <div class="popout-root">

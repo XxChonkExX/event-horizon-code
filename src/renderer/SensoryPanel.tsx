@@ -224,6 +224,8 @@ export default function SensoryPanel() {
       </p>
       <div class="checks">
         <button class="cat-btn" onClick={() => void popoutWindow("camera", "default")}>open camera window</button>
+        <div class="session-meta" style={{ "margin-top": "10px" }}>Browser window (hardened): its own session, every permission refused, this machine and the LAN unreachable from a page.</div>
+        <button class="cat-btn" onClick={() => void popoutWindow("browser", "default")}>open browser window</button>
       </div>
 
       <h3>Vision</h3>
