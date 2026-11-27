@@ -89,14 +89,13 @@ Audit entries never contain keys, prompts, or file contents.
 
 ## Gaps vs. the gold standard (tracked)
 
-- **Profiles → prompt wiring** (settings are stored, not yet applied).
+- **Profiles → prompt wiring** — SHIPPED: request param > active profile > config (agentLoop.ts).
 - **Auto-memory at scale**: Today `remember` (session/project) + engram. Claude Code
-  auto-accumulates learnings; ours is agent-initiated. Next: post-session
-  extraction pass that proposes memory entries for user approval.
+  auto-accumulates learnings; ours is agent-initiated — and the extraction pass
+  shipped: proposals + operator-approved application (`/api/memory/extract`, `/api/memory/apply`, `memory:test`).
 - **Cache-stable system context**: instructions are rebuilt each turn (correct after
   `remember`, slightly cache-unfriendly). OpenCode freezes memory per session and
   refreshes after compaction — worth adopting once we measure cache hits.
 - **Memory blocks (Letta-style)**: shared global/project blocks with self-editing
   tools. Our project memory file is the v1 of this.
-- **Session forking / checkpoints**: OpenCode snapshots + revert. We have git
-  worktrees; per-turn snapshots are planned.
+- **Session forking / checkpoints** - SHIPPED: forks + per-turn checkpoints (every prompt is a fork/revert point).

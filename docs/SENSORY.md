@@ -10,7 +10,7 @@ Event Horizon as an organism. Every part is local-first and opt-in, and follows 
 | **Immune system** | AgentWatch (opt-in), permission gates, audit ledger | sweep/gate | ✅ wired |
 | **Eyes** | llama.cpp **mtmd** (multimodal) — `mtmd.dll` already in the bundled engine build | OpenAI content parts (image_url) via llama-server | 🔧 Phase S1 (below) |
 | **Ears** | whisper.cpp sidecar - official CPU build + a language model, both an optional one-click download | local CLI (`whisper-cli`) | ✅ wired (`/api/sensory/transcribe`, composer mic button) |
-| **Mouth** | Piper or Kokoro (onnx, small, CPU) | local CLI/HTTP sidecar | 📋 Phase S2 |
+| **Mouth** | Piper (onnx, small, CPU; Kokoro planned) | local CLI sidecar | ✅ shipped (engine/piper/system/ BYOK adapters) |
 | **Skin/proprioception** | AgentWatch runtime posture (ports, processes, drivers) | `aw posture` | ✅ Phase B wired |
 | **Presence / camera** | camera window -> vision model (the engine's vision lane, **Ollama** locally, or BYOK Vision with explicit consent) + a 2D agent presence | `/api/sensors/camera/*` | ✅ wired (S3a) - rest proposed, [SENSORS.md](SENSORS.md) |
 | **Range / radio** | lidar (ROS 2 drivers), SDR direction finding, depth | sensor bus, ROS 2 bridge | 📋 proposed - [SENSORS.md](SENSORS.md) |
@@ -18,12 +18,12 @@ Event Horizon as an organism. Every part is local-first and opt-in, and follows 
 
 ## Eyes — vision (S1) — **VERIFIED LIVE 2026-11-11**
 
-The bundled engine already contains `mtmd.dll` + `llama-mtmd-cli.exe`. Vision flow:
+The bundled engine contains `mtmd.dll` (vision projection); the staged set ships llama-server + llama-tts (the mtmd CLI is not part of the pinned subset). Vision flow:
 
 1. User loads a vision-capable GGUF (+ its `mmproj` file) through the Model Manager — e.g. their own Gemma models, Qwen2-VL, MiniCPM-V.
 2. `llama-server` serves `/v1/chat/completions` with OpenAI content parts: `{type:"text"}`, `{type:"image_url", image_url:{url:"data:image/png;base64,..."}}`.
 3. Router `chatOpenAI()` already accepts content parts (wired with the router's images support).
-4. Agent tools gain: `screenshot` (capture window/screen to data URL), `paste-image` in chat composer, `read_image <path>` (server-side base64).
+4. Agent tools gained: `screenshot` (capture window/screen to data URL, Windows; macOS/Linux lanes planned). `paste-image` in the composer and `read_image <path>` remain planned.
 
 **Live verification (this machine):** treatment-Q8_0.gguf (Gemma-4-12b fine-tune) + `mmproj-gemma-4-12B-it-Q8_0.gguf` (159MB, ggml-org) via `--mmproj`. Server: `loaded multimodal model`. Test: 256x256 PNG, cyan "42" on black, drawn with System.Drawing, sent as data-URL content part. Model read it: *"the number '42' in a bright blue font against a black background... the answer is '42'"*, finish=stop, 10.5 t/s with vision. The mmproj pairs with **any Gemma-4-12b-derived GGUF** (Glitter Boy, Red Team line — one `--mmproj` flag each).
 

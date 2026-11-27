@@ -19,8 +19,8 @@ Three products, clean interfaces, independent responsibilities:
 - Agent loop: bounded steps, retries, context recovery, per-session serialization, cooperative cancel, **global operator pause**.
 - Tool permission gates (allow/ask/deny + prefix patterns for MCP families), approval authority the model cannot grant, workspace containment (sibling/symlink/junction proof), bounded bodies.
 - SOP engine (agent/script/gate nodes, rework, gated/automated, script-node approval with immutable reviewed command).
-- Sessions/checkpoints/forks/compaction; profiles; memory + engram; sensory (TTS live, STT refused plainly); MCP client.
-- Assurance: wsguard adversarial tests, ACP security tests, 12-stage `npm test` incl. end-to-end smoke, audit log with rotation/health, release pipeline gated on tests + engine staging.
+- Sessions/checkpoints/forks/compaction; profiles; memory + engram; sensory (TTS live, STT in the composer since 0.0.4a); MCP client.
+- Assurance: wsguard adversarial tests, ACP security tests, 23-stage `npm test` incl. end-to-end smoke, audit log with rotation/health, release pipeline gated on tests + engine staging.
 - Operator command surface: `/api/capabilities` (health-derived), `/api/runtime/pause`, `/api/approvals`.
 
 ## Phase 1 — Reliability foundation (next)
@@ -64,10 +64,10 @@ Unattended missions with explicit scope + expiration; scheduled workflows; multi
 
 | Item | Note |
 |---|---|
-| In-place session tabs | Session state is module-scoped across ~12 components; needs a session-signal pass (switch = reload state, resubscribe SSE, remount Terminal/Monaco per session). Deferred to post-alpha; switching reloads the window today. |
+| In-place session tabs | Shipped: switching is in-place (remounts Terminal/Monaco per session). Remaining polish: per-session editor tabs/drafts and the MemoryPanel session prop. |
 | Linux/macOS engine staging | `prepare-engine.mjs` stages Windows binaries; per-platform file lists + verification are needed before multi-OS packaging. Release workflow is Windows-only by design. |
 | Omarchy plugin | Scaffold in `integrations/omarchy/` (bar widget + session menu via the local runtime API). |
-| App icon / code signing | Needs artwork and a certificate — operator input required. |
+| App icon / code signing | Icon shipped (build/icon.png + .ico); the certificate is the remaining half - operator input required. |
 | Password boundary | DONE: renderer holds no credential (IPC proxy + main-minted tickets). Residual: trusted-renderer XSS equals full app compromise (same for any local tool); mitigated by CSP + minimal bridge. |
 | fs:op session-worktree binding | DONE: file ops anchor to the session's validated worktree. |
 | MCP per-server permissions | DONE: prefix patterns (`mcp_server_*`) in `.harness/config.json` permissions; per-tool exact names already gated. |

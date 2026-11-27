@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { audit } from "./audit";
 
 export type SensorySidecar = { bin: string | null; asset: string | null; ready: boolean; source: string | null };
@@ -174,6 +174,68 @@ export function doctor(): { ears: SensorySidecar; mouth: SensorySidecar; tried: 
 // ---- STT: write the WAV, run the CLI, collect the text ----
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024; // about 8 minutes of 16 kHz mono
 
+// ---- whisper-server: spawn once, keep warm, POST audio to /inference ----
+// (operator decision 2026-11-26: implement the HTTP path instead of running a
+// server binary with CLI flags, which just timed out on every transcription)
+let srvProc: ChildProcess | null = null;
+let srvPort = 0;
+let srvModel = "";
+let srvExitHook = false;
+
+async function ensureWhisperServer(bin: string, model: string): Promise<number> {
+  if (srvProc && srvModel === model && srvPort) return srvPort;
+  await stopWhisperServer();
+  srvPort = 8178 + Math.floor(Math.random() * 500);
+  srvModel = model;
+  srvProc = spawn(bin, ["-m", model, "--port", String(srvPort), "-t", "4"], { stdio: ["ignore", "ignore", "ignore"], windowsHide: true });
+  srvProc.on("error", () => { try { srvProc?.kill(); } catch { /* gone */ } srvProc = null; });
+  if (!srvExitHook) {
+    srvExitHook = true;
+    process.once("exit", () => { try { srvProc?.kill(); } catch { /* gone */ } });
+  }
+  // Readiness: ANY http answer (even 404) means the socket is up - the model
+  // load happens before the listener binds, so poll up to 120 s.
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    if (!srvProc || srvProc.exitCode !== null) break; // died while loading
+    try { await fetch(`http://127.0.0.1:${srvPort}/`, { signal: AbortSignal.timeout(1000) }); return srvPort; }
+    catch { await new Promise((r) => setTimeout(r, 500)); }
+  }
+  const died = !srvProc || srvProc.exitCode !== null;
+  srvProc = null; srvPort = 0; srvModel = "";
+  throw new Error(died ? "whisper-server exited while starting - the model may not load on this machine" : "whisper-server did not become ready within 120 s");
+}
+
+export async function stopWhisperServer(): Promise<void> {
+  try { srvProc?.kill(); } catch { /* gone */ }
+  srvProc = null; srvPort = 0; srvModel = "";
+}
+
+/** POST one WAV to a running whisper-server's /inference (multipart). Extracted for tests. */
+export async function transcribeViaServer(port: number, wav: Buffer, language: string): Promise<string> {
+  const boundary = `----ehc${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+  const parts: Buffer[] = [];
+  const field = (name: string, value: string): void => {
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+  };
+  field("temperature", "0");
+  field("response_format", "json");
+  if (language) field("language", language);
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n`));
+  parts.push(wav);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+  const body = Buffer.concat(parts);
+  const res = await fetch(`http://127.0.0.1:${port}/inference`, {
+    method: "POST",
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    body: new Uint8Array(body),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) throw new Error(`whisper-server answered ${res.status}`);
+  const j = JSON.parse(await res.text()) as { text?: string };
+  return cleanTranscript(j.text ?? "");
+}
+
 /**
  * whisper-cli prints the transcript on stdout and nothing else when run with
  * -np; its progress log goes to stderr and is deliberately NOT part of the
@@ -193,16 +255,29 @@ export async function transcribe(audioBase64: string, opts?: { language?: string
   if (!s.ears.ready) return { ok: false, error: "ears (STT) not ready - install whisper.cpp and a ggml model (GET /api/sensory/doctor says exactly what is missing; the Sensory panel has optional downloads)" };
   if (!model) return { ok: false, error: `unknown model "${String(opts?.model ?? "").slice(0, 60)}" - pick one of the installed models` };
   const bin = s.ears.bin!;
+  const isServer = /whisper-server/i.test(path.basename(bin));
   let audio: Buffer;
   try { audio = Buffer.from(audioBase64, "base64"); } catch { return { ok: false, error: "audio must be base64" }; }
   if (audio.length < 44 || audio.toString("latin1", 0, 4) !== "RIFF") return { ok: false, error: "audio must be a WAV (16 kHz mono)" };
   if (audio.length > MAX_AUDIO_BYTES) return { ok: false, error: "the recording is too long (over about 8 minutes)" };
+  const language = (opts?.language ?? sttLanguage()).toLowerCase();
+  // whisper-server is an HTTP sidecar, not a CLI: spawn once with the model,
+  // keep it warm, POST every recording (operator decision 2026-11-26).
+  if (isServer) {
+    try {
+      const port = await ensureWhisperServer(bin, model);
+      const clean = await transcribeViaServer(port, audio, language && !/\.en\.bin$/.test(model) ? language : "");
+      audit({ tool: "sensory.stt", note: `${clean.length} chars, ${Math.round(audio.length / 32000)} s, ${path.basename(model)} (server)` });
+      return { ok: true, text: clean };
+    } catch (e) {
+      return { ok: false, error: `whisper-server failed: ${String((e as Error).message ?? e).slice(0, 240)}` };
+    }
+  }
   const wav = path.join(os.tmpdir(), `ehc-stt-${process.pid}-${Date.now().toString(36)}.wav`);
   fs.writeFileSync(wav, audio, { mode: 0o600 });
   try {
     const args = ["-m", model, "-f", wav, "-nt", "-np"];
     // An English-only model has no language to pick; whisper refuses -l there.
-    const language = (opts?.language ?? sttLanguage()).toLowerCase();
     if (language && !/\.en\.bin$/.test(model)) args.push("-l", language);
     const stdout = await new Promise<string>((resolve, reject) => {
       execFile(bin, args, { timeout: 120_000, windowsHide: true, maxBuffer: 1_000_000 }, (err, out, stderr) => {

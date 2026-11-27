@@ -25,14 +25,14 @@ Ships as an Electron app (Windows, Linux, macOS) with a workbench UI modelled on
 
 - **Windows compositor**: under heavy GPU load a window can present a stale frame; a single click recovers it. Every in-app trigger found by two independent audits is fixed; the machine-level trigger remains under investigation (`docs/GPU.md`).
 - **Not bundled**: the whisper.cpp speech engine and its models (an optional download, or your package manager), the AfterImage engram (imported via subprocess - see `docs/ENGRAM_INTEGRATION.md`), and the AgentWatch `aw` CLI. The detonation lane uses OS-level sandbox backends (WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS) - if none is available it refuses plainly. Every absent dependency is stated plainly in the UI rather than faked.
-- **Packaging cosmetics**: default Electron icon, no code-signing certificate.
+- **Packaging cosmetics**: no code-signing certificate (the icon ships - build/icon.png + .ico).
 - **Linux builds**: AppImage + deb are packaged and verified live (0.0.3d); the Windows packer stages the Vulkan engine binaries, while Linux runs use your own llama.cpp/Ollama or the engine from source. An [Omarchy](https://omarchy.org) shell plugin (sessions bar widget + panel) ships in `integrations/omarchy/`. **0.0.4a publishes Windows and Linux installers;** macOS runs from source.
 
 ## Release
 
 The full hand-driven pipeline lives in [`docs/RELEASE.md`](docs/RELEASE.md): version bump, pre-flight tests, engine staging with SHA-256 verification, `pack:dir`, a release-candidate checklist, artifact hashing, and the tag/publish template.
 
-**Downloads ([releases](https://github.com/XxChonkExX/event-horizon-code/releases))** - tagged `0.0.4a`, marked latest:
+**Downloads ([releases](https://github.com/XxChonkExX/event-horizon-code/releases))** - tagged `0.0.4b`, marked latest:
 
 | Platform | Artifacts |
 |---|---|
@@ -62,7 +62,7 @@ No Ollama? You don't need it. The model ladder works without it on every platfor
 
 Ollama is a *convenience*, not a requirement (native Linux/macOS/Windows builds exist if you want it).
 
-Roadmap (post-alpha): macOS packaging, in-app speech downloads for macOS, and engine staging for Linux/macOS in the packer (Linux can download in-app since 0.0.4b). Speech-to-text shipped in 0.0.4a; the Omarchy shell plugin in 0.0.3d. Designs for the next step - a camera window and sensor suite ([`docs/SENSORS.md`](docs/SENSORS.md)) and a minimal hardened browser window ([`docs/BROWSER.md`](docs/BROWSER.md)) - are written up and await a decision; nothing in them is implemented. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
+Roadmap (post-alpha): macOS packaging, in-app speech downloads for macOS, and engine staging for Linux/macOS in the packer (Linux can download in-app since 0.0.4b). Speech-to-text shipped in 0.0.4a; the Omarchy shell plugin in 0.0.3d. The camera window and sensor suite ([`docs/SENSORS.md`](docs/SENSORS.md)) shipped their first phase (S3a); the hardened browser window ([`docs/BROWSER.md`](docs/BROWSER.md)) is designed and next. The full strategic roadmap - durable Agent Runs, Mission Control, independent review agents, AgentWatch evolution, the evaluation lab - lives in [`docs/ROADMAP.md`](docs/ROADMAP.md), with implemented/scaffolded status marked per item.
 
 ## Quick start
 
@@ -174,4 +174,4 @@ Roadmap and UI/UX audits: [`docs/ROADMAP.md`](docs/ROADMAP.md) and
 
 ---
 
-Status: **v0.0.4a (alpha)**. Windows (NSIS/MSI, Vulkan engine) and Linux (AppImage/deb/rpm, engine-less) are packaged; macOS runs from source. Rough edges and deferrals are documented in `docs/`; please file issues.
+Status: **v0.0.4b (alpha)**. Windows (NSIS/MSI, Vulkan engine) and Linux (AppImage/deb/rpm, engine-less) are packaged; macOS runs from source. Rough edges and deferrals are documented in `docs/`; please file issues.

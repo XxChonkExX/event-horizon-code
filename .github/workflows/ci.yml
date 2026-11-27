@@ -6,7 +6,7 @@ on:
 
 jobs:
   check:
-    # Full suite (typecheck + 10 test stages + end-to-end smoke). The smoke boots
+    # Full suite (the full 23-stage test suite + end-to-end smoke). The smoke boots
     # the real runtime including native modules, so plain `npm ci` (no
     # --ignore-scripts) is required.
     runs-on: ubuntu-latest

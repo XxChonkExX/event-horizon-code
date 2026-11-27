@@ -53,8 +53,8 @@ Desktop app (the real product):
 
 ```bash
 npm run dev                 # Electron window, random port + per-launch password
-npm run build               # main 28kB + preload 0.13kB + renderer 29kB
-npm run pack                # installers: dmg / nsis+msi / AppImage+deb+rpm
+npm run build               # main ~400kB + preload ~1kB + renderer ~5MB (+12MB TS worker)
+npm run pack                # installers: Windows NSIS+MSI (engine staged); Linux/macOS via electron-builder directly
 ```
 
 Linux: the workbench needs a display. Launched with neither `DISPLAY` nor
@@ -68,7 +68,7 @@ not running (`npm run dev`); the page names the cause and the fix.
 
 ```bash
 curl -u eventhorizon:<pass> http://127.0.0.1:4126/global/health
-# {"healthy":true,"version":"0.1.0"}
+# {"healthy":true,"version":"0.0.4"}
 
 curl -u eventhorizon:<pass> http://127.0.0.1:4126/api/models
 # your local Ollama models, e.g. gemma4:e4b, gemma4:12b

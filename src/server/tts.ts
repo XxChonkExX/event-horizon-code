@@ -22,8 +22,11 @@ import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { audit } from "./audit";
+import { fetch as ufetch } from "undici";
 import { resolveEngineBinary, readEngineConfig } from "./engine";
 import { candidateDirs, readSensoryConfig } from "./sensory";
+import { readSecret } from "./secrets";
+import { cachedPinnedAgent, resolveHostAddrs } from "./dnspin";
 
 export type TtsAdapterId = "engine" | "piper" | "system" | "byok";
 
@@ -46,6 +49,11 @@ export type TtsConfig = {
   engineMmproj?: string;
   language?: string;
   voices?: Record<string, { adapter?: TtsAdapterId; reference?: string; lang?: string }>;
+  /** BYOK speech (operator decision 2026-11-26): configuring it IS the consent -
+   * the operator names the provider, model and voice deliberately, the endpoint
+   * is shown in the doctor/panel, and every use is audited. Text leaves the
+   * machine only for the configured endpoint, via the pinned connection. */
+  byok?: { provider?: string; model?: string; voice?: string };
 };
 
 export function readTtsConfig(): TtsConfig {
@@ -133,7 +141,13 @@ export function ttsAvailability(): { adapters: TtsAvailability[]; preferred: Tts
       ok: Boolean(piperBin && piperVoice),
       note: piperBin && piperVoice ? `${path.basename(piperBin)} + ${path.basename(piperVoice)}` : "piper not installed (see /api/sensory/doctor)",
     },
-    { adapter: "byok", ok: false, note: "bring your own key (not configured)" },
+    {
+      adapter: "byok",
+      ok: byokTtsReady(),
+      note: byokTtsReady()
+        ? `${byokTtsCfg()?.provider} -> ${byokTtsHost()} (configured = consent; every use audited)`
+        : "bring your own speech: set tts.byok {provider, model, voice} - configuring it is the consent",
+    },
   ];
   const configured = cfg.adapter && cfg.adapter !== "auto" ? (cfg.adapter as TtsAdapterId) : null;
   // Platform default: Windows speaks through the OS voices (instant, no model);
@@ -193,7 +207,7 @@ export function ttsDoctor(): {
 
   install.push(`Voices: drop wav/mp3 recordings into ${voicesDir()} - each one becomes a selectable voice (engine adapter clones it). Pocket TTS speaks near-silence WITHOUT a speaker reference, so keep at least one recording there.`);
   install.push("piper (optional): see GET /api/sensory/doctor.");
-  install.push("BYOK (optional): point tts at a cloud endpoint you already pay for; no telemetry.");
+  install.push("BYOK speech (optional, operator decision 2026-11-26): set tts.byok {provider, model, voice} in .harness/config.json - the provider must already have a stored key (Models > BYOK secrets). CONFIGURING IT IS THE CONSENT: text leaves this machine only for that endpoint, on the pinned connection, and every use is audited.");
   install.push("House rule: nothing is downloaded automatically. These are instructions, not actions.");
   return { platform, preferred, adapters, voicesDir: voicesDir(), install };
 }
@@ -201,6 +215,51 @@ export function ttsDoctor(): {
 // ---- synthesize ----
 
 export type SpeakResult = { ok: boolean; audio?: string; adapter?: TtsAdapterId; voice?: string; error?: string };
+
+// ---- BYOK speech: text leaves the machine only for the configured endpoint ----
+
+function byokTtsCfg(): { provider: string; model: string; voice: string } | null {
+  const byok = readTtsConfig().byok;
+  if (!byok?.provider || !byok.model) return null;
+  return { provider: byok.provider, model: byok.model, voice: byok.voice ?? "alloy" };
+}
+
+function byokTtsHost(): string {
+  try { return new URL(readSecret(byokTtsCfg()!.provider)?.baseUrl ?? "").host; } catch { return "the configured endpoint"; }
+}
+
+function byokTtsReady(): boolean {
+  const cfg = byokTtsCfg();
+  if (!cfg) return false;
+  try { return Boolean(readSecret(cfg.provider)?.apiKey); } catch { return false; }
+}
+
+/** POST OpenAI-style /audio/speech; returns the audio as a data URL. */
+async function speakWithByok(text: string): Promise<SpeakResult> {
+  const cfg = byokTtsCfg();
+  if (!cfg) return { ok: false, adapter: "byok", error: "byok speech not configured - set tts.byok {provider, model, voice}" };
+  let secret: ReturnType<typeof readSecret> = null;
+  try { secret = readSecret(cfg.provider); } catch (e) { return { ok: false, adapter: "byok", error: String((e as Error).message ?? e).slice(0, 160) }; }
+  if (!secret?.apiKey || !secret.baseUrl) return { ok: false, adapter: "byok", error: `no usable key for "${cfg.provider}" - the stored secret is missing or undecryptable` };
+  try {
+    const url = `${secret.baseUrl.replace(/\/+$/, "")}/audio/speech`;
+    const ips = await resolveHostAddrs(new URL(url).hostname);
+    const res = await ufetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${secret.apiKey}` },
+      body: JSON.stringify({ model: cfg.model, voice: cfg.voice, input: text }),
+      signal: AbortSignal.timeout(60_000),
+      dispatcher: cachedPinnedAgent(ips),
+    });
+    if (!res.ok) return { ok: false, adapter: "byok", error: `speech endpoint answered ${res.status}: ${(await res.text()).slice(0, 160)}` };
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length) return { ok: false, adapter: "byok", error: "the speech endpoint returned no audio" };
+    audit({ tool: "tts.byok", note: `${text.length} chars -> ${byokTtsHost()}, ${(buf.length / 1024).toFixed(0)} KB` });
+    return { ok: true, adapter: "byok", audio: `data:audio/mpeg;base64,${buf.toString("base64")}` };
+  } catch (e) {
+    return { ok: false, adapter: "byok", error: `speech fetch failed: ${String((e as Error).message ?? e).slice(0, 160)}` };
+  }
+}
 
 export async function speak(text: string, opts?: { voice?: string; adapter?: TtsAdapterId }): Promise<SpeakResult> {
   const clean = (text ?? "").replace(/\s+/g, " ").trim().slice(0, 2000);
@@ -225,6 +284,11 @@ export async function speak(text: string, opts?: { voice?: string; adapter?: Tts
     if (!av?.ok) return { ok: false, adapter: "piper", error: av?.note ?? "piper not available" };
     const sensory = readSensoryConfig();
     return speakWithPiper(clean, sensory.tts!.bin!, sensory.tts!.voice!);
+  }
+  if (wanted === "byok") {
+    const av = adapters.find((a) => a.adapter === "byok");
+    if (!av?.ok) return { ok: false, adapter: "byok", error: av?.note ?? "byok speech not configured" };
+    return speakWithByok(clean);
   }
   return { ok: false, error: `adapter "${wanted}" is not configured` };
 }

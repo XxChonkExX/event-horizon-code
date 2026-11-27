@@ -49,7 +49,11 @@ mac:
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
-  notarize: true
+  # Unsigned alpha (operator decision 2026-11-26): GitHub-hosted macOS CI
+  # builds .dmg/.zip with no signing identity and no notarization - Gatekeeper
+  # requires right-click > Open. Set an identity + notarize credentials here
+  # (or via env) when an Apple Developer account exists.
+  notarize: false
   target:
     - dmg
     - zip

@@ -1,0 +1,46 @@
+name: Release (macOS, unsigned alpha)
+
+# Operator decision 2026-11-26: no Mac hardware - GitHub-hosted macOS runners
+# build unsigned .dmg/.zip alpha artifacts. Engine-less like the Linux
+# releases (the bundled llama.cpp engine staging is Windows-shaped; the macOS
+# app uses the ladder: Ollama on the machine, BYOK). Gatekeeper: the artifacts
+# are unsigned - right-click > Open on first launch.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['[0-9]*', 'v*']
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+
+  build:
+    needs: test
+    runs-on: macos-14
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      # Build the renderer/server bundles, then package directly - prepare:engine
+      # is deliberately NOT run (it fails without a staged engine, and the macOS
+      # alpha ships engine-less; the Sensory panel's optional downloads still work).
+      - run: npm run build
+      - name: Package (unsigned dmg + zip)
+        run: npx electron-builder --mac dmg zip --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: event-horizon-macos-unsigned
+          path: dist/*
+          if-no-files-found: error
