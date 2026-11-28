@@ -290,14 +290,22 @@ app.whenReady().then(async () => {
   // broke clipboard copy and terminal paste in 0.0.3e.
   const ours = (wc: Electron.WebContents | null): boolean => Boolean(wc && trustedContents.has(wc.id));
   const seesCamera = (wc: Electron.WebContents | null): boolean => Boolean(wc && cameraWindows.has(wc.id));
+  // Screen capture is refused everywhere, on purpose. Until Electron 45 it
+  // arrived as `media` with no types and was refused only because the media
+  // rule below matches neither audio nor video; from 45 it is its own
+  // `display-capture` permission, which the "anything not media is granted"
+  // rule would otherwise let through. Nothing in the app captures the screen
+  // through the page (the screenshot tool goes through the OS, on request).
+  const NEVER = new Set(["display-capture"]);
   session.defaultSession.setPermissionCheckHandler((wc, permission, _origin, details) => {
     if (!ours(wc) || !details.isMainFrame) return false;
+    if (NEVER.has(permission)) return false;
     if (permission !== "media") return true;
     return details.mediaType === "audio" || (details.mediaType === "video" && seesCamera(wc));
   });
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback, details) => {
     const types = permission === "media" ? ((details as Electron.MediaAccessPermissionRequest).mediaTypes ?? []) : [];
-    const allow = ours(wc) && (permission !== "media"
+    const allow = ours(wc) && !NEVER.has(permission) && (permission !== "media"
       || ((types.includes("audio") || seesCamera(wc)) && (seesCamera(wc) || !types.includes("video"))));
     if (!allow) audit({ tool: "permission.deny", note: `${permission} [${types.join(",")}] ${String((details as Electron.PermissionRequest).requestingUrl ?? "").slice(0, 80)}` });
     callback(allow);
