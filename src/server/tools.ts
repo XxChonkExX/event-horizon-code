@@ -113,7 +113,8 @@ export async function resolveValidatedUrl(raw: string): Promise<{ url: URL; ips:
 // The connection pin itself (resolveHostAddrs + pinnedAgent) lives in
 // ./dnspin - one implementation shared with the BYOK lane.
 
-export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "camera_look" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
+export type ToolName = "read" | "edit" | "write" | "bash" | "grep" | "glob" | "ls" | "websearch" | "webfetch" | "camera_look" | "sensor_observe" | "engram_search" | "engram_register" | "calc_verify" | "run_machine" | "run_js" | "todo" | "remember" | "verify" | "code_complete" | "screenshot";
+import { observeSource } from "./sensorBus";
 import { lookFromCamera } from "./sensors";
 import { callDigest, consumeGrant, summarizeCall, alwaysAsks } from "./approvals";
 import type { ApprovalSummary, AskOutcome } from "./approvals";
@@ -259,7 +260,7 @@ function walkFiles(root: string, maxFiles = 2000): string[] {
 // descriptor (~/.eventhorizon/runtime.json) is included: it carries the API
 // password, and a shell holding that could call any route - including
 // approving its own tool calls.
-const CREDENTIAL_FILES = /(^|[\\/])(\.harness[\\/]secrets\.json|\.eventhorizon[\\/]runtime\.json(\.[^\\/]+)?|\.env(\..+)?|credentials?\.(json|ya?ml)|id_rsa|id_ed25519|id_ecdsa|\.netrc|\.npmrc|\.aws[\\/]credentials|\.docker[\\/]config\.json|\.ssh[\\/][^\\/]+)|\.(pem|key|p12|pfx)$/i;
+const CREDENTIAL_FILES = /(^|[\\/])(\.harness[\\/]secrets\.json|\.eventhorizon[\\/]runtime\.json(\.[^\\/]+)?|\.eventhorizon[\\/]sensors\.json(\.[^\\/]+)?|\.env(\..+)?|credentials?\.(json|ya?ml)|id_rsa|id_ed25519|id_ecdsa|\.netrc|\.npmrc|\.aws[\\/]credentials|\.docker[\\/]config\.json|\.ssh[\\/][^\\/]+)|\.(pem|key|p12|pfx)$/i;
 
 // The environment handed to commands the agent runs. EH_PASS is the headless
 // runtime's API password (scripts/serve.ts): a shell that can print it could
@@ -551,9 +552,10 @@ export async function runTool(
       // EH_SECRETS_FILE may have moved the secrets file under another name.
       const secretsBase = path.basename(secretsPath()).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const namesSecretsFile = secretsBase !== "" && new RegExp(`(^|[^\\w.-])${secretsBase}($|[^\\w.-])`, "i").test(cmd);
-      // The runtime descriptor carries the API password: a shell holding it
-      // could call any route, including approving its own tool calls.
-      const namesDescriptor = /\.eventhorizon[\\/]runtime\.json/i.test(cmd);
+      // The runtime descriptor carries the API password and the sensors file the
+      // bridge token: a shell holding either could call any route - including
+      // approving its own tool calls or feeding the agent's sensor stream.
+      const namesDescriptor = /\.eventhorizon[\\/](runtime|sensors)\.json/i.test(cmd);
       if (/\bsecrets\.json\b/i.test(cmd) || namesSecretsFile || namesDescriptor || /(^|[^\w.])\.env(\.[^.]+)?\b/i.test(cmd.replace(/\.env\.example/g, "")) || /\bid_rsa\b|\.netrc\b|credentials?\.(json|ya?ml)\b/i.test(cmd)) {
         audit({ tool, note: "refused: credential file access" });
         return { ok: false, error: "refused: commands that read or write credential files (.harness/secrets.json, .env, keys, the runtime descriptor) are not allowed. Ask the user instead.", out: "" };
@@ -725,6 +727,17 @@ export async function runTool(
       } catch (e) {
         return { ok: false, error: String(e).slice(0, 200), out: "" };
       }
+    }
+    if (tool === "sensor_observe") {
+      // The sensor bus (S3): one bounded observation from a source the USER
+      // has started. Sensing asks on every use (the always-ask floor); the
+      // source cannot be started by the model, and an observation is text or
+      // small JSON - never a stream, never raw pixels or points.
+      const id = String(args.source ?? "");
+      const r = await observeSource(id, { question: String(args.question ?? "").slice(0, 500), initiator: "agent" });
+      if (!r.ok) return { ok: false, error: r.error, out: "" };
+      const payload = r.observation.payload;
+      return { ok: true, out: (typeof payload === "string" ? payload : JSON.stringify(payload)).slice(0, 4000) };
     }
     if (tool === "camera_look") {
       // The agent may look only while the USER has the camera on (camera

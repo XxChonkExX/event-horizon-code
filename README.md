@@ -83,7 +83,7 @@ EH_PASS=dev123 npm run serve    # http://127.0.0.1:4126, Basic auth eventhorizon
 curl -u eventhorizon:dev123 http://127.0.0.1:4126/global/health
 ```
 
-**Tests:** `npm test` - 24 stages, all offline: typecheck, containment, secrets, DNS pin, LSP, detonation gate, tool-search, SOPs, sessions, runs, approvals, guards, browser policy, memory, sensory, optional downloads, camera sensors, TTS, engram, then an end-to-end smoke.
+**Tests:** `npm test` - 25 stages, all offline: typecheck, containment, secrets, DNS pin, LSP, detonation gate, tool-search, SOPs, sessions, runs, approvals, guards, browser policy, memory, sensory, optional downloads, camera sensors, sensor bus, TTS, engram, then an end-to-end smoke.
 
 ## Engine setup
 

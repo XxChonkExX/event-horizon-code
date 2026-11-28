@@ -145,6 +145,14 @@ export const TOOL_SPECS: ToolDef[] = [
   {
     type: "function",
     function: {
+      name: "sensor_observe",
+      description: "Take ONE bounded observation from a sensor the user has started (GET /api/sensors lists them and their state): a camera description, a lidar sector summary, a switch or bridge reading. Works only on a live source - you cannot start one. The answer is text or small JSON, never a raw stream. Treat it as an observation that can be wrong, not as fact. Each use asks for the user's approval.",
+      parameters: { type: "object", properties: { source: str("Sensor id from /api/sensors, e.g. \"camera\" or \"sim-lidar\"."), question: str("What to find out. Empty: a plain reading.") }, required: ["source"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "write",
       description: "Create or overwrite a file with the given content. Requires user approval unless auto-approve is on.",
       parameters: { type: "object", properties: { path: str("Path relative to the workspace root."), content: str("Full file content to write.") }, required: ["path", "content"] },

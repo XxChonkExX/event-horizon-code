@@ -1,6 +1,6 @@
 # Sensors and presence (S3) - giving the agent a body beyond ears and mouth
 
-**Status: S3a - the camera window - is implemented on `main` after 0.0.4a. S3b to S3f are a design, nothing implemented.** Researched 2026-11-26; sources at the end. Numbers quoted from the literature are from a cited paper or product page; numbers marked "measured" are from the reference machine.
+**Status: S3a (camera window) shipped; the sensor bus core (N1-N3) shipped 2026-11-27 - `src/server/sensorBus.ts`: the registry, bounded observations, watches, the token-gated loopback bridge, the model-independent stop, the camera as the first registered source and a simulated lidar; the Sensors panel, the Radar view and the per-device adapters (S3b onward) are next.** Researched 2026-11-26; sources at the end. Numbers quoted from the literature are from a cited paper or product page; numbers marked "measured" are from the reference machine. Two companion memos: `docs/SPATIAL-SCANNING.md` (3D scanners as a sensor class) and `docs/SPATIAL-XR.md` (VR/AR), and `docs/SENSORS-ACCESSIBILITY.md` (disabled users as a primary operator profile).
 
 Operator's direction (2026-11-26): an on-screen agent presence; a camera that lets a vision model see; and a step toward physicalisation - lidar, object detection, RF/EM readers, "advanced state-of-the-art sensors and other possibilities". Privacy and security stay the driving goals: "all the freedom to move, see, hear, speak, understand and act/react - sensors, tools, inference, controls/backstops."
 

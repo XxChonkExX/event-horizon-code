@@ -41,7 +41,23 @@ import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { CATALOG_LINKS, catalogStatus, cancelFetch, fetchState, startFetch, FetchError } from "./sensoryfetch";
-import { cameraLanes, cameraPoll, deliverFrame, look } from "./sensors";
+import { cameraLanes, cameraPoll, cameraWindowLive, deliverFrame, look, lookFromCamera } from "./sensors";
+import { addWatch, bridgeInfoFile, bridgeRunning, ensureBridgeListener, listSensors, listWatches, observeSource, recentObservations, registerSimulatedLidar, registerSource, removeWatch, startSource, stopAllSensors, stopSource } from "./sensorBus";
+
+// The camera is the first source on the sensor bus: it keeps its own window
+// (capture is the renderer's), and an observation is one Look through the
+// local lane - the agent's lane, which never sends a frame off this machine.
+registerSource({
+  id: "camera", label: "Camera", kind: "device",
+  desc: "The camera window's frame, described once per observation. Live only while the camera window is open with the camera started.",
+  status: () => (cameraWindowLive() ? "live" : "off"),
+  observe: async ({ question, initiator }) => {
+    const r = await lookFromCamera({ question: question ?? "", initiator });
+    if (!r.ok) throw new Error(r.error ?? "the camera could not answer");
+    return { kind: "look", payload: { text: r.text ?? "" } };
+  },
+});
+registerSimulatedLidar();
 import { listVoices, speak, ttsDoctor } from "./tts";
 import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } from "./agentrun";
 import { APP_VERSION } from "../shared/version";
@@ -1474,6 +1490,72 @@ export function startHttpServer(opts: ServerOpts): http.Server {
         } catch { sendJson(res, 400, { error: "bad request" }); }
       });
       return;
+    }
+    // ---- the sensor bus (S3 N1-N3): every source, off until started ----
+    // Exact collection/watch routes first; the `:id/start|stop|observe|watch`
+    // forms sit before the camera block but never match its exact paths
+    // (`camera/lanes|look|poll|frame`), which are handled below.
+    if (req.method === "GET" && url.pathname === "/api/sensors") {
+      return sendJson(res, 200, { sensors: listSensors(), watches: listWatches(), bridge: bridgeRunning() ? { protocol: "ehc-bridge/1", infoFile: bridgeInfoFile() } : null });
+    }
+    if (req.method === "POST" && url.pathname === "/api/sensors/stop-all") {
+      // The one switch that ends everything (accessibility): sources off, watches gone.
+      const r = await stopAllSensors();
+      return sendJson(res, 200, { ok: true, ...r });
+    }
+    if (req.method === "POST" && url.pathname === "/api/sensors/bridge/open") {
+      // Starts the token-gated loopback listener for a ROS 2 bridge / sidecar.
+      const b = await ensureBridgeListener();
+      return sendJson(res, 200, { ok: true, port: b.port, infoFile: b.infoFile }); // the token itself never crosses the API
+    }
+    if (req.method === "GET" && url.pathname === "/api/sensors/watches") {
+      return sendJson(res, 200, { watches: listWatches() });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/sensors/") && url.pathname.endsWith("/watch")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sensors/".length, -"/watch".length));
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { question?: string; everyMs?: number; maxMs?: number; contains?: string[] };
+          const r = addWatch({ sourceId: id, question: typeof b.question === "string" ? b.question.slice(0, 500) : undefined, everyMs: Number(b.everyMs), maxMs: Number(b.maxMs), contains: Array.isArray(b.contains) ? b.contains.map((c) => String(c).slice(0, 80)).slice(0, 10) : undefined });
+          sendJson(res, r.ok ? 200 : 400, r);
+        } catch { sendJson(res, 400, { ok: false, error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/sensors/watches/")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sensors/watches/".length));
+      const removed = removeWatch(id);
+      return sendJson(res, removed ? 200 : 404, { ok: removed });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/sensors/") && url.pathname.endsWith("/start")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sensors/".length, -"/start".length));
+      const r = await startSource(id);
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/sensors/") && url.pathname.endsWith("/stop")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sensors/".length, -"/stop".length));
+      const r = await stopSource(id);
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/api/sensors/") && url.pathname.endsWith("/observe")) {
+      // One bounded observation. From the renderer this is the user asking.
+      const id = decodeURIComponent(url.pathname.slice("/api/sensors/".length, -"/observe".length));
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { question?: string };
+          const r = await observeSource(id, { question: typeof b.question === "string" ? b.question.slice(0, 500) : undefined, initiator: "user" });
+          sendJson(res, r.ok ? 200 : 409, r);
+        } catch { sendJson(res, 400, { ok: false, error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/api/sensors/observations") {
+      const source = url.searchParams.get("source") ?? undefined;
+      return sendJson(res, 200, { observations: recentObservations(source, Number(url.searchParams.get("limit") ?? 20) || 20) });
     }
     // Camera (sensors S3): which vision lanes exist, and "what is in this frame".
     // A frame only leaves this machine with the user's explicit consent - the

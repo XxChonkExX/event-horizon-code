@@ -63,7 +63,7 @@ export type ApprovalPolicy = {
 // The floor for noGrantTools: a build may add to it, never remove from it.
 // PRIVACY.md promises that a camera look asks each time; a grant would
 // silently turn one yes into a standing permission to sense.
-const ALWAYS_ASK_TOOLS = ["camera_look"];
+const ALWAYS_ASK_TOOLS = ["camera_look", "sensor_observe"];
 
 const policy: ApprovalPolicy = { requestTimeoutMs: 10 * 60_000, grantMaxUses: 10_000, grantMaxTtlMs: 24 * 3600_000, keepResolved: 100, noGrantTools: [...ALWAYS_ASK_TOOLS] };
 
