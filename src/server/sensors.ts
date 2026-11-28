@@ -138,7 +138,7 @@ export async function look(args: {
     const base = engineEndpoint();
     if (!base) return { ok: false, error: "the local engine is not running - start a vision model in the Models panel, or choose Ollama / BYOK Vision" };
     laneNote = "engine (this machine)";
-    answer = await chatOpenAI("engine", messages, { baseUrl: base, apiKey: "local", think: "low", numPredict: 180, timeoutMs: 60_000 });
+    answer = await chatOpenAI("engine", messages, { baseUrl: base, apiKey: "local", think: "low", numPredict: 400, timeoutMs: 60_000 });
   } else if (args.lane === "ollama") {
     // Local like the engine: the frame stays on this machine, so no consent gate.
     const model = String(args.provider ?? "");
@@ -147,7 +147,7 @@ export async function look(args: {
       return { ok: false, error: `that Ollama model is not installed - pick a vision-capable model in the camera window (EHC never downloads models)` };
     }
     laneNote = `ollama ${model.slice(0, 60)} (this machine)`;
-    answer = await ollamaChat(model, messages, { think: "low", numPredict: 180, timeoutMs: 120_000, numCtx: 8192 });
+    answer = await ollamaChat(model, messages, { think: "low", numPredict: 400, timeoutMs: 120_000, numCtx: 8192 });
   } else {
     let secret: ReturnType<typeof readSecret> = null;
     try { secret = args.provider ? readSecret(args.provider) : null; } catch { /* unreadable: treated as absent */ }
@@ -160,7 +160,7 @@ export async function look(args: {
     let host = secret.baseUrl;
     try { host = new URL(secret.baseUrl).host; } catch { /* keep the raw text */ }
     laneNote = `byok ${String(args.provider ?? "").slice(0, 40)} -> ${host}`;
-    answer = await chatOpenAI(secret.model ?? "", messages, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: "low", numPredict: 180, timeoutMs: 60_000 });
+    answer = await chatOpenAI(secret.model ?? "", messages, { baseUrl: secret.baseUrl, apiKey: secret.apiKey, think: "low", numPredict: 400, timeoutMs: 60_000 });
   }
   audit({ tool: "camera.look", note: `${laneNote}, ${frame.bytes} bytes, ${question.length} chars${args.initiator ? ` [${args.initiator}]` : ""}` });
   if (!answer.ok) return { ok: false, error: String(answer.error ?? "the vision model did not answer").slice(0, 300) };

@@ -5,6 +5,11 @@ Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
 ## [Unreleased]
 
+### H4 + vision robustness (not part of `0.0.5a`)
+
+- **Creality CR-Scan Ferret (H4) identified + probed + first capture** (`docs/SPATIAL-SCANNING.md` "H4 live test", `N4b`): USB `VID_2BC5&PID_069C`, Orbbec; Depth/IR/RGB camera interfaces; **RGB 640x480 @ ~15 fps real frame + non-blank pixels + PNG verified**; **Depth + IR not exposed as webcam streams -> Orbbec SDK v2** (does **not** require NVIDIA; `Creality Scan` needs CUDA and isn't installed; nothing downloaded; no 3D source class yet). **Vision model on the physical capture verified** (`gemma4-e4b` + `mmproj`, `POST /api/sensors/camera/look lane=engine`, accurate description).
+- **`look()` vision `numPredict` 180 -> 400** (`src/server/sensors.ts`, engine + Ollama + BYOK): on thinking models (`gemma4-e4b`), `numPredict=180` can be consumed by `reasoning_content`, hitting `finish_reason=length` with empty `message.content`, so `camera_look`/`sensor_observe` returned "no text"; fixed + `sensors:test` + typecheck + live re-test green. No other behaviour change.
+
 ### Electron 45.5.0 (H1; security — 42 was EOL 2026-10-20)
 
 - `electron` `^42.0.0` -> **`45.5.0`** exact (Chromium **156**, Node 24; package.json `allowScripts` for npm 11 `allow-scripts`; native `better-sqlite3` + `node-pty` rebuilt clean; no app code change). **Full `npm test` 25 stages / 761 + 14 smoke ALL PASS on Electron 45.5.0**; `secrets:test:electron` ALL PASS; real-window permission matrix ALL PASS incl. `display-capture` refused; approvals + hardened-browser + Sensors/Radar real-window ALL PASS; `npm run build`.
