@@ -1,10 +1,16 @@
 # Upgrading Electron — runbook (42 → 45)
 
-**Why now:** Electron 42 reached end of life on **2026-10-20** (no security fixes since; `42.11.18` was the final release). Supported majors as of 2026-11-27: **45** (latest, until 2027-04-27), 44 (until 2027-03-02), 43 (until 2027-01-05 — six weeks left, so not a destination).
+**EXECUTED 2026-11-27.** `electron 45.5.0` (exact pin; was `^42.0.0`); `npm run typecheck`; **`npm test` 25 stages / 761 checks + 14 smoke ALL PASS on Electron 45.5.0** (smoke runs under the new binary incl. `better-sqlite3` + `node-pty`); `npm run build`; real-window **permission matrix ALL PASS** (clipboard read/write + mic granted, camera denied, **screen-capture `display-capture` refused**, editor + terminal, no overflow; **Chromium 156.0.8078.109**); **approvals** real-window run; **hardened-browser** real-window run; **Sensors/Radar/one-switch** real-window `ALL PASS`; **`secrets:test:electron` ALL PASS**; **native rebuild `electron-builder install-app-deps` → `better-sqlite3` + `node-pty` completed** (no source change). Original `0.0.5a` was cut on Electron 42; this upgrade is on `main`, not in `0.0.5a`. `docs/SPATIAL-XR.md` re-measured `navigator.xr` on 45.5.0.
 
-**Target:** `electron@45.5.0` — Chromium 156, Node 24.22 (we are on Node 24.15 today: same major, and both native modules are N-API, so **no native rebuild is expected**; `postinstall` runs `electron-builder install-app-deps` and will say so if one is).
+**One toolchain note discovered:** npm 11.17 has **`allow-scripts`**; a fresh `npm install electron@45.5.0` does **not** run Electron's `postinstall` (`install.js`, which downloads `node_modules/electron/dist`) nor this package's `postinstall`, and prints `npm approve-scripts`. **Dev-time only** (nothing here changes the app's own "nothing downloads unless you click" runtime rule; the user asked for this upgrade). Recovery: `npm approve-scripts electron`, then `node node_modules/electron/install.js`, then `npx electron-builder install-app-deps`. **`npm ci` on a lockfile already containing 45.5.0 + `allowScripts` is the clean path.**
 
-**When:** in a headroom window (training paused). The build itself needs ~6 GB, which the machine has today; what the window buys is the *real-window verification matrix* without GPU contention, which is where the compositor/stale-frame class of flakiness comes from. Budget 45–60 minutes.
+---
+
+**Why:** Electron 42 reached end of life on **2026-10-20** (no security fixes since; `42.11.18` was the final release). Supported majors after the upgrade: **45** (until 2027-04-27); **46 stable 2027-01-05** (Node 26 — native-module check); **45 EOL 2027-04-27**; `release-mac.yml` `macos-latest` ≥13.
+
+**Target:** `electron@45.5.0` — Chromium 156, Node 24.22. Both native modules are N-API; rebuild ran clean.
+
+**When:** in a headroom window (training paused; ~6 GB is enough; the window buys the real-window matrix without GPU contention). Budget 45–60 minutes.
 
 ## What changes 42 → 45 that touches this app
 

@@ -45,7 +45,7 @@ Every release ships a SHA-256 sheet; the binaries are unsigned, so verify before
 
 ## Requirements
 
-- **Node.js 22+** (Electron 42, npm packages)
+- **Node.js 22.12+** (Electron 45, npm packages)
 - **Windows 10/11, Linux, or macOS** (prebuilt `node-pty` and engine templates included; the inference engine binary is machine-specific - see [Engine](#engine-setup) below).
 - A model: either a **GGUF** for the bundled engine *(e.g. `huihui-qwen3-4b-abliterated-v2-q8_0.gguf`, `Qwen3-4B`, `DeepSeek-Coder`, `Llama-3-8B-Instruct`, `Gemma-3-12b`)* or **Ollama** or a **BYOK** OpenAI-compatible endpoint.
 - Optional: **Python 3.8+** (AfterImage engram, TI-85 verification), **Ollama**, **ripgrep / fd** (JS fallbacks are built in if absent).

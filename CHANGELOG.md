@@ -5,6 +5,12 @@ Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
 ## [Unreleased]
 
+### Electron 45.5.0 (H1; security — 42 was EOL 2026-10-20)
+
+- `electron` `^42.0.0` -> **`45.5.0`** exact (Chromium **156**, Node 24; package.json `allowScripts` for npm 11 `allow-scripts`; native `better-sqlite3` + `node-pty` rebuilt clean; no app code change). **Full `npm test` 25 stages / 761 + 14 smoke ALL PASS on Electron 45.5.0**; `secrets:test:electron` ALL PASS; real-window permission matrix ALL PASS incl. `display-capture` refused; approvals + hardened-browser + Sensors/Radar real-window ALL PASS; `npm run build`.
+- `docs/UPGRADE-ELECTRON.md` marked executed; `docs/RELEASE.md` (macOS 13+ floor; 45 EOL 2027-04-27; 46 stable 2027-01-05 Node 26); `docs/RUNTIME`/`SECURITY`/`README` truth; `docs/SPATIAL-XR.md` `navigator.xr` re-measured on 45.5.0 (**absent**; still no stock-Electron headset path); `docs/SPATIAL-SCANNING.md` renderer facts snapshot.
+- **`0.0.5a` shipped Electron 42; this upgrade is on `main`, not retroactively in `0.0.5a`.**
+
 ## [0.0.5a] - 2026-11-27 - the sensor bus, Sensors panel + Radar, hardened browser seam, fail-closed permission re-reads
 
 **A generation tick.** Nothing is breaking; everything below is additive. Every stage is green (25 stages, 761 checks, 14-stage end-to-end smoke, `secrets:test:electron`).

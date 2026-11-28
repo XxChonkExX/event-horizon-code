@@ -24,7 +24,7 @@
 | GPUs | AMD Radeon RX 7900 XTX (driver 32.0.31021.6002); Intel Arc Pro B70 (32.0.101.9175); AMD Radeon integrated graphics (32.0.21043.12001); one virtual display adapter. **No NVIDIA GPU.** | `Get-CimInstance Win32_VideoController` |
 | Depth cameras or scanners attached | **None.** Camera-class devices present: `PimaxSensor` (`USB\VID_34A4&PID_0014`), `HD Pro Webcam C920` (`USB\VID_046D&PID_082D`) | `Get-PnpDevice -PresentOnly` |
 | USB | AMD xHCI (USB 3.10 / 3.20), ASMedia USB 3.20 xHCI, USB4 host router. Which physical ports are USB 2.0 only was not checked | same |
-| Renderer engine | Electron 42.11.18 = Chromium 148 | `node_modules/electron/dist/version`; electronjs.org release post |
+| Renderer engine (at measurement time) | Electron 42.11.18 = Chromium 148 | `node_modules/electron/dist/version`; electronjs.org release post | **EHC now ships Electron 45.5.0 = Chromium 156** |
 | Renderer today | WebGL2 already used dependency-free (`src/renderer/ShaderBackground.tsx`, opt-in, default off). No 3D library; 6 runtime dependencies | `grep "getContext("` in `src/renderer`; `package.json` |
 | Pop-out kinds allowlisted | `terminal`, `chat`, `camera` (`window:popout` in `src/main/index.ts`) | grep `popout` |
 | Sensor bus (in flux) | `src/server/sensorBus.ts` appeared during this research (last write 17:03; another session's work). As read: `Observation { source, kind, t, seq, payload, ref?: string }`; payload cap 64 KB, a larger payload is replaced by a truncated notice; history is a 200-entry in-memory ring; source ids must match `[a-z0-9][a-z0-9_-]{0,39}`; at most 8 watches, interval at least 2 s, length at most 30 min; a token-gated loopback TCP bridge (`ehc-bridge/1`) with a 256 KB line cap and 20 lines per second | read; `scripts/test-sensorbus.ts` |
@@ -490,7 +490,7 @@ Honest limits: EHC is a desktop harness, not a wearable, so it describes a works
 9. **The operator's scanner is unknown and was not attached.** Section 0 has the one-line probe. The phase plan needs no hardware until phase 1, and file import works with any handheld or phone.
 10. **Market churn during the research window.** RealSense is being acquired; Leica replaced its RTC line in June 2026; Revopoint listed POP 3 as out of stock on 2026-11-10 and launched MIRACO 2 on 2026-11-18; Scaniverse moved to a new platform where "Classic accounts and scans don't carry over". *Mitigation:* no vendor name in the schema; versions pinned in the catalog.
 11. **Not verified here.** Blender's licence page returned 403. Potree's licence. three.js USD and LAS loaders. Handheld vendors having no SDK (absence of evidence). OpenCV exposing generic 16-bit depth on Windows for unknown cameras. Open3D on AMD GPUs. The ARCore depth image being 160 x 90 (one developer's report). Any latency figure for section 3f. The sensor bus file was still being edited while this was read; its constants are quoted from a read at about 17:05.
-12. **Incidental, outside this memo's scope:** Electron 42 reached end of life on 2026-10-20 (supported lines are 43-45); `package.json` pins `^42.0.0`.
+12. **Incidental, outside this memo's scope:** Electron 42 reached end of life on 2026-10-20 (supported lines are 43-45); `package.json` now pins `electron 45.5.0` (42->45 upgrade applied, `docs/UPGRADE-ELECTRON.md`; 42 reached EOL 2026-10-20).
 
 ---
 
