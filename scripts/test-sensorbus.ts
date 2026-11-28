@@ -1,7 +1,7 @@
 // Sensor bus tests (S3 N1-N3) - offline: a loopback stub stands in for a
 // bridge. Covers the registry, observations, watches, the model-independent
-// stop, the simulated lidar, the token-gated bridge listener, and the
-// `sensor_observe` tool gate.
+// stop (and the halt it sets), the simulated lidar, the token-gated bridge
+// listener, the `sensor_observe` tool gate, and the radar geometry.
 // Run: npm run sensorbus:test
 
 import fs from "node:fs";
@@ -9,12 +9,14 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
-  addWatch, closeBridgeListener, ensureBridgeListener, listSensors, listWatches, onObservation,
-  observeSource, pushObservation, recentObservations, registerSimulatedLidar, registerSource,
-  removeWatch, startSource, stopAllSensors, stopSource, unregisterSource,
+  HALTED_NOTE, addWatch, bridgeRunning, closeBridgeListener, ensureBridgeListener, listSensors, listWatches,
+  onBusEvent, onObservation, observeSource, pushObservation, recentObservations, registerSimulatedLidar, registerSource,
+  removeWatch, resumeSensors, sensorsHalted, startSource, stopAllSensors, stopSource, unregisterSource,
 } from "../src/server/sensorBus";
 import { runTool } from "../src/server/tools";
 import { alwaysAsks, callDigest, consumeGrant } from "../src/server/approvals";
+import { lookFromCamera } from "../src/server/sensors";
+import { asLaserScan, describeScan, nearestSector, ringRadii, wedgePath } from "../src/shared/radar";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail = ""): void {
@@ -72,6 +74,11 @@ async function main(): Promise<void> {
   const w1 = addWatch({ sourceId: "ticker", everyMs: 2000, maxMs: 2600, contains: ["person"] });
   const w2 = addWatch({ sourceId: "ticker", everyMs: 2000, maxMs: 2600, contains: ["nobody-here"] });
   check("a watch is created with an id", w1.ok && w2.ok && listWatches().length === 2);
+  // The answer must survive the trip over HTTP: the live object carries Node
+  // timer handles, and serialising it threw - a successful create answered
+  // "400 bad request" (found by the real-window drive).
+  const w1keys = w1.ok ? Object.keys(w1.watch).sort().join(",") : "";
+  check("a created watch is returned in its public shape (serialisable, same fields as the listing)", w1.ok && !/timer|expiry|_idle/.test(w1keys) && (() => { try { JSON.stringify(w1.watch); return true; } catch { return false; } })() && w1keys === [...Object.keys(listWatches()[0]!), "recent"].sort().join(","), w1keys);
   const fires: string[] = [];
   const firedText: Record<string, string> = {};
   const offW = onObservation((o, meta) => { if (meta?.watchId) { fires.push(meta.watchId); firedText[meta.watchId] = JSON.stringify(o.payload); } });
@@ -86,10 +93,31 @@ async function main(): Promise<void> {
   const firstWatch = listWatches()[0]!.id;
   check("a watch can be removed by id, and only once", removeWatch(firstWatch) && !removeWatch(firstWatch) && listWatches().length === 7);
 
-  // 4. The one switch: everything off, every watch gone, whatever the model is doing.
+  // 4. The one switch: everything off, every watch gone - and HALTED, so
+  //    nothing observes afterwards either. Whatever the model is doing.
+  registerSource({ id: "win-owned", label: "Window-owned", kind: "device", status: () => "off", observe: async () => ({ kind: "k", payload: 1 }) });
+  const events: string[] = [];
+  const offBus = onBusEvent((e) => events.push(e.kind));
   const all = await stopAllSensors();
+  offBus();
   check("stop-all stops every live source and removes every watch", all.stopped.includes("ticker") && all.stopped.includes("beats") && all.watchesRemoved === 7 && listWatches().length === 0 && listSensors().every((s) => s.state !== "live" || s.id === "beats"), JSON.stringify(all));
-  unregisterSource("stub"); unregisterSource("boom"); unregisterSource("ticker"); unregisterSource("beats");
+  check("stop-all halts the bus, and the UI hears it", sensorsHalted() === true && events.includes("state") && events.includes("watch") && events.includes("halt"), JSON.stringify(events));
+  const hStart = await startSource("ticker");
+  const hWatch = addWatch({ sourceId: "ticker", everyMs: 5000, maxMs: 20000 });
+  const hObserve = await observeSource("beats", { initiator: "user" });
+  check("while halted nothing starts, watches or observes - even a source that is on", hStart.halted === true && hWatch.halted === true && hObserve.halted === true && !listSensors().some((s) => s.id === "ticker" && s.state === "live") && listWatches().length === 0);
+  check("the halt says the same thing everywhere", hStart.error === HALTED_NOTE && hWatch.error === HALTED_NOTE && hObserve.error === HALTED_NOTE);
+  const hLook = await lookFromCamera({ question: "what is this?", initiator: "agent" });
+  check("while halted the agent's camera look is refused before any frame is requested", !hLook.ok && /stopped by the user/.test(hLook.error ?? ""), hLook.error);
+  const hBridge = await ensureBridgeListener();
+  check("while halted no bridge can be opened", hBridge.halted === true && !bridgeRunning());
+  resumeSensors();
+  const rStart = await startSource("ticker");
+  check("resume lifts the halt and nothing starts by itself", sensorsHalted() === false && rStart.ok === true && listWatches().length === 0);
+  await stopSource("ticker");
+  const winStart = await startSource("win-owned");
+  check("a source that belongs to its window is not started from the bus", !winStart.ok && /open that window instead/.test(winStart.error ?? ""), winStart.error);
+  unregisterSource("stub"); unregisterSource("boom"); unregisterSource("ticker"); unregisterSource("beats"); unregisterSource("win-owned");
 
   // 5. The simulated lidar: a planar scan with zero hardware.
   registerSimulatedLidar();
@@ -101,10 +129,12 @@ async function main(): Promise<void> {
   await stopSource("sim-lidar");
 
   // 6. The bridge: a token-gated loopback listener. A real TCP client plays the sidecar.
-  const info = await ensureBridgeListener();
+  const opened = await ensureBridgeListener();
+  if (!opened.ok) throw new Error(`the bridge did not open: ${opened.error}`);
+  const info = opened;
   check("the bridge listens on loopback and writes its info file for same-user sidecars", info.port > 0 && info.token.length >= 32 && fs.existsSync(info.infoFile) && JSON.parse(fs.readFileSync(info.infoFile, "utf8")).port === info.port);
-  const connect = (): { sock: net.Socket; lines: string[]; closed: Promise<void> } => {
-    const sock = net.connect(info.port, "127.0.0.1");
+  const connect = (port: number = info.port): { sock: net.Socket; lines: string[]; closed: Promise<void> } => {
+    const sock = net.connect(port, "127.0.0.1");
     sock.setEncoding("utf8");
     const lines: string[] = [];
     let buf = "";
@@ -161,8 +191,43 @@ async function main(): Promise<void> {
   check("a disconnected bridge reports off (state follows the connection)", listSensors().find((s) => s.id === "lidar")?.state === "off");
   const gone = await observeSource("lidar", { initiator: "user" });
   check("observe on a disconnected bridge is a stated refusal", !gone.ok && /off - start it first/.test(gone.error));
+  // 6b. Stopping is true for a bridge: the sidecar's connection ends with it.
+  const solo = connect();
+  send(solo, { type: "hello", token: info.token, source: "switch", label: "Switch box" });
+  await sleep(250);
+  check("a second sidecar connects while the listener is open", listSensors().some((s) => s.id === "switch" && s.state === "live"));
+  await stopSource("switch");
+  await Promise.race([solo.closed, sleep(2000)]);
+  check("stopping a bridge source ends its connection, so off is true", solo.sock.destroyed && listSensors().find((s) => s.id === "switch")?.state === "off");
+  const dualA = connect();
+  send(dualA, { type: "hello", token: info.token, source: "dual" });
+  await sleep(150);
+  const dualB = connect();
+  send(dualB, { type: "hello", token: info.token, source: "dual" });
+  await Promise.race([dualA.closed, sleep(2000)]);
+  await sleep(150);
+  check("a new connection for the same id replaces the old one", dualA.sock.destroyed && listSensors().find((s) => s.id === "dual")?.state === "live");
+  dualB.sock.destroy();
+  await sleep(200);
+  check("the owner leaving is what reports a bridge source off", listSensors().find((s) => s.id === "dual")?.state === "off");
   await closeBridgeListener();
   check("closing the bridge removes its info file", !fs.existsSync(info.infoFile));
+
+  // 6c. The one switch reaches the bridge: listener closed, sidecars dropped,
+  //     token file gone - and it stays shut while halted.
+  const reopened = await ensureBridgeListener();
+  if (!reopened.ok) throw new Error(`the bridge did not reopen: ${reopened.error}`);
+  // A reopened listener has a NEW port: dial that one, not the closed one.
+  const dropped = connect(reopened.port);
+  send(dropped, { type: "hello", token: reopened.token, source: "robot", label: "ROS 2 bridge" });
+  await sleep(250);
+  check("the sidecar is connected before the switch", listSensors().some((s) => s.id === "robot" && s.state === "live"));
+  const sw = await stopAllSensors();
+  await Promise.race([dropped.closed, sleep(2000)]);
+  const late = await ensureBridgeListener();
+  check("stop-all closes the bridge, drops every sidecar and removes the token file", sw.bridgeClosed === true && !bridgeRunning() && !fs.existsSync(info.infoFile) && dropped.sock.destroyed && listSensors().find((s) => s.id === "robot")?.state === "off", JSON.stringify(sw));
+  check("and the bridge stays shut until the user resumes", late.halted === true && !bridgeRunning());
+  resumeSensors();
 
   // 7. The agent's handle: `sensor_observe` asks on every use and cannot start anything.
   await startSource("sim-lidar");
@@ -174,6 +239,36 @@ async function main(): Promise<void> {
   const offRead = await runTool("sensor_observe", { source: "sim-lidar" }, process.cwd(), { userApproved: true });
   check("an off source is a stated refusal even when approved", offRead.ok === false && /off - start it first/.test(offRead.error ?? ""), offRead.error);
   check("sensing is in the always-ask floor (a grant can never cover it)", alwaysAsks("sensor_observe") && alwaysAsks("camera_look") && consumeGrant("s", "sensor_observe", callDigest("sensor_observe", { source: "camera" })) === null);
+
+  // 7b. A simulator's reading writes no audit line (a live sweep would rotate
+  //     the 5 MB log several times a day); a real sensor's reading does.
+  const auditLines = (): number => { try { return fs.readFileSync(path.join(tmp, "audit.jsonl"), "utf8").split("\n").filter((l) => l.includes('"tool":"sensor.observe"')).length; } catch { return 0; } };
+  registerSource({ id: "real-stub", label: "Real stub", kind: "device", observe: async () => ({ kind: "reading", payload: "ok" }) });
+  await startSource("sim-lidar"); await startSource("real-stub");
+  const a0 = auditLines();
+  await observeSource("sim-lidar", { initiator: "user" });
+  const simReading = await observeSource("sim-lidar", { initiator: "user" });
+  const a1 = auditLines();
+  await observeSource("real-stub", { initiator: "agent" });
+  check("a simulator's reading writes no audit line; a real sensor's does", a1 === a0 && auditLines() === a0 + 1, `${a0} -> ${a1} -> ${auditLines()}`);
+  await stopSource("sim-lidar"); await stopSource("real-stub"); unregisterSource("real-stub");
+
+  // 8. Radar geometry: one function feeds the picture and the words, so the
+  //    nearest obstacle the dial highlights is the one the sentence names.
+  const wall = Array.from({ length: 36 }, (_, i) => (i === 15 ? 0.9 : 3 + i * 0.01));
+  const dial = asLaserScan({ sectors: wall, rangeM: 5, resolutionDeg: 10 });
+  check("a scan is read; a malformed one is refused, never guessed", !!dial && asLaserScan(null) === null && asLaserScan({ sectors: [1, "x", 3, 4] }) === null && asLaserScan({ sectors: [1, -2, 3, 4] }) === null && asLaserScan({ sectors: [1, 2] }) === null && asLaserScan({ sectors: [1, NaN, 3, 4] }) === null);
+  const near = dial ? nearestSector(dial) : null;
+  check("the nearest sector is found with its bearing (clockwise from ahead)", !!near && near.index === 15 && near.bearingDeg === 155, JSON.stringify(near));
+  const words = dial ? describeScan(dial, "Sim lidar") : "";
+  check("the reading in words names the same obstacle", words === "Sim lidar: nearest 0.90 m behind right (155\u00B0, sector 16 of 36, 5 m range)", words);
+  const sides = (deg: number): string => { const s = asLaserScan({ sectors: Array.from({ length: 360 }, (_, i) => (i === deg ? 0.5 : 4)), resolutionDeg: 1 }); return s ? describeScan(s).replace(/.*m ([a-z ]+) \(.*/, "$1") : "?"; };
+  check("every direction reads as a side of the machine, not a bare angle", [0, 45, 90, 135, 180, 225, 270, 315, 350].map(sides).join("|") === "ahead|ahead right|to the right|behind right|behind|behind left|to the left|ahead left|ahead", [0, 45, 90, 135, 180, 225, 270, 315, 350].map(sides).join("|"));
+  const p = wedgePath(120, 120, 12, 108, 0, 10);
+  check("a wedge starts straight ahead (up) and runs clockwise", p.startsWith("M 120.00 12.00 A 108 108 0 0 1 138.75 13.64 ") && p.endsWith("Z"), p);
+  const rings = ringRadii(108, 5);
+  check("range rings are equal fractions, each labelled in metres", rings.map((r) => r.r).join(",") === "27,54,81,108" && rings[3]!.metres === 5, JSON.stringify(rings));
+  check("the simulated lidar's payload is a well-formed scan for the dial", simReading.ok && !!asLaserScan(simReading.observation.payload));
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(failures === 0 ? "[ehc] sensor bus tests: ALL PASS" : `[ehc] sensor bus tests: ${failures} FAILURE(S)`);

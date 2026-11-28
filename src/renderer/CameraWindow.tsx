@@ -66,6 +66,8 @@ export default function CameraWindow() {
     stream?.getTracks().forEach((t) => t.stop());
     stream = null;
     setLive(false); setSecs(0);
+    // Say it stopped: the bus's camera reads off at once, no heartbeat grace.
+    void apiJson("/api/sensors/camera/stopped", { method: "POST" }).catch(() => undefined);
   };
   // While live, the window asks ~1.5x per second whether the agent wants a
   // frame (camera_look tool), and sends one only in answer to that. Nothing is
@@ -81,8 +83,13 @@ export default function CameraWindow() {
   const startPolling = (): void => {
     clearInterval(poller);
     poller = setInterval(() => {
-      void apiJson<{ request?: boolean }>("/api/sensors/camera/poll", { method: "POST" })
-        .then((r) => (r.request ? sendFrame() : undefined))
+      void apiJson<{ request?: boolean; halted?: boolean }>("/api/sensors/camera/poll", { method: "POST" })
+        .then((r) => {
+          // The one switch (status bar / Sensors panel) reaches this window
+          // on its own heartbeat: the camera turns off within one poll.
+          if (r.halted) { stop(); flash("Sensors were stopped - the camera is off. Resume sensors to use it again."); return; }
+          if (r.request) void sendFrame();
+        })
         .catch(() => undefined);
     }, 700);
   };
@@ -113,6 +120,10 @@ export default function CameraWindow() {
     };
     setStarting(true);
     try {
+      // After the one switch nothing starts until the user resumes.
+      const bus = await apiJson<{ halted?: boolean }>("/api/sensors").catch(() => ({ halted: false }));
+      if (stale()) return;
+      if (bus.halted) { flash("Sensors are stopped. Resume them first (the status bar or the Sensors panel)."); return; }
       await refreshDevices();
       if (stale()) return;
       const list = devices();

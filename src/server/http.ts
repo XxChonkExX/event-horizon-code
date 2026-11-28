@@ -14,7 +14,7 @@ import { checkSandboxTools, readWorktreeConfig } from "./sandbox";
 import { isUnclean } from "./detonate";
 import { audit } from "./audit";
 import { sweepWorkspace, gateDecision, readAgentWatchConfig, sweepMailbox, snapshotPosture, diffPosture, runProbe, scoreProbe, startOtelReceiver, stopOtelReceiver, acknowledgeFindings, plantCanaries, checkCanaries, detectLoops } from "./agentwatch";
-import { subscribe, broadcast } from "./sse";
+import { subscribe, broadcast, broadcastAll } from "./sse";
 import { contained } from "./wsguard";
 import { getAuditPath, auditHealth } from "./audit";
 import { listWorktrees, addWorktree, removeWorktree } from "./worktree";
@@ -41,8 +41,8 @@ import { runAgentTurn } from "./agentLoop";
 import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { CATALOG_LINKS, catalogStatus, cancelFetch, fetchState, startFetch, FetchError } from "./sensoryfetch";
-import { cameraLanes, cameraPoll, cameraWindowLive, deliverFrame, look, lookFromCamera } from "./sensors";
-import { addWatch, bridgeInfoFile, bridgeRunning, ensureBridgeListener, listSensors, listWatches, observeSource, recentObservations, registerSimulatedLidar, registerSource, removeWatch, startSource, stopAllSensors, stopSource } from "./sensorBus";
+import { cameraLanes, cameraPoll, cameraWindowLive, deliverFrame, look, lookFromCamera, markCameraStopped } from "./sensors";
+import { addWatch, bridgeInfoFile, bridgeRunning, closeBridgeListener, ensureBridgeListener, listSensors, listWatches, observeSource, onBusEvent, onObservation, recentObservations, registerSimulatedLidar, registerSource, removeWatch, resumeSensors, sensorsHalted, startSource, stopAllSensors, stopSource } from "./sensorBus";
 
 // The camera is the first source on the sensor bus: it keeps its own window
 // (capture is the renderer's), and an observation is one Look through the
@@ -58,6 +58,12 @@ registerSource({
   },
 });
 registerSimulatedLidar();
+// The bus reaches every open window at once over the event stream (machine-
+// wide state belongs to no worktree): each observation, each watch fire with
+// its watch id, and each change to the bus itself. Payloads are already
+// bounded by the bus - the stream carries nothing it did not already hold.
+onObservation((o, meta) => broadcastAll("sensor", { kind: meta?.watchId ? "watch" : "observation", observation: o, watchId: meta?.watchId }));
+onBusEvent((e) => broadcastAll("sensor", { kind: e.kind, id: e.id }));
 import { listVoices, speak, ttsDoctor } from "./tts";
 import { listAgentRuns, runTimeline, cancelRun as cancelAgentRun, resumeRun } from "./agentrun";
 import { APP_VERSION } from "../shared/version";
@@ -1496,17 +1502,32 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     // forms sit before the camera block but never match its exact paths
     // (`camera/lanes|look|poll|frame`), which are handled below.
     if (req.method === "GET" && url.pathname === "/api/sensors") {
-      return sendJson(res, 200, { sensors: listSensors(), watches: listWatches(), bridge: bridgeRunning() ? { protocol: "ehc-bridge/1", infoFile: bridgeInfoFile() } : null });
+      return sendJson(res, 200, {
+        sensors: listSensors(), watches: listWatches(), halted: sensorsHalted(),
+        bridge: bridgeRunning() ? { protocol: "ehc-bridge/1", infoFile: bridgeInfoFile() } : null,
+      });
     }
     if (req.method === "POST" && url.pathname === "/api/sensors/stop-all") {
-      // The one switch that ends everything (accessibility): sources off, watches gone.
+      // The one switch that ends everything (accessibility): sources off,
+      // watches gone, the bridge closed, the bus halted until the user resumes.
       const r = await stopAllSensors();
-      return sendJson(res, 200, { ok: true, ...r });
+      return sendJson(res, 200, { ok: true, ...r, halted: sensorsHalted() });
+    }
+    if (req.method === "POST" && url.pathname === "/api/sensors/resume") {
+      // Lifts the halt. Nothing starts by itself: every source is still off.
+      resumeSensors();
+      return sendJson(res, 200, { ok: true, halted: sensorsHalted() });
     }
     if (req.method === "POST" && url.pathname === "/api/sensors/bridge/open") {
       // Starts the token-gated loopback listener for a ROS 2 bridge / sidecar.
       const b = await ensureBridgeListener();
+      if (!b.ok) return sendJson(res, b.halted ? 409 : 500, b);
       return sendJson(res, 200, { ok: true, port: b.port, infoFile: b.infoFile }); // the token itself never crosses the API
+    }
+    if (req.method === "POST" && url.pathname === "/api/sensors/bridge/close") {
+      // Ends every sidecar connection and removes the token file.
+      await closeBridgeListener();
+      return sendJson(res, 200, { ok: true, bridge: bridgeRunning() ? { protocol: "ehc-bridge/1", infoFile: bridgeInfoFile() } : null });
     }
     if (req.method === "GET" && url.pathname === "/api/sensors/watches") {
       return sendJson(res, 200, { watches: listWatches() });
@@ -1585,7 +1606,14 @@ export function startHttpServer(opts: ServerOpts): http.Server {
     // The camera window's side of an agent look: it polls for a request and
     // sends exactly one frame in answer. Nothing is stored either side.
     if (req.method === "POST" && url.pathname === "/api/sensors/camera/poll") {
-      return sendJson(res, 200, cameraPoll());
+      // `halted` rides the window's own heartbeat: after the one switch, the
+      // camera window turns its camera off on the next poll (≤0.7 s).
+      return sendJson(res, 200, { ...cameraPoll(), halted: sensorsHalted() });
+    }
+    // The camera window says its capture ended: off at once, no grace period.
+    if (req.method === "POST" && url.pathname === "/api/sensors/camera/stopped") {
+      markCameraStopped();
+      return sendJson(res, 200, { ok: true });
     }
     if (req.method === "POST" && url.pathname === "/api/sensors/camera/frame") {
       let raw = "";

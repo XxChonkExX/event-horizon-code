@@ -65,7 +65,8 @@ An `ask` tool executes only through an operator-owned source
    decision in time is a stated non-execution.
 
 A cancel or the global operator pause ends a wait; a declined call is not
-re-prompted again in the same run. Tools that **sense** — `camera_look` today —
+re-prompted again in the same run. Tools that **sense** — `camera_look` and
+`sensor_observe` —
 ask on every use and can never be covered by a grant; the server enforces
 that, not just the UI. The agent cannot write `.harness/config.json` or
 `.harness/memory.md` — the files that define its own permissions and replay
@@ -218,4 +219,12 @@ resolved the same way. Verified: `glob *.json` returns files with no `fd` instal
 - Preconditions the tool states plainly when missing: a **local** vision model must be running (the engine on this machine), and the user must have the camera window open with the camera started. The agent cannot open the camera.
 - Local only. Nothing the agent does can send a frame off the computer: the lane is not an argument, and BYOK Vision remains a button the user presses.
 - One frame per call: requested from the open window, sent to the engine, described, discarded. Nothing is stored; the audit line records lane and byte count.
+- The answer is an observation that can be wrong. Treat it as evidence, not fact.
+- Refused while the user has pressed **Stop everything** (sensors halted, `docs/SENSORS.md` §1): no frame is even requested.
+
+## sensor_observe - the agent reads a sensor on the bus
+
+- Permission `ask`. The user approves each use; it can never be covered by a grant, and the build-time always-ask list can extend, never shrink.
+- Preconditions the tool states plainly when missing: `source` must be a source the **user** has started (`GET /api/sensors` lists ids and state; the agent cannot start one), and the sensors must not be **halted** (the user's one switch). A source that is `off`, `starting` or `error`, an unknown id, or a failed reading is a stated refusal, never a guess.
+- One bounded observation per call: text or small JSON, 4000 characters to the model; never a stream, pixels or points; retention none. A `camera` source is `camera_look` in bus form - same local-only lane.
 - The answer is an observation that can be wrong. Treat it as evidence, not fact.

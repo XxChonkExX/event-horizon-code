@@ -10,6 +10,7 @@
 
 import { audit } from "./audit";
 import { engineEndpoint } from "./engine";
+import { noteSourceState, sensorsHalted } from "./sensorBus";
 import { chat as ollamaChat, chatOpenAI, listModels, modelCapabilities, type ChatMessage } from "./router";
 import { readSecret, secretsStatus } from "./secrets";
 
@@ -76,6 +77,10 @@ export function takeFrameRequest(): boolean {
 
 let lastCameraPoll = 0;
 export function cameraPoll(): { request: boolean } {
+  // The first poll after a gap is the camera turning ON. The bus hears it at
+  // once, so the status bar offers the stop the moment a camera is live
+  // rather than on its next idle poll.
+  if (!cameraWindowLive()) noteSourceState("camera");
   lastCameraPoll = Date.now();
   return { request: takeFrameRequest() };
 }
@@ -83,6 +88,12 @@ export function cameraPoll(): { request: boolean } {
 /** True while the camera window is open with the camera on (it checks in about twice a second). */
 export function cameraWindowLive(maxAgeMs = 3000): boolean {
   return Date.now() - lastCameraPoll < maxAgeMs;
+}
+
+/** The camera window says its capture ended: off at once, no heartbeat grace. */
+export function markCameraStopped(): void {
+  lastCameraPoll = 0;
+  noteSourceState("camera");
 }
 
 /** The camera window's answer to a request. Anything else is dropped. */
@@ -165,6 +176,12 @@ export async function look(args: {
  * is never touched when nothing could answer.
  */
 export async function lookFromCamera(args: { question: string; initiator: string }): Promise<{ ok: boolean; text?: string; error?: string }> {
+  // The one switch outranks every approval: after the user stopped the
+  // sensors, no frame is even requested until they resume.
+  if (sensorsHalted()) {
+    audit({ tool: "camera.look", note: "REFUSED: sensors are halted by the user" });
+    return { ok: false, error: "sensors are stopped by the user - nothing looks through the camera until they resume (Sensors panel or the status bar)" };
+  }
   if (!engineEndpoint()) {
     return { ok: false, error: "no local vision model is running - start one in the Models panel. (An agent look only ever uses the engine on this machine.)" };
   }

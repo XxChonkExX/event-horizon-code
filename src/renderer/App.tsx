@@ -13,6 +13,8 @@ import SessionsPanel from "./SessionsPanel";
 import RunsPanel from "./RunsPanel";
 import MemoryPanel from "./MemoryPanel";
 import SensoryPanel from "./SensoryPanel";
+import SensorsPanel from "./SensorsPanel";
+import { handleSensorEvent } from "./sensorStore";
 import FileTree from "./FileTree";
 import MonacoMount from "./MonacoMount";
 import CameraWindow from "./CameraWindow";
@@ -140,6 +142,9 @@ export default function App() {
     { id: "agentwatch", label: "AgentWatch", el: () => <AgentWatchPanel /> },
     { id: "doctor", label: "Doctor", el: () => <ToolchainDoctor /> },
     { id: "sandbox", label: "Sandbox", el: () => <SandboxControls /> },
+    // New panels go LAST: the selected tab is remembered by index, so an
+    // insertion in the middle would silently move everyone's remembered tab.
+    { id: "sensors", label: "Sensors", el: () => <SensorsPanel /> },
   ];
   const [panelTab, setPanelTab] = createSignal(loadNum("ehc.panelTab", 0, 0, PANELS.length - 1));
   // Side-bar "Session log manager" button: reveals the bottom panels row with
@@ -276,6 +281,10 @@ export default function App() {
           const d = JSON.parse((ev as MessageEvent).data) as { id?: string };
           if (d.id) resolveApproval(d.id);
         } catch { /* ignore */ }
+      });
+      // The sensor bus is machine-wide: every window's stream carries it.
+      es.addEventListener("sensor", (ev) => {
+        try { handleSensorEvent(JSON.parse((ev as MessageEvent).data) as Parameters<typeof handleSensorEvent>[0]); } catch { /* ignore */ }
       });
       es.onopen = () => { esRetries = 0; void refreshApprovals(); };
       es.onerror = () => {
@@ -692,7 +701,7 @@ export default function App() {
         </footer>
       </Show>
 
-      <StatusBar session={sessionSig()} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} paused={agentsPaused} onPause={toggleAgentsPaused} approvals={() => pendingApprovals().length} grants={() => activeGrants().length} onApprovals={() => setApprovalsMenu((v) => !v)} />
+      <StatusBar session={sessionSig()} file={activeFile} worktree={wt} model={model} think={think} shader={() => SHADER_STEPS[shaderIdx()].label} onShader={cycleShader} paused={agentsPaused} onPause={toggleAgentsPaused} approvals={() => pendingApprovals().length} grants={() => activeGrants().length} onApprovals={() => setApprovalsMenu((v) => !v)} onSensors={() => window.dispatchEvent(new CustomEvent("ehc:want-panel", { detail: { id: "sensors" } }))} />
       <Toasts toasts={toasts} dismiss={dismissToast} />
       <ContextMenu />
       <Show when={devPreview}>

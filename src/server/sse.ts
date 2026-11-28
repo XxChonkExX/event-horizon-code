@@ -33,3 +33,14 @@ export function broadcast(worktree: string, type: string, payload: unknown) {
     try { res.write(msg); } catch { /* ignore */ }
   }
 }
+
+// Machine-wide state (the sensor bus) belongs to no worktree: every open
+// stream hears it, whichever session or window it serves.
+export function broadcastAll(type: string, payload: unknown) {
+  const msg = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const set of channels.values()) {
+    for (const res of set) {
+      try { res.write(msg); } catch { /* ignore */ }
+    }
+  }
+}

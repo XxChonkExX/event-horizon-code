@@ -1,6 +1,6 @@
 # Sensors and presence (S3) - giving the agent a body beyond ears and mouth
 
-**Status: S3a (camera window) shipped; the sensor bus core (N1-N3) shipped 2026-11-27 - `src/server/sensorBus.ts`: the registry, bounded observations, watches, the token-gated loopback bridge, the model-independent stop, the camera as the first registered source and a simulated lidar; the Sensors panel, the Radar view and the per-device adapters (S3b onward) are next.** Researched 2026-11-26; sources at the end. Numbers quoted from the literature are from a cited paper or product page; numbers marked "measured" are from the reference machine. Two companion memos: `docs/SPATIAL-SCANNING.md` (3D scanners as a sensor class) and `docs/SPATIAL-XR.md` (VR/AR), and `docs/SENSORS-ACCESSIBILITY.md` (disabled users as a primary operator profile).
+**Status: S3a (camera window) shipped; the sensor bus core (N1-N3) shipped 2026-11-27 - `src/server/sensorBus.ts`: the registry, bounded observations, watches, the token-gated loopback bridge, the model-independent stop, the camera as the first registered source and a simulated lidar; the Sensors panel + Radar view (`src/renderer/SensorsPanel.tsx`, `RadarView.tsx`) and the always-reachable status-bar stop shipped 2026-11-27; per-device adapters (S3b onward) are next.** Researched 2026-11-26; sources at the end.
 
 Operator's direction (2026-11-26): an on-screen agent presence; a camera that lets a vision model see; and a step toward physicalisation - lidar, object detection, RF/EM readers, "advanced state-of-the-art sensors and other possibilities". Privacy and security stay the driving goals: "all the freedom to move, see, hear, speak, understand and act/react - sensors, tools, inference, controls/backstops."
 
@@ -25,10 +25,12 @@ sources                                  bus (loopback, in the server)          
 - serial   UART, USB HID, I2C via a sidecar                                   ->  audit log (one entry per capture)
 ```
 
-- A source is started and stopped by the user (`POST /api/sensors/:id/start|stop`); `GET /api/sensors` lists what exists and what is live.
-- `POST /api/sensors/:id/observe { question }` runs perception on the latest frame (vision model or detector) and returns text. This is what an agent tool calls.
-- Peripherals talk to the bus, not to the app: a ROS 2 bridge node for anything with a ROS 2 driver, a loopback UDP/TCP or stdin/stdout sidecar for everything else. No native serial/USB module inside the Electron app.
-- Retention is `none` by default. Keeping frames is an explicit opt-in per source.
+- A source is started and stopped by the user (`POST /api/sensors/:id/start|stop`); `GET /api/sensors` lists what exists, what is live, `halted`, and the open `bridge`. A source whose state belongs to its window (the camera) cannot be started through `/start`; it reads live only while that window reports in, and `POST /api/sensors/camera/stopped` reads off at once.
+- `POST /api/sensors/:id/observe { question }` runs perception once and returns one bounded observation. This is what an agent tool calls. Peripherals talk to the bus, not to the app: a ROS 2 bridge node for anything with a ROS 2 driver, or the token-gated loopback `ehc-bridge/1` listener (`POST /api/sensors/bridge/open`, token-gated; `POST /api/sensors/bridge/close`; token in `~/.eventhorizon/sensors.json`, never over the API; a connected sidecar can only push, and stopping it ends its connection). No native serial/USB module inside the Electron app.
+- **Watches:** `POST /api/sensors/:id/watch { question?, everyMs, maxMs, contains? }` - a standing question asked on an interval (≥2 s), ending on its own (≤30 min, ≤8 at once, millisecond-precise); `GET /api/sensors/watches`, `DELETE /api/sensors/watches/:id`; a created watch is returned serialisable; fires reach every window over SSE `sensor`.
+- **The one switch:** `POST /api/sensors/stop-all` - every source off, every watch removed, the bridge closed and dropped, and the bus **halted** (nothing can start, watch or observe until `POST /api/sensors/resume`, a user route); `POST /api/sensors/stop-all` is what `docs/SENSORS-ACCESSIBILITY.md` §2 calls the model-independent stop. `POST /api/sensors/bridge/close` on its own; `POST /api/sensors/camera/stopped` (the camera window says it stopped).
+- Retention is `none`. Keeping frames is an explicit opt-in per source.
+- Every open event stream hears `sensor` events (machine-wide, `src/server/sse.ts` `broadcastAll`); `src/renderer/sensorStore.ts` keeps one view. The UI is `src/renderer/SensorsPanel.tsx` + `RadarView.tsx`, plus a status-bar stop.
 
 ## 3. Phases
 
@@ -54,7 +56,7 @@ Measured on the reference machine (Logitech HD Pro Webcam C920 plus a VR headset
 - The user's Look through the **Ollama lane** ran live: camera frame -> `gemma4:e4b` -> description in 15.8 s (model load included), all local.
 - The live agent path **has run** (operator, 2026-11-26): the agent asked, the user approved the `camera_look` card, the frame was requested from the open window and the answer came back in the chat - all with a model on this machine. Earlier checks in the real app without a vision model still hold: the window reports in as live only while the camera is on, a frame nobody asked for is dropped (`409`), and with no model the tool says so without touching the camera.
 
-Not yet: watches, agent looks through BYOK Vision (would need a consent held by the server rather than the window - deliberately not built), and a generated or inference-driven virtual agent for the Presence tab.
+Not yet: agent looks through BYOK Vision (would need a consent held by the server rather than the window - deliberately not built), and a generated or inference-driven virtual agent for the Presence tab. (Watches are shipped; see §2.)
 
 Design notes still valid for later phases: keep vision answers short (generation is over 85 % of a vision model's latency); measure time from "look" to answer before promising anything.
 
