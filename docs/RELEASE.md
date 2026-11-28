@@ -88,8 +88,8 @@ Get-ChildItem dist\*.exe | ForEach-Object { (Get-FileHash $_.FullName -Algorithm
 ## 6. Tag + publish
 
 ```pwsh
-git tag -a 0.0.4a -m "Event Horizon Code 0.0.4a"   # letters per re-release inside a version; package.json stays 0.0.4
-git push origin 0.0.4a
+git tag -a 0.0.5a -m "Event Horizon Code 0.0.5a"   # letters per re-release inside a version; package.json is 0.0.5
+git push origin 0.0.5a
 ```
 
 - GitHub release notes template: highlights, known issues, SHA-256 table, **"requires no account, ships no model weights, no telemetry"**.
