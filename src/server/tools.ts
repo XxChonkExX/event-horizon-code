@@ -124,22 +124,26 @@ export type ToolResult = { ok: boolean; out: string; error?: string; needsApprov
 // when it changes (it used to be re-read on every tool call).
 const DEFAULT_PERMISSIONS: Record<string, string> = { read: "allow", ls: "allow", grep: "allow", glob: "allow" };
 const READ_ONLY_TOOLS = new Set(["read", "ls", "grep", "glob"]);
-let permCache: { mtimeMs: number; size: number; perms: Record<string, unknown> | null } | null = null;
 
 /** `perms` is the file's permission table; `broken` is true when the file exists but is not readable JSON. */
 function readPermissions(): { perms: Record<string, unknown>; broken: boolean } {
   const file = path.join(process.cwd(), ".harness", "config.json");
-  let st: fs.Stats;
-  try { st = fs.statSync(file); } catch { permCache = null; return { perms: {}, broken: false }; } // absent: the defaults below
-  if (permCache && permCache.mtimeMs === st.mtimeMs && permCache.size === st.size) return { perms: permCache.perms ?? {}, broken: permCache.perms === null };
+  // No cache. A permission is a security decision and must reflect the file
+  // exactly as it is now; a cache keyed on mtime+size cannot see a same-size
+  // rewrite in the same mtime tick, and a stale read here can answer a
+  // permission the operator has already changed. The file is small and this
+  // is called a handful of times per tool call. Absent -> defaults; exists
+  // but unreadable -> broken (fail closed); unparsable -> broken (fail
+  // closed), exactly as before.
+  try { fs.statSync(file); } catch { return { perms: {}, broken: false }; } // absent: the defaults below
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { permissions?: unknown } | null;
     const perms = parsed && typeof parsed.permissions === "object" && parsed.permissions !== null ? (parsed.permissions as Record<string, unknown>) : {};
-    permCache = { mtimeMs: st.mtimeMs, size: st.size, perms };
     return { perms, broken: false };
   } catch {
-    if (permCache?.perms !== null) audit({ tool: "permissions", note: ".harness/config.json is not readable JSON - write and exec tools fail closed (ask)" });
-    permCache = { mtimeMs: st.mtimeMs, size: st.size, perms: null };
+    // Present but unreadable (readFileSync) or unparsable (JSON.parse): the
+    // operator wrote a config we cannot honour - never fall open.
+    audit({ tool: "permissions", note: ".harness/config.json is not readable JSON - write and exec tools fail closed (ask)" });
     return { perms: {}, broken: true };
   }
 }

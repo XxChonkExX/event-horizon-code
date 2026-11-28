@@ -5,6 +5,60 @@ Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
 ## [Unreleased]
 
+## [0.0.5a] - 2026-11-27 - the sensor bus, Sensors panel + Radar, hardened browser seam, fail-closed permission re-reads
+
+**A generation tick.** Nothing is breaking; everything below is additive. Every stage is green (25 stages, 761 checks, 14-stage end-to-end smoke, `secrets:test:electron`).
+
+### The sensor bus (S3 N1-N3) - the totem's plumbing
+
+- **One way a sensor reaches the agent** (`src/server/sensorBus.ts`): a registry where every source is OFF until the user starts it; a bounded `Observation` (text or small JSON, 64 KB cap, 200-entry in-memory ring, **retention none**); never a stream, pixels or points. Sensing is permission `ask`.
+- **The agent's handle `sensor_observe`** - one observation per approved call; permission `ask` on EVERY use (in the always-ask floor); cannot start anything; refuses unknown / off / halted / failed states honestly. `docs/TOOLUSE.md`.
+- **Watches** - a standing question the user defines, asked on an interval (>=2 s), ending on its own (millisecond-precise deadline, <=30 min, <=8 at once, optional word filter `contains`); user-created, visibly listed, removable. A `sensor.observe` audit line is written only for sources that can actually sense (`asks !== false`).
+- **The one switch `POST /api/sensors/stop-all`** - the model-independent stop; reachable in one press; no confirmation; no press-and-hold: every source off, **connected sidecars dropped**, every watch removed, **the bridge closed**, and the bus **halted** (nothing can start, watch or observe - not even `camera_look`) until `POST /api/sensors/resume`. Set/lifted only by those user routes; never creatable by the model.
+- **`ehc-bridge/1`** - a token-gated loopback listener for ROS 2 sidecars / scanners / switch boxes; first line `hello` with a per-launch token (timing-safe); then observations only; 256 KB line cap; 20 obs/s per connection; validated ids; reserved built-in ids can't be claimed; a replaced connection can't report off; token in `~/.eventhorizon/sensors.json` (owner-only; **refused to the agent** like the runtime descriptor; **never crosses the API**); `POST /api/sensors/bridge/open` / `/close`.
+- **The camera is the first registered source** (`camera`, live only while its window reports in; `POST /api/sensors/camera/stopped` reads off at once; a window-owned source can't be started from the bus); the **simulated lidar** (`sim-lidar`, 36 sectors, 5 m, no model call, off until started) proves the pipeline with zero hardware. `POST /api/sensors/:id/start|stop`, `/observe`, `GET /api/sensors`, `GET /api/sensors/observations`. A created watch is returned serialisable.
+- **Machine-wide events over SSE** (`sensor`, `sse.broadcastAll`): every window hears observations, watch fires, watch-list changes, halt, bridge.
+- **Tests:** `sensorbus:test` (68, incl. a real TCP sidecar, the halt, reserved ids, rate/size caps, malformed-scan refusal), `sensors:test` (37); real-window drive `VERDICT: ALL PASS`.
+
+### Sensors panel + Radar view (the bus's face; `docs/SENSORS-ACCESSIBILITY.md`)
+
+- **Sensors tab** (`src/renderer/SensorsPanel.tsx`; appended last so saved tab indices don't move): sources off until started; Observe; per-source Stop; live Sweep only for sources that cost nothing; watches (question, source, interval, duration, word filter; countdown; fire log; caps + "each ask can be a model call" stated; real `<form>`, `aria-label`s); bridge open/close (token never shown); recent observations; **Stop everything**; readings shown as **sentences, never raw JSON**; `src/shared/radar.ts`.
+- **Radar** (`src/renderer/RadarView.tsx`): SVG planar scan; 36 sectors; range rings in metres; **nearest obstacle in amber AND as a sentence which is also the accessible name**; ahead marker; `prefers-reduced-motion`; honest empty state. One computation feeds picture and words.
+- **Always-reachable stop in the status bar** (`src/renderer/StatusBar.tsx`): shown whenever anything is live or watching; one activation; `sensors: N live` / `N watching` + **stop all sensors / resume sensors**; **ARIA live region**; a physical switch can map to the one route.
+- **Keyboard/focus**: rows are kept by id (reconciled store; focus survives polls); the source picker shows what it holds (focus-gated change; first source default).
+- **N3b (partial):** no press-and-hold arming; no confirmation for the stop; ARIA live regions; `prefers-reduced-motion`. Spoken/haptic multi-channel alerts and switch-class input remain open (worklist).
+- Camera window honours the switch on its heartbeat; a stopped source reads off at once; Start camera refused while halted; says why.
+
+### Hardened browser seam (S4 B1; `docs/BROWSER.md`)
+
+- `src/shared/browserPolicy.ts` + `src/main/browser.ts`: a **separate in-memory browser session with no preload**, **every permission denied**, no node integration, only public http(s), loopback/private blocked by literal/name/resolved record (incl. IPv6 forms + `parseIpv6`), `window.open` denied, **downloads cancelled**, cannot see or reach the app runtime; `BrowserChrome`; pop-out kind. 90 checks; verified in the real window. (`browser_*` tools are the next step.)
+- **Screen capture refused explicitly on every window** (`display-capture`; previously refused only by accident; Electron-45-ready).
+- **Sensor bridge token file refused to the agent** (`~/.eventhorizon/sensors.json`, incl. 8.3-alias / long-name forms; and `.eventhorizon/sensors.json` in shells).
+
+### Security hardening
+
+- **Permission config re-read, not cached** (`src/server/tools.ts` `readPermissions`): removes a `mtimeMs + size` cache key that could return a stale permission table on a same-size rewrite in one tick (caught by a flaky guard test; it failed closed either way, but a permission is a security decision and must reflect the file exactly). **Unchanged:** `broken` / unparsable-config **fail closed**; absent -> defaults; unknown word -> `ask`; always-ask floor at the permission layer. `guards:test` 49 + an 8x stability run.
+
+### Research (docs/, no code)
+
+- `docs/SPATIAL-SCANNING.md` (3D scanners; device-agnostic; measured 200k-pts JSON 17.73 MB vs binary PLY 2.86 MB; carry a file ref, never points; core vs premium; a one-line probe for the operator's scanner), `docs/SPATIAL-XR.md` (VR/AR; **stock Electron cannot reach a headset - measured**; no-sideload WebXR + VRChat OSC path; base core / advanced premium), worklist updates; **Electron 42 reached EOL 2026-10-20 -> `docs/UPGRADE-ELECTRON.md`** (42->45.5.0 runbook; one `display-capture` posture change already applied + baselined; headroom-window plan H1-H6).
+
+### Versioning
+
+- `package.json` `0.0.5`, `APP_VERSION` `0.0.5`, lockfile mirrored. **Tag `0.0.5a`.** The letter is the minor re-release inside the version. Unsigned; no telemetry; no model weights.
+
+### Verification (this cut)
+
+- `npm run typecheck`; `npm test` **25 stages, 761 checks, ALL PASS**; `npm run test:integration` **14**; `npm run secrets:test:electron` **ALL PASS**; `npm run build`; sensor bus **68**, sensors **37**, approvals **49**, guards **49** (+8x), wsguard **29**, browserpolicy **90**; real-window permission matrix **ALL PASS**; real-window Sensors drive **ALL PASS**; known issues below unchanged.
+
+### Known issues (not hidden)
+
+- Windows compositor: under heavy GPU load a window can present a stale frame; a single click recovers it. All in-app triggers found so far are fixed; the machine-level trigger is under investigation (`docs/GPU.md`).
+- The detonation lane needs an OS sandbox backend (WSL2 namespaces on Windows, bubblewrap on Linux, Seatbelt on macOS) and refuses plainly without one; the microVM (`sbx`) is optional and not shipped. On hosts where the canary times out or the backend cannot hide the host FS, the detonation namespace end-to-end skips with a stated reason; genuine regressions still fail.
+- Speech-to-text needs whisper.cpp and a language model; never bundled - optional checksum-verified download on Windows (x64/ARM64) + Linux x64; macOS install via package manager. TTS BYOK lane configured = consent.
+- **macOS unsigned** (macos-latest, arm64, engine-less, notarize false): Gatekeeper right-click > Open. **Electron 42 is EOL** (this release still ships 42; upgrade to 45.5.0 is planned in `docs/UPGRADE-ELECTRON.md`). Requires no account; ships no model weights; no telemetry.
+- NOTICE attribution: llama.cpp (MIT, vendored chat templates), Tencent LoopForge (MIT, SOP engine), AfterImage Engram (subprocess import), plus Monaco/SolidJS/Electron/OpenCode/VSCodium.
+
 ## [0.0.4c] - 2026-11-27 - approvals, grants, hardening sweep, real shells, side files
 
 - **Interactive approvals and grants - the safe middle between "refuse" and "auto-approve everything".** An `ask` tool now reaches a human: the window shows a card with exactly what will happen (the diff for an edit, the command for a shell call, the question for a look), the run genuinely waits (`awaiting_approval`), and the decision binds to the exact arguments that were raised. Approve once, approve for the session (a revocable, in-memory grant - listed beside the status bar), or deny; a declined call is not re-prompted in the same run; a cancel or the operator pause ends any wait at once. Tools that sense (`camera_look`) ask on **every use by policy** - the server refuses to let a grant cover them, and a build may extend that list but never reduce it. The agent cannot write `.harness/config.json` or `.harness/memory.md` (the files that define its own permissions and replay into every prompt), by tool or by command. Gated SOP agent nodes can now ask the same way (`approvals: "interactive"` on the run). Tested by `approvals:test` (49 checks) and `guards:test` (49 checks) and proven in the real window: deny leaves the file untouched, approve changes exactly what the card showed, a grant answers the next call with no prompt.
