@@ -42,7 +42,7 @@ import { extractMemories, applyMemories, existingMemoryLines } from "./memory";
 import { sensoryStatus, doctor as sensoryDoctor, transcribe } from "./sensory";
 import { CATALOG_LINKS, catalogStatus, cancelFetch, fetchState, startFetch, FetchError } from "./sensoryfetch";
 import { cameraLanes, cameraPoll, cameraWindowLive, deliverFrame, look, lookFromCamera, markCameraStopped } from "./sensors";
-import { addWatch, bridgeInfoFile, bridgeRunning, closeBridgeListener, ensureBridgeListener, listSensors, listWatches, observeSource, onBusEvent, onObservation, recentObservations, registerSimulatedLidar, registerSource, removeWatch, resumeSensors, sensorsHalted, startSource, stopAllSensors, stopSource } from "./sensorBus";
+import { addWatch, bridgeInfoFile, bridgeRunning, closeBridgeListener, ensureBridgeListener, listSensors, listWatches, observeSource, onBusEvent, onObservation, recentObservations, registerSimulatedLidar, registerSource, registerStdioSource, removeWatch, resumeSensors, sensorsHalted, startSource, stopAllSensors, stopSource, unregisterStdioSource } from "./sensorBus";
 
 // The camera is the first source on the sensor bus: it keeps its own window
 // (capture is the renderer's), and an observation is one Look through the
@@ -1517,6 +1517,34 @@ export function startHttpServer(opts: ServerOpts): http.Server {
       // Lifts the halt. Nothing starts by itself: every source is still off.
       resumeSensors();
       return sendJson(res, 200, { ok: true, halted: sensorsHalted() });
+    }
+    if (req.method === "POST" && url.pathname === "/api/sensors/stdio") {
+      // Register + start an OPERATOR-configured stdio sidecar source. The model
+      // has no tool for this; it can only observe a live source (ask-gated).
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", async () => {
+        try {
+          const b = JSON.parse(raw || "{}") as { id?: unknown; label?: unknown; command?: unknown; args?: unknown; cwd?: unknown; desc?: unknown };
+          const r = registerStdioSource({
+            id: typeof b.id === "string" ? b.id : "",
+            label: typeof b.label === "string" ? b.label.slice(0, 80) : typeof b.id === "string" ? b.id : "stdio source",
+            command: typeof b.command === "string" ? b.command : "",
+            args: Array.isArray(b.args) ? b.args.map((a) => String(a)).slice(0, 24) : undefined,
+            cwd: typeof b.cwd === "string" ? b.cwd : undefined,
+            desc: typeof b.desc === "string" ? b.desc.slice(0, 200) : undefined,
+          });
+          audit({ tool: "sensor.stdio", note: `register ${String(b.id ?? "?")} -> ${r.ok ? "ok" : String("error" in r ? r.error : "?").slice(0, 80)}` });
+          sendJson(res, r.ok ? 200 : 400, r);
+        } catch { sendJson(res, 400, { ok: false, error: "bad request" }); }
+      });
+      return;
+    }
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/sensors/stdio/")) {
+      const id = decodeURIComponent(url.pathname.slice("/api/sensors/stdio/".length));
+      const r = unregisterStdioSource(id);
+      audit({ tool: "sensor.stdio", note: `unregister ${id} -> ${r.ok ? "ok" : String(r.error ?? "?").slice(0, 60)}` });
+      return sendJson(res, r.ok ? 200 : 404, r);
     }
     if (req.method === "POST" && url.pathname === "/api/sensors/bridge/open") {
       // Starts the token-gated loopback listener for a ROS 2 bridge / sidecar.

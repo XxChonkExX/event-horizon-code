@@ -5,6 +5,10 @@ Format: Keep a Changelog; semver. Negative results are recorded, not hidden.
 
 ## [Unreleased]
 
+### stdio sidecar sources (N3, the half that was missing)
+
+- **`POST /api/sensors/stdio` + `DELETE /api/sensors/stdio/:id`** (`src/server/sensorBus.ts`): an **operator-configured** external tool becomes a sensor source - the app spawns the operator's command **without a shell** (argv array), **scrubs `EH_PASS` + `EH_AUDIT_LOG` from its environment**, reads **JSON Lines** from stdout (`{kind, payload, ref}`) into bounded `Observation`s (256 KB line cap, 20/s rate cap - a flooding sidecar is stopped, not trusted), reports honest `off`/`error`/`live` state, and is stopped + unregistered by `DELETE`. The **model can observe a live sidecar (`sensor_observe`, `ask`) but has no tool to configure, start or stop one.** This is the clean extension point that keeps bespoke hardware out of the harness: a scanner sidecar, a robot telemetry daemon, a printer-camera bridge all become plain sources (`N4b` path for a Linux `tribuutscan` sidecar). 79 sensor-bus checks (was 68) incl. spawn/JSON/scrub/rate/kill.
+
 ### H4 + vision robustness (not part of `0.0.5a`)
 
 - **Creality CR-Scan Ferret (H4) identified + probed + first capture** (`docs/SPATIAL-SCANNING.md` "H4 live test", `N4b`): USB `VID_2BC5&PID_069C`, Orbbec; Depth/IR/RGB camera interfaces; **RGB 640x480 @ ~15 fps real frame + non-blank pixels + PNG verified**; **Depth + IR not exposed as webcam streams -> Orbbec SDK v2** (does **not** require NVIDIA; `Creality Scan` needs CUDA and isn't installed; nothing downloaded; no 3D source class yet). **Vision model on the physical capture verified** (`gemma4-e4b` + `mmproj`, `POST /api/sensors/camera/look lane=engine`, accurate description).

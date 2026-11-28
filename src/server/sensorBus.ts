@@ -22,6 +22,8 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { audit } from "./audit";
 
 export type SensorKind = "device" | "process" | "bridge" | "serial" | "simulated";
@@ -304,6 +306,122 @@ export function registerSimulatedLidar(): void {
       return { kind: "laserscan", payload: { sectors, rangeM: 5, resolutionDeg: 10 }, ref: undefined };
     },
   });
+}
+
+// ---- stdio sidecar sources (N3): an operator-configured tool that emits
+//      JSON Lines observations on stdout. The APP spawns it; the model can
+//      only observe (ask-gated). This is the clean extension point that keeps
+//      bespoke hardware out of the harness: a scanner sidecar, a robot
+//      telemetry daemon, a printer-camera bridge all become plain sources. ----
+
+export type StdioSourceSpec = {
+  id: string;
+  label: string;
+  /** Executable path or PATH name. Spawned WITHOUT a shell, args as argv. */
+  command: string;
+  args?: string[];
+  cwd?: string;
+  desc?: string;
+};
+
+const STDIO_LINE_CAP = 256 * 1024;
+const STDIO_RATE_PER_SEC = 20;
+const stdioProcs = new Map<string, { child: ChildProcessByStdio<null, Readable, Readable>; spec: StdioSourceSpec }>();
+
+/** A sidecar is operator-configured and must never see our credentials. */
+function sidecarEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.EH_PASS;      // runtime API password
+  delete env.EH_AUDIT_LOG; // our forensic log is not a sidecar's write target
+  return env;
+}
+
+export function registerStdioSource(spec: StdioSourceSpec): { ok: true } | BusRefusal {
+  if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(spec.id)) return { ok: false, error: `source id "${spec.id}" must match [a-z0-9][a-z0-9_-]{0,39}` };
+  if (sources.has(spec.id)) return { ok: false, error: `source id "${spec.id}" already exists` };
+  if (halted) return { ok: false, error: HALTED_NOTE, halted: true };
+  if (!spec.command || typeof spec.command !== "string") return { ok: false, error: "command is required" };
+  if (spec.args !== undefined && (!Array.isArray(spec.args) || spec.args.some((a) => typeof a !== "string"))) return { ok: false, error: "args must be an array of strings" };
+  if (spec.cwd !== undefined && (typeof spec.cwd !== "string" || !fs.existsSync(spec.cwd))) return { ok: false, error: `cwd does not exist: ${String(spec.cwd).slice(0, 80)}` };
+
+  let child: ChildProcessByStdio<null, Readable, Readable>;
+  try {
+    child = spawn(spec.command, spec.args ?? [], { cwd: spec.cwd, env: sidecarEnv(), shell: false, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  } catch (e) {
+    audit({ tool: "sensor.stdio", note: `spawn ${spec.id} failed: ${String((e as Error).message ?? e).slice(0, 100)}` });
+    return { ok: false, error: `spawn failed: ${String((e as Error).message ?? e).slice(0, 140)}` };
+  }
+
+  registerSource({
+    id: spec.id, label: spec.label, kind: "process", desc: spec.desc ?? `stdio sidecar: ${path.basename(spec.command)}`,
+    stop: () => { try { child.kill(); } catch { /* gone */ } },
+    observe: async () => ({ kind: "observation", payload: recentObservations(spec.id, 1)[0]?.payload ?? null }),
+  });
+
+  let buffer = "";
+  let lastSecond = Date.now();
+  let count = 0;
+  let dropped = 0;
+  const overRate = (): void => {
+    audit({ tool: "sensor.stdio", note: `${spec.id} over the ${STDIO_RATE_PER_SEC}/s rate cap - sidecar stopped` });
+    states.set(spec.id, "error");
+    try { child.kill(); } catch { /* gone */ }
+  };
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    buffer += chunk;
+    if (buffer.length > STDIO_LINE_CAP * 4) { overRate(); return; }
+    let i: number;
+    while ((i = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, i).trim();
+      buffer = buffer.slice(i + 1);
+      if (!line) continue;
+      if (line.length > STDIO_LINE_CAP) { dropped++; continue; }
+      const now = Date.now();
+      if (now - lastSecond >= 1000) { lastSecond = now; count = 0; }
+      if (++count > STDIO_RATE_PER_SEC) { overRate(); return; }
+      let msg: { kind?: unknown; payload?: unknown; ref?: unknown };
+      try { msg = JSON.parse(line) as typeof msg; } catch { dropped++; audit({ tool: "sensor.stdio", note: `${spec.id} dropped a non-JSON line (${line.length}B)` }); continue; }
+      pushObservation({
+        source: spec.id,
+        kind: typeof msg.kind === "string" ? msg.kind.slice(0, 40) : "observation",
+        payload: msg.payload ?? null,
+        ref: typeof msg.ref === "string" ? msg.ref.slice(0, 512) : undefined,
+      });
+    }
+  });
+  let stderrTail = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => { stderrTail = (stderrTail + chunk).slice(-2000); });
+  child.on("error", (e: Error) => {
+    states.set(spec.id, "error");
+    audit({ tool: "sensor.stdio", note: `${spec.id} spawn/exec error: ${String(e?.message ?? e).slice(0, 100)}` });
+    emitBus({ kind: "state", id: spec.id });
+  });
+  child.on("exit", (code) => {
+    states.set(spec.id, "off");
+    audit({ tool: "sensor.stdio", note: `${spec.id} exit code=${String(code)} dropped=${dropped} stderr=${stderrTail.slice(-80).replace(/\s+/g, " ")}` });
+    emitBus({ kind: "state", id: spec.id });
+  });
+
+  stdioProcs.set(spec.id, { child, spec });
+  states.set(spec.id, "live");
+  audit({ tool: "sensor.stdio", note: `start ${spec.id} cmd=${path.basename(spec.command)} args=${(spec.args ?? []).length}` });
+  emitBus({ kind: "state", id: spec.id });
+  return { ok: true };
+}
+
+export function unregisterStdioSource(id: string): { ok: boolean; error?: string } {
+  const rec = stdioProcs.get(id);
+  if (!rec) return { ok: false, error: `no stdio source named "${id}"` };
+  try { rec.child.kill(); } catch { /* gone */ }
+  stdioProcs.delete(id);
+  unregisterSource(id);
+  return { ok: true };
+}
+
+export function listStdioSources(): Array<{ id: string; command: string; args: string[]; pid: number | undefined }> {
+  return [...stdioProcs.values()].map((r) => ({ id: r.spec.id, command: r.spec.command, args: r.spec.args ?? [], pid: r.child.pid }));
 }
 
 // ---- the bridge (N3): a token-gated loopback listener for ROS 2 / sidecars ----

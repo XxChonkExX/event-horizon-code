@@ -9,9 +9,9 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
-  HALTED_NOTE, addWatch, bridgeRunning, closeBridgeListener, ensureBridgeListener, listSensors, listWatches,
+  HALTED_NOTE, addWatch, bridgeRunning, closeBridgeListener, ensureBridgeListener, listSensors, listStdioSources, listWatches,
   onBusEvent, onObservation, observeSource, pushObservation, recentObservations, registerSimulatedLidar, registerSource,
-  removeWatch, resumeSensors, sensorsHalted, startSource, stopAllSensors, stopSource, unregisterSource,
+  registerStdioSource, removeWatch, resumeSensors, sensorsHalted, startSource, stopAllSensors, stopSource, unregisterSource, unregisterStdioSource,
 } from "../src/server/sensorBus";
 import { runTool } from "../src/server/tools";
 import { alwaysAsks, callDigest, consumeGrant } from "../src/server/approvals";
@@ -269,6 +269,50 @@ async function main(): Promise<void> {
   const rings = ringRadii(108, 5);
   check("range rings are equal fractions, each labelled in metres", rings.map((r) => r.r).join(",") === "27,54,81,108" && rings[3]!.metres === 5, JSON.stringify(rings));
   check("the simulated lidar's payload is a well-formed scan for the dial", simReading.ok && !!asLaserScan(simReading.observation.payload));
+
+  // 9. stdio sidecar sources (N3): operator-configured tool, app-spawned, JSON Lines.
+  process.env.EH_PASS = "sidecar-must-not-see-this";
+  const sidecarScript = path.join(tmp, "sidecar.cjs");
+  const sidecarLines = [
+    `JSON.stringify({ kind: "laserscan", payload: { sectors: [1, 2, 3] } })`,
+    `"not json at all"`,
+    `JSON.stringify({ kind: "env", payload: { ehpass: process.env.EH_PASS === undefined, auditlog: process.env.EH_AUDIT_LOG === undefined } })`,
+    `JSON.stringify({ kind: "reading", payload: "second reading", ref: "pack-b" })`,
+  ];
+  fs.writeFileSync(sidecarScript, `const lines = [\n${sidecarLines.join(",\n")}\n];\nfor (const l of lines) process.stdout.write(l + "\\n");\nsetTimeout(() => {}, 30000);\n`);
+  const reg = registerStdioSource({ id: "sidecar", label: "Test sidecar", command: process.execPath, args: [sidecarScript], cwd: tmp, desc: "test sidecar" });
+  check("a stdio source registers + spawns live", reg.ok === true && listSensors().find((s) => s.id === "sidecar")?.state === "live" && listStdioSources()[0]?.id === "sidecar");
+  await sleep(800);
+  const sc = recentObservations("sidecar", 10);
+  check("sidecar JSON Lines become observations (bad JSON dropped)", sc.length === 3 && sc[0]!.kind === "laserscan" && sc[2]!.kind === "reading" && sc[2]!.ref === "pack-b", JSON.stringify(sc.map((o) => o.kind)));
+  const envObs = sc.find((o) => o.kind === "env");
+  const envPayload = envObs ? (envObs.payload as { ehpass: boolean; auditlog: boolean }) : null;
+  check("sidecar env is scrubbed (no EH_PASS, no EH_AUDIT_LOG)", envPayload?.ehpass === true && envPayload?.auditlog === true, JSON.stringify(envPayload));
+  const scAsk = await runTool("sensor_observe", { source: "sidecar" }, process.cwd(), {});
+  check("agent can observe a live stdio source only via ask", scAsk.ok === false && scAsk.needsApproval === true);
+  const scAgain = registerStdioSource({ id: "sidecar", label: "dupe", command: process.execPath });
+  check("a duplicate id is refused", scAgain.ok === false && /already exists/.test(scAgain.error ?? ""));
+  await stopAllSensors();
+  const scHaltRef = registerStdioSource({ id: "post-halt", label: "x", command: process.execPath });
+  check("a stdio source cannot be registered while halted", scHaltRef.ok === false && (scHaltRef as { halted?: boolean }).halted === true);
+  resumeSensors();
+  unregisterStdioSource("sidecar");
+  check("stop-all + unregister leave no sidecar behind", !listSensors().some((s) => s.id === "sidecar") && listStdioSources().length === 0);
+  // rate cap: a sidecar that floods is stopped, not trusted
+  delete process.env.EH_PASS;
+  const floodScript = path.join(tmp, "flood.cjs");
+  fs.writeFileSync(floodScript, `for (let i = 0; i < 40; i++) process.stdout.write(JSON.stringify({ kind: "flood", payload: i }) + "\\n");\nsetTimeout(() => {}, 30000);\n`);
+  const regF = registerStdioSource({ id: "floodside", label: "Flood", command: process.execPath, args: [floodScript] });
+  check("flood sidecar registered", regF.ok === true, JSON.stringify(regF));
+  await sleep(900);
+  const floodState = listSensors().find((s) => s.id === "floodside")?.state;
+  check("a flooding sidecar is stopped by the rate cap", floodState === "off" || floodState === "error", floodState);
+  unregisterStdioSource("floodside");
+  const badStart = registerStdioSource({ id: "nope", label: "nope", command: "definitely-not-a-real-exe-xyz" });
+  check("a bad command still registers (state reports the failure, honestly)", badStart.ok === true);
+  await sleep(600);
+  check("a failed spawn is a stated error state", listSensors().find((s) => s.id === "nope")?.state === "error");
+  unregisterStdioSource("nope");
 
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(failures === 0 ? "[ehc] sensor bus tests: ALL PASS" : `[ehc] sensor bus tests: ${failures} FAILURE(S)`);
